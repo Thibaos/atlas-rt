@@ -8,14 +8,14 @@ use crate::world::{InsertResult, grid};
 
 use super::{BoundsPolicy, World};
 
-pub struct SceneGraphTraverser<'a> {
-    pub world: &'a mut World,
+pub struct SceneGraphTraverser<'world, 'scene> {
+    pub world: &'world mut World,
     pub policy: BoundsPolicy,
-    pub scene: &'a DotVoxData,
-    pub models: Vec<(IVec3, Rotation, UVec3, Vec<Voxel>)>,
+    pub scene: &'scene DotVoxData,
+    pub models: Vec<(IVec3, Rotation, UVec3, &'scene [Voxel])>,
 }
 
-impl SceneGraphTraverser<'_> {
+impl SceneGraphTraverser<'_, '_> {
     pub fn traverse(&mut self) -> usize {
         if self.scene.scenes.is_empty() {
             let mut clipped = 0usize;
@@ -79,8 +79,8 @@ impl SceneGraphTraverser<'_> {
                     );
                 };
 
-                let model = self
-                    .scene
+                let scene = self.scene;
+                let model = scene
                     .models
                     .get(usize::try_from(shape_model.model_id).unwrap_or(usize::MAX))
                     .unwrap_or_else(|| panic!("shape model {} out of range", shape_model.model_id));
@@ -95,7 +95,7 @@ impl SceneGraphTraverser<'_> {
                     translation,
                     rotation,
                     UVec3::new(size.x, size.y, size.z),
-                    model.voxels.clone(),
+                    model.voxels.as_slice(),
                 ));
             }
         }

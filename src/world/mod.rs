@@ -1,7 +1,12 @@
-use std::{collections::HashMap, fmt::Display};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    fmt::Display,
+    sync::{Mutex, MutexGuard},
+};
 
-use dot_vox::DotVoxData;
+use dot_vox::{DotVoxData, Voxel};
 use glam::IVec3;
+use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 
 use crate::world::scene_graph::{SceneGraphTraverser, VoxelPlacement};
@@ -20,9 +25,56 @@ pub mod snapshot;
 #[cfg(test)]
 mod bench;
 
-#[derive(Debug, Default)]
+const SHARD_COUNT: usize = 64;
+const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();
+const BUILD_CHUNK: usize = 8_192;
+
+// every fold input is gated by grid::in_lattice, so the signed cast is exact
+#[allow(clippy::as_conversions, clippy::cast_possible_wrap)]
+const LATTICE_BIAS: i32 = grid::LATTICE_HALF_EXTENT as i32;
+const FOLD_FIELD_BITS: u32 = grid::LATTICE_HALF_EXTENT.trailing_zeros() + 1;
+const FOLD_FIELD_MASK: u64 = (1u64 << FOLD_FIELD_BITS) - 1;
+
+type VoxelMap = HashMap<u64, u32, FxBuildHasher>;
+type StagedMap = HashMap<u64, u64, FxBuildHasher>;
+
+#[derive(Debug)]
 pub struct World {
-    inner: HashMap<IVec3, u32, FxBuildHasher>,
+    shards: [VoxelMap; SHARD_COUNT],
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self {
+            shards: std::array::from_fn(|_| HashMap::default()),
+        }
+    }
+}
+
+// Bijective 36-bit fold: three biased 12-bit axis fields, x high.
+fn fold(position: IVec3) -> u64 {
+    let biased = position.wrapping_add(IVec3::splat(LATTICE_BIAS)).as_uvec3();
+
+    (u64::from(biased.x) << (2 * FOLD_FIELD_BITS))
+        | (u64::from(biased.y) << FOLD_FIELD_BITS)
+        | u64::from(biased.z)
+}
+
+#[allow(clippy::as_conversions, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+fn unfold(key: u64) -> IVec3 {
+    let axis = |field: u64| (field as i32).wrapping_sub(LATTICE_BIAS);
+
+    IVec3::new(
+        axis((key >> (2 * FOLD_FIELD_BITS)) & FOLD_FIELD_MASK),
+        axis((key >> FOLD_FIELD_BITS) & FOLD_FIELD_MASK),
+        axis(key & FOLD_FIELD_MASK),
+    )
+}
+
+// The golden multiply spreads the packed fold; the top bits always fit usize.
+#[allow(clippy::as_conversions)]
+const fn shard_index(key: u64) -> usize {
+    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> SHARD_ROUTE_SHIFT) as usize
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -41,6 +93,30 @@ impl World {
         );
     }
 
+    fn shard(&self, position: IVec3) -> &VoxelMap {
+        let index = shard_index(fold(position));
+
+        self.shards
+            .get(index)
+            .unwrap_or_else(|| panic!("shard {index} out of the {SHARD_COUNT} shards"))
+    }
+
+    fn shard_mut(&mut self, position: IVec3) -> &mut VoxelMap {
+        let index = shard_index(fold(position));
+
+        self.shards
+            .get_mut(index)
+            .unwrap_or_else(|| panic!("shard {index} out of the {SHARD_COUNT} shards"))
+    }
+
+    fn reserve(&mut self, additional: usize) {
+        let per_shard = additional / SHARD_COUNT;
+
+        for map in &mut self.shards {
+            map.reserve(per_shard);
+        }
+    }
+
     pub(crate) fn insert(
         &mut self,
         position: IVec3,
@@ -54,10 +130,9 @@ impl World {
             }
         }
 
-        if self.inner.insert(position, voxel).is_some() {
-            InsertResult::Existing
-        } else {
-            InsertResult::Ok
+        match self.shard_mut(position).insert(fold(position), voxel) {
+            Some(_) => InsertResult::Existing,
+            None => InsertResult::Ok,
         }
     }
 
@@ -80,7 +155,7 @@ impl World {
                 .iter()
                 .map(|model| model.voxels.len())
                 .sum();
-            world.inner.reserve(direct);
+            world.reserve(direct);
         }
 
         let mut loader = SceneGraphTraverser {
@@ -108,41 +183,84 @@ impl World {
             }
         }
 
-        world.inner.reserve(live);
+        world.reserve(live);
 
-        for (placement, voxels) in placements {
-            for voxel in voxels {
-                let position = placement.place(voxel);
-
-                if world.insert(position, voxel.i.into(), policy) == InsertResult::Clipped {
-                    clipped = clipped.saturating_add(1);
-                }
-            }
-        }
+        clipped = clipped.saturating_add(world.build(&placements, live, policy));
 
         (world, clipped)
     }
 
+    fn build(
+        &mut self,
+        placements: &[(VoxelPlacement, &[Voxel])],
+        live: usize,
+        policy: BoundsPolicy,
+    ) -> usize {
+        if live == 0 {
+            return 0;
+        }
+
+        let per_shard = live / SHARD_COUNT;
+        let staged: Vec<Mutex<StagedMap>> = (0..SHARD_COUNT)
+            .map(|_| {
+                Mutex::new(StagedMap::with_capacity_and_hasher(per_shard, FxBuildHasher))
+            })
+            .collect();
+
+        let clipped = placements
+            .par_iter()
+            .enumerate()
+            .flat_map(|(model_index, (placement, voxels))| {
+                let model_base = u64::try_from(model_index)
+                    .unwrap_or(u64::MAX)
+                    .wrapping_mul(1u64 << 40);
+
+                voxels
+                    .par_chunks(BUILD_CHUNK)
+                    .enumerate()
+                    .map(move |(chunk_index, chunk)| {
+                        let chunk_base = model_base.wrapping_add(
+                            u64::try_from(chunk_index.wrapping_mul(BUILD_CHUNK))
+                                .unwrap_or(u64::MAX),
+                        );
+
+                        (placement, chunk, chunk_base)
+                    })
+            })
+            .map(|(placement, chunk, sequence_base)| {
+                stage_chunk(placement, chunk, sequence_base, policy, &staged)
+            })
+            .sum();
+
+        let loaded: Vec<VoxelMap> = staged.into_par_iter().map(unstage_shard).collect();
+
+        for (map, staged_map) in self.shards.iter_mut().zip(loaded) {
+            *map = staged_map;
+        }
+
+        clipped
+    }
+
     pub fn contains(&self, position: &IVec3) -> bool {
         Self::assert_in_lattice(position);
-        self.inner.contains_key(position)
+        self.shard(*position).contains_key(&fold(*position))
     }
 
     pub fn get_voxel(&self, position: &IVec3) -> Option<&u32> {
         Self::assert_in_lattice(position);
-        self.inner.get(position)
+        self.shard(*position).get(&fold(*position))
     }
 
     #[cfg(test)]
     pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
         Self::assert_in_lattice(&position);
-        self.inner.insert(position, material_index);
+        self.shard_mut(position).insert(fold(position), material_index);
     }
 
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
-        self.inner
+        self.shards
             .iter()
-            .map(|(position, voxel)| (*position, voxel))
+            .flat_map(|map| map.iter().map(|(key, voxel)| (unfold(*key), voxel)))
     }
 
     pub fn voxel_bounds(&self) -> Option<(IVec3, IVec3)> {
@@ -158,13 +276,90 @@ impl World {
     }
 
     pub fn voxel_count(&self) -> usize {
-        self.inner.len()
+        self.shards.iter().map(HashMap::len).sum()
     }
+}
+
+fn stage_chunk(
+    placement: &VoxelPlacement,
+    chunk: &[Voxel],
+    sequence_base: u64,
+    policy: BoundsPolicy,
+    staged: &[Mutex<StagedMap>],
+) -> usize {
+    let mut routed: Vec<Vec<(u64, u64)>> = (0..SHARD_COUNT).map(|_| Vec::new()).collect();
+    let mut sequence = sequence_base;
+    let mut clipped = 0usize;
+
+    for voxel in chunk {
+        let position = placement.place(*voxel);
+
+        if grid::in_lattice(position) {
+            let key = fold(position);
+            let value = sequence.wrapping_mul(256) | u64::from(voxel.i);
+
+            match routed.get_mut(shard_index(key)) {
+                Some(bucket) => bucket.push((key, value)),
+                None => panic!("shard route out of the {SHARD_COUNT} shards"),
+            }
+        } else {
+            match policy {
+                BoundsPolicy::Panic => World::assert_in_lattice(&position),
+                BoundsPolicy::Clip => clipped = clipped.saturating_add(1),
+            }
+        }
+
+        sequence = sequence.wrapping_add(1);
+    }
+
+    for (staged_map, bucket) in staged.iter().zip(&routed) {
+        if bucket.is_empty() {
+            continue;
+        }
+
+        let mut map = lock_stage(staged_map);
+
+        for (key, value) in bucket {
+            match map.entry(*key) {
+                Entry::Vacant(entry) => {
+                    entry.insert(*value);
+                }
+                Entry::Occupied(mut entry) => {
+                    if *value > *entry.get() {
+                        entry.insert(*value);
+                    }
+                }
+            }
+        }
+    }
+
+    clipped
+}
+
+fn lock_stage(staged: &Mutex<StagedMap>) -> MutexGuard<'_, StagedMap> {
+    match staged.lock() {
+        Ok(map) => map,
+        Err(poisoned) => poisoned.into_inner(),
+    }
+}
+
+fn unstage_shard(staged: Mutex<StagedMap>) -> VoxelMap {
+    let map = match Mutex::into_inner(staged) {
+        Ok(map) => map,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    map.into_iter()
+        .map(|(position, value)| {
+            let [material, ..] = value.to_le_bytes();
+            (position, u32::from(material))
+        })
+        .collect()
 }
 
 impl Display for World {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "World {{ voxels: {} }}", self.inner.len())
+        write!(f, "World {{ voxels: {} }}", self.voxel_count())
     }
 }
 
@@ -241,8 +436,12 @@ mod placement_differential {
     use dot_vox::{DotVoxData, Rotation, Voxel};
     use glam::{DMat4, DQuat, DVec3, DVec4, IVec3, IVec4, UVec3, Vec4Swizzles};
 
+    use std::hash::{Hash, Hasher};
+
+    use rustc_hash::FxHasher;
+
     use super::grid;
-    use super::scene_graph::SceneGraphTraverser;
+    use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
     use super::{BoundsPolicy, ModelSpec, World, scene_fixture};
 
     struct Rng(u64);
@@ -313,7 +512,7 @@ mod placement_differential {
         [pick(), pick(), pick()]
     }
 
-    fn collected_models(data: &DotVoxData) -> Vec<(IVec3, Rotation, UVec3, Vec<Voxel>)> {
+    fn collected_models(data: &DotVoxData) -> Vec<(IVec3, Rotation, UVec3, &[Voxel])> {
         let mut world = World::default();
         let mut loader = SceneGraphTraverser {
             world: &mut world,
@@ -525,11 +724,180 @@ mod placement_differential {
             "the legacy pipeline evaluates this origin voxel to m = (5, 8, -6), so the world position after the final z negation is (5, 8, 6)"
         );
     }
+
+    fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
+        let mut map = HashMap::new();
+
+        for (translation, rotation, size, voxels) in collected_models(data) {
+            let placement = VoxelPlacement::new(translation, rotation, size);
+
+            for voxel in voxels {
+                let position = placement.place(*voxel);
+
+                if grid::in_lattice(position) {
+                    map.insert(position, u32::from(voxel.i));
+                }
+            }
+        }
+
+        map
+    }
+
+    fn content_hash(map: &HashMap<IVec3, u32>) -> u64 {
+        let mut hash = 0u64;
+
+        for (position, voxel) in map {
+            let mut hasher = FxHasher::default();
+            position.hash(&mut hasher);
+            hash ^= hasher.finish().wrapping_add(u64::from(*voxel));
+        }
+
+        hash
+    }
+
+    fn load_asset(path: &str) -> DotVoxData {
+        match dot_vox::load(path) {
+            Ok(data) => data,
+            Err(error) => panic!("failed to load {path}: {error}"),
+        }
+    }
+
+    #[test]
+    fn parallel_load_matches_serial_oracle_on_randomized_scenes() {
+        let mut rng = Rng::new(0x5011_0AD);
+        let valid_rotations = rotation_bytes();
+
+        for rotation in &valid_rotations {
+            for _ in 0..4 {
+                let specs = random_specs(&mut rng, *rotation);
+                let data = scene_fixture(&specs);
+                assert_eq!(
+                    production_map(&data),
+                    serial_map(&data),
+                    "rotation {rotation:#010b}, specs {specs:?}"
+                );
+            }
+        }
+
+        let mut rotations = valid_rotations.iter().copied().cycle();
+
+        for _ in 0..64 {
+            let specs: Vec<ModelSpec> = (0..(1 + rng.below(4)))
+                .map(|_| {
+                    let size = random_size(&mut rng);
+                    ModelSpec {
+                        size,
+                        voxels: random_voxels(&mut rng, size),
+                        rotation: rotations.next().unwrap_or(0b0001),
+                        translation: random_translation(&mut rng),
+                    }
+                })
+                .collect();
+            let data = scene_fixture(&specs);
+            assert_eq!(production_map(&data), serial_map(&data), "specs {specs:?}");
+        }
+    }
+
+    #[test]
+    fn overlapping_models_keep_the_last_serial_write() {
+        let specs = [
+            ModelSpec {
+                size: (2, 2, 2),
+                voxels: vec![Voxel {
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                    i: 3,
+                }],
+                rotation: 0b0001,
+                translation: [0, 0, 0],
+            },
+            ModelSpec {
+                size: (2, 2, 2),
+                voxels: vec![Voxel {
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                    i: 9,
+                }],
+                rotation: 0b0001,
+                translation: [0, 0, 0],
+            },
+        ];
+        let data = scene_fixture(&specs);
+        let map = production_map(&data);
+
+        assert_eq!(map, serial_map(&data));
+        assert_eq!(
+            map.values().collect::<Vec<_>>(),
+            vec![&9],
+            "the second model's material wins the shared position"
+        );
+    }
+
+    #[test]
+    #[ignore = "asset: cargo test --release church_matches_parallel_load -- --ignored --nocapture"]
+    fn church_matches_parallel_load() {
+        asset_differential("assets/church.vox");
+    }
+
+    #[test]
+    #[ignore = "asset: cargo test --release bistro_matches_parallel_load -- --ignored --nocapture"]
+    fn bistro_matches_parallel_load() {
+        asset_differential("assets/bistro.vox");
+    }
+
+    fn asset_differential(path: &str) {
+        let data = load_asset(path);
+        let parallel_map = production_map(&data);
+        let serial = serial_map(&data);
+
+        assert_eq!(
+            parallel_map.len(),
+            serial.len(),
+            "voxel count diverged from the serial oracle for {path}"
+        );
+        assert_eq!(
+            parallel_map, serial,
+            "content diverged from the serial oracle for {path}"
+        );
+
+        let parallel_hash = content_hash(&parallel_map);
+        assert_eq!(
+            parallel_hash,
+            content_hash(&serial),
+            "content hash diverged from the serial oracle for {path}"
+        );
+        println!(
+            "{path}: {} voxels, content hash {parallel_hash:016x}",
+            parallel_map.len()
+        );
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fold_round_trips_lattice_extremes() {
+        for position in [
+            IVec3::new(-2048, -2048, -2048),
+            IVec3::new(2047, 2047, 2047),
+            IVec3::new(-2048, 2047, 0),
+            IVec3::new(0, -2048, 2047),
+            IVec3::new(123, -456, 789),
+            IVec3::ZERO,
+        ] {
+            assert!(grid::in_lattice(position));
+            assert_eq!(unfold(fold(position)), position);
+        }
+
+        assert_ne!(
+            fold(IVec3::new(-2048, -2048, -2048)),
+            fold(IVec3::new(-2048, -2048, -2047))
+        );
+    }
 
     #[test]
     fn insert_and_contains() {
