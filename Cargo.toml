@@ -12,6 +12,7 @@ winit = "0.30"
 dot_vox = "*"
 glam = { version = "*", features = ["bytemuck"] }
 anyhow = "1.0.104"
+rayon = "1.12"
 rustc-hash = "2"
 
 [profile.release]

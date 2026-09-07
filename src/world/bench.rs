@@ -1,18 +1,11 @@
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod load_bench {
-    use std::{
-        collections::HashMap,
-        time::{Duration, Instant},
-    };
-
-    use glam::IVec3;
+    use std::time::{Duration, Instant};
 
     use crate::{
-        render::region::pack::{RegionData, pack_region},
-        world::{
-            World, grid::region_index_of, snapshot::MicroChunkSnapshot, snapshot::emit_snapshots,
-        },
+        render::region::pack::pack_regions,
+        world::{World, snapshot::emit_snapshots},
     };
 
     const DEFAULT_ASSETS: &[&str] = &["assets/church.vox", "assets/bistro.vox"];
@@ -114,22 +107,7 @@ mod load_bench {
         let emit = start.elapsed();
 
         let start = Instant::now();
-        let mut by_region: HashMap<IVec3, Vec<&MicroChunkSnapshot>> = HashMap::new();
-        for snapshot in &snapshots {
-            by_region
-                .entry(region_index_of(snapshot.global_coords))
-                .or_default()
-                .push(snapshot);
-        }
-
-        // The collected regions are the stage's measured work, not a needless intermediate.
-        #[allow(clippy::needless_collect)]
-        let packed: Vec<RegionData> = by_region
-            .into_iter()
-            .map(|(region_index, region_snapshots)| {
-                pack_region(region_index, &region_snapshots).unwrap()
-            })
-            .collect();
+        let packed = pack_regions(&snapshots).unwrap();
         let pack = start.elapsed();
 
         let total = parse

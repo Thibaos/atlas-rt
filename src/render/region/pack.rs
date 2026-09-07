@@ -3,15 +3,16 @@ use std::collections::HashMap;
 
 use anyhow::{Context, bail};
 use glam::{IVec3, UVec3};
+use rayon::prelude::*;
+use rustc_hash::FxHashMap;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::world::{
-    grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id},
+    grid::{
+        MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of,
+    },
     snapshot::MicroChunkSnapshot,
 };
-
-#[cfg(test)]
-use crate::world::grid::region_index_of;
 
 #[allow(clippy::as_conversions)]
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
@@ -41,8 +42,33 @@ impl RegionData {
     }
 }
 
+// The parallel fan-out gains a production caller when the input worker adopts it (ticket 05).
+#[allow(dead_code)]
+pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> anyhow::Result<Vec<RegionData>> {
+    let mut by_region: FxHashMap<IVec3, Vec<&MicroChunkSnapshot>> = FxHashMap::default();
+
+    for snapshot in snapshots {
+        by_region
+            .entry(region_index_of(snapshot.global_coords))
+            .or_default()
+            .push(snapshot);
+    }
+
+    let mut regions: Vec<RegionData> = by_region
+        .into_par_iter()
+        .map(|(region_index, region_snapshots)| {
+            pack_region(region_index, &region_snapshots)
+                .with_context(|| format!("failed to pack region {region_index}"))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    regions.sort_unstable_by_key(RegionData::region_id);
+
+    Ok(regions)
+}
+
 #[cfg(test)]
-pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
+pub fn pack_regions_serial(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
     let mut by_region: HashMap<IVec3, Vec<&MicroChunkSnapshot>> = HashMap::new();
     for snapshot in snapshots {
         by_region
@@ -58,7 +84,7 @@ pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
         })
         .collect();
 
-    regions.sort_unstable_by_key(|region| region.region_id());
+    regions.sort_unstable_by_key(RegionData::region_id);
     regions
 }
 
@@ -187,6 +213,7 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use crate::world::{World, snapshot::emit_snapshots};
 
@@ -199,7 +226,7 @@ mod tests {
         world.insert_voxel_at(IVec3::new(256, 0, 0), 2);
 
         let snapshots = emit_snapshots(&world).unwrap();
-        let regions = pack_regions(&snapshots);
+        let regions = pack_regions(&snapshots).unwrap();
 
         assert_eq!(regions.len(), 2);
         assert_eq!(regions[0].region_index, IVec3::new(0, 0, 0));
@@ -235,7 +262,7 @@ mod tests {
         world.insert_voxel_at(IVec3::new(8, 0, 0), 3);
 
         let snapshots = emit_snapshots(&world).unwrap();
-        let regions = pack_regions(&snapshots);
+        let regions = pack_regions(&snapshots).unwrap();
         assert_eq!(regions.len(), 1);
         let region = &regions[0];
 
@@ -266,6 +293,88 @@ mod tests {
         assert_eq!(index, (3 * 32 + 2) * 32 + 1);
         assert_eq!((31 * 32 + 31) * 32 + 31, MICRO_CHUNKS_PER_REGION - 1);
         assert_eq!(MICRO_CHUNK_LENGTH, 8);
+    }
+
+    struct Xorshift(u64);
+
+    impl Xorshift {
+        fn draw(&mut self) -> u64 {
+            let mut state = self.0;
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            self.0 = state;
+            state
+        }
+    }
+
+    fn offset(rng: &mut Xorshift) -> i32 {
+        i32::try_from(rng.draw() & 0x3FF)
+            .unwrap_or(0)
+            .wrapping_sub(512)
+    }
+
+    fn randomized_world(seed: u64, voxel_count: usize) -> World {
+        let mut rng = Xorshift(seed);
+        let mut world = World::default();
+
+        for _ in 0..voxel_count {
+            let material = u8::try_from((rng.draw() & 0xFF) | 1).unwrap_or(1);
+
+            world.insert_voxel_at(
+                IVec3::new(offset(&mut rng), offset(&mut rng), offset(&mut rng)),
+                u32::from(material),
+            );
+        }
+
+        world
+    }
+
+    fn assert_packing_matches_serial(snapshots: &[MicroChunkSnapshot]) {
+        let parallel = pack_regions(snapshots).unwrap();
+        let serial = pack_regions_serial(snapshots);
+
+        assert_eq!(parallel.len(), serial.len());
+
+        for (packed, oracle) in parallel.iter().zip(&serial) {
+            assert_eq!(packed.region_index, oracle.region_index);
+            assert_eq!(packed.offset_table, oracle.offset_table);
+            assert_eq!(packed.blocks, oracle.blocks);
+            assert_eq!(packed.aabbs.len(), oracle.aabbs.len());
+
+            for (hull, oracle_hull) in packed.aabbs.iter().zip(&oracle.aabbs) {
+                assert_eq!(hull.min, oracle_hull.min);
+                assert_eq!(hull.max, oracle_hull.max);
+            }
+        }
+
+        for pair in parallel.windows(2) {
+            assert!(pair[0].region_id() < pair[1].region_id());
+        }
+    }
+
+    #[test]
+    fn parallel_packing_matches_serial_oracle() {
+        let mut boundary = World::default();
+        boundary.insert_voxel_at(IVec3::new(255, 0, 0), 1);
+        boundary.insert_voxel_at(IVec3::new(256, 0, 0), 2);
+
+        let mut layout = World::default();
+        layout.insert_voxel_at(IVec3::new(0, 0, 0), 1);
+        layout.insert_voxel_at(IVec3::new(7, 7, 7), 2);
+        layout.insert_voxel_at(IVec3::new(8, 0, 0), 3);
+
+        for world in [
+            boundary,
+            layout,
+            randomized_world(0x5EED_1F00, 6_000),
+            randomized_world(0x00C0FFEE, 6_000),
+            randomized_world(0xBAD_C0DE, 6_000),
+        ] {
+            let snapshots = emit_snapshots(&world).unwrap();
+
+            assert_packing_matches_serial(&snapshots);
+        }
     }
 }
 
