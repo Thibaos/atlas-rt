@@ -178,7 +178,10 @@ impl World {
             if policy == BoundsPolicy::Clip && placement.misses_lattice() {
                 clipped = clipped.saturating_add(voxels.len());
             } else {
-                live = live.saturating_add(voxels.len());
+                let attempts = u64::try_from(voxels.len()).unwrap_or(u64::MAX);
+                let capacity = placement.in_lattice_capacity(attempts);
+
+                live = live.saturating_add(usize::try_from(capacity).unwrap_or(usize::MAX));
                 placements.push((placement, voxels));
             }
         }
@@ -277,6 +280,11 @@ impl World {
 
     pub fn voxel_count(&self) -> usize {
         self.shards.iter().map(HashMap::len).sum()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reserved_capacity(&self) -> usize {
+        self.shards.iter().map(HashMap::capacity).sum()
     }
 }
 
