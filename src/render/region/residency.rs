@@ -105,9 +105,6 @@ impl RegionStore {
         voxel_data: &DotVoxData,
         input: &RendererInput,
     ) -> anyhow::Result<Self> {
-        input.wait_until_idle()?;
-        let initial = input.packed_regions()?;
-
         let buffers = create_scene_buffers(gpu)?;
         let (tlas, tlas_storage_size) = create_tlas(gpu, buffers.instance)?;
         let dummy_blas = create_dummy_blas(gpu)?;
@@ -133,7 +130,10 @@ impl RegionStore {
             alloc_stats: AllocStats::default(),
         };
 
-        let packs: Vec<(IVec3, Option<RegionData>)> = initial
+        input.wait_until_idle()?;
+
+        let packs: Vec<(IVec3, Option<RegionData>)> = input
+            .packed_regions()?
             .into_iter()
             .map(|region| (region.region_index, Some(region)))
             .collect();

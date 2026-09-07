@@ -9,10 +9,10 @@ use std::{
 
 use anyhow::{Context, bail};
 use glam::IVec3;
-use rustc_hash::FxBuildHasher;
+use rustc_hash::{FxBuildHasher, FxHashMap};
 
 use crate::{
-    render::region::pack::{RegionData, pack_region},
+    render::region::pack::{RegionData, pack_region, pack_regions},
     world::{
         grid::{assert_region_index_in_lattice, region_index_of},
         snapshot::MicroChunkSnapshot,
@@ -69,6 +69,7 @@ struct ChangeQueueInner {
     wake_worker: Condvar,
     wake_renderer: Condvar,
     mirrors: Mutex<HashMap<IVec3, RegionMirror, FxBuildHasher>>,
+    packed: Mutex<HashMap<IVec3, RegionData, FxBuildHasher>>,
     applied_regions: Mutex<Vec<IVec3>>,
     idle: AtomicBool,
     busy: AtomicBool,
@@ -82,6 +83,7 @@ impl ChangeQueueInner {
             wake_worker: Condvar::new(),
             wake_renderer: Condvar::new(),
             mirrors: Mutex::new(HashMap::default()),
+            packed: Mutex::new(HashMap::default()),
             applied_regions: Mutex::new(Vec::new()),
             idle: AtomicBool::new(false),
             busy: AtomicBool::new(false),
@@ -218,26 +220,35 @@ impl RendererInput {
     }
 
     pub fn packed_region(&self, region_index: IVec3) -> anyhow::Result<Option<RegionData>> {
+        let ready = {
+            let Ok(mut packed) = self.queue.inner.packed.lock() else {
+                bail!("packed lock poisoned");
+            };
+
+            packed.remove(&region_index)
+        };
+
+        if let Some(data) = ready {
+            return Ok(Some(data));
+        }
+
         let Ok(mirrors) = self.queue.inner.mirrors.lock() else {
             bail!("mirrors lock poisoned");
         };
 
-        Ok(mirrors
-            .get(&region_index)
-            .map(RegionMirror::pack)
-            .context(format!("region {region_index} has no mirror"))?
-            .ok())
+        if mirrors.contains_key(&region_index) {
+            bail!("region {region_index} has no ready pack");
+        }
+
+        Ok(None)
     }
 
     pub fn packed_regions(&self) -> anyhow::Result<Vec<RegionData>> {
-        let Ok(mirrors) = self.queue.inner.mirrors.lock() else {
-            bail!("mirrors lock poisoned");
+        let Ok(mut packed) = self.queue.inner.packed.lock() else {
+            bail!("packed lock poisoned");
         };
 
-        let mut regions: Vec<RegionData> = mirrors
-            .values()
-            .map(RegionMirror::pack)
-            .collect::<anyhow::Result<_>>()?;
+        let mut regions: Vec<RegionData> = std::mem::take(&mut *packed).into_values().collect();
 
         regions.sort_unstable_by_key(RegionData::region_id);
 
@@ -308,28 +319,92 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) -> anyhow::Result<()> {
             apply_snapshots(&mut mirrors, taken)
         };
 
+        let packs = pack_dirty_regions(&inner.mirrors, &dirty)?;
+
         {
-            let Ok(mut applied) = inner.applied_regions.lock() else {
-                bail!("applied regions lock poisoned");
+            let Ok(mut packed) = inner.packed.lock() else {
+                bail!("packed lock poisoned");
             };
 
-            for region in dirty {
-                if !applied.contains(&region) {
-                    applied.push(region);
+            for (region, pack) in packs {
+                match pack {
+                    Some(data) => {
+                        packed.insert(region, data);
+                    }
+                    None => {
+                        packed.remove(&region);
+                    }
                 }
             }
         }
 
         {
-            if inner.pending.lock().is_err() {
-                bail!("pending lock poisoned");
+            let Ok(mut applied) = inner.applied_regions.lock() else {
+                bail!("applied regions lock poisoned");
+            };
+
+            for region in &dirty {
+                if !applied.contains(region) {
+                    applied.push(*region);
+                }
             }
+        }
+
+        {
+            let Ok(_pending) = inner.pending.lock() else {
+                bail!("pending lock poisoned");
+            };
 
             inner.busy.store(false, Ordering::SeqCst);
         }
 
         inner.wake_renderer.notify_all();
     }
+}
+
+fn pack_dirty_regions(
+    mirrors: &Mutex<HashMap<IVec3, RegionMirror, FxBuildHasher>>,
+    dirty: &[IVec3],
+) -> anyhow::Result<Vec<(IVec3, Option<RegionData>)>> {
+    if dirty.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    if let [region] = dirty {
+        let Ok(mirrors) = mirrors.lock() else {
+            bail!("mirrors lock poisoned");
+        };
+
+        let pack = mirrors
+            .get(region)
+            .map(RegionMirror::pack)
+            .transpose()
+            .with_context(|| format!("failed to pack dirty region {region}"))?;
+
+        return Ok(vec![(*region, pack)]);
+    }
+
+    let snapshots: Vec<MicroChunkSnapshot> = {
+        let Ok(mirrors) = mirrors.lock() else {
+            bail!("mirrors lock poisoned");
+        };
+
+        dirty
+            .iter()
+            .filter_map(|region| mirrors.get(region))
+            .flat_map(|mirror| mirror.microchunks.values().cloned())
+            .collect()
+    };
+
+    let mut packed: FxHashMap<IVec3, RegionData> = pack_regions(&snapshots)?
+        .into_iter()
+        .map(|data| (data.region_index, data))
+        .collect();
+
+    Ok(dirty
+        .iter()
+        .map(|&region| (region, packed.remove(&region)))
+        .collect())
 }
 
 pub fn apply_snapshots(
@@ -725,6 +800,45 @@ mod tests {
         assert!(input.packed_regions().unwrap().is_empty());
     }
 
+    #[test]
+    fn emptied_region_yields_none_and_readd_repacks() {
+        let input = RendererInput::new().unwrap();
+        let coords = IVec3::new(8, 0, 0);
+        let region = region_index_of(coords);
+
+        input.submit_microchunk(snapshot(coords, &[(0, 1)]));
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(input.take_dirty_regions(), vec![region]);
+
+        let packed = input.packed_region(region).unwrap().unwrap();
+        assert_eq!(packed.region_index, region);
+
+        input.submit_microchunk(zero(coords));
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(input.take_dirty_regions(), vec![region]);
+        assert_eq!(input.region_count(), 0);
+        assert!(
+            input.packed_region(region).unwrap().is_none(),
+            "a region emptied by the batch must yield None"
+        );
+
+        let restored = snapshot(coords, &[(0, 3), (63, 9)]);
+        input.submit_microchunk(restored.clone());
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(input.take_dirty_regions(), vec![region]);
+        assert_eq!(input.region_count(), 1);
+
+        let repacked = input.packed_region(region).unwrap().unwrap();
+        let expected = pack_regions(&[restored]).unwrap();
+
+        assert_eq!(repacked.region_index, expected[0].region_index);
+        assert_eq!(repacked.blocks, expected[0].blocks);
+        assert_eq!(repacked.aabbs, expected[0].aabbs);
+    }
+
     fn synthetic_batch(micro_chunks: usize) -> Vec<MicroChunkSnapshot> {
         const SLOT_MASK: i32 = 0x001F_FFFF;
         const STRIDE: i32 = 0x0012_D687;
@@ -793,5 +907,54 @@ mod tests {
         assert_eq!(mirrors.len(), REGIONS);
         assert_eq!(dirty.len(), REGIONS);
         assert!(reapply_dirty.is_empty());
+    }
+
+    #[test]
+    #[ignore = "bench: cargo test --release input_worker_pack_timings -- --ignored --nocapture"]
+    fn input_worker_pack_timings() {
+        let path = std::env::var("ATLAS_BENCH_VOX").unwrap_or_else(|_| "assets/bistro.vox".to_string());
+        let data = dot_vox::load(&path).unwrap();
+        let (world, _) = World::new_clipped(&data);
+
+        let snapshots = emit_snapshots(&world).unwrap();
+        let micro_chunks = snapshots.len();
+
+        let start = Instant::now();
+        let mut mirrors = HashMap::default();
+        apply_snapshots(&mut mirrors, snapshots.clone());
+        let apply = start.elapsed();
+
+        let start = Instant::now();
+        let mirror_regions = mirrors.len();
+        let packed_bytes: usize = mirrors
+            .values()
+            .map(|mirror| mirror.pack().unwrap().blocks.len())
+            .sum();
+        let main_pack = start.elapsed();
+        drop(mirrors);
+
+        let input = RendererInput::new().unwrap();
+        let start = Instant::now();
+        input.submit_batch(snapshots).unwrap();
+        input.wait_until_idle().unwrap();
+        let worker_apply_pack = start.elapsed();
+
+        let start = Instant::now();
+        let regions = input.packed_regions().unwrap();
+        let consume = start.elapsed();
+
+        let consumed_bytes: usize = regions.iter().map(|region| region.blocks.len()).sum();
+
+        println!("asset                 {path}");
+        println!("micro chunks          {micro_chunks}");
+        println!("regions               {mirror_regions}");
+        println!("apply (old, main)     {apply:10.3?}");
+        println!("pack (old, main)      {main_pack:10.3?}");
+        println!("apply+pack (worker)   {worker_apply_pack:10.3?}");
+        println!("consume (new, main)   {consume:10.3?}");
+        println!("packed bytes          {packed_bytes}");
+
+        assert_eq!(regions.len(), mirror_regions);
+        assert_eq!(packed_bytes, consumed_bytes, "consume must yield every pack");
     }
 }

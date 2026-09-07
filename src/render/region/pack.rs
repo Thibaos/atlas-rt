@@ -42,8 +42,6 @@ impl RegionData {
     }
 }
 
-// The parallel fan-out gains a production caller when the input worker adopts it (ticket 05).
-#[allow(dead_code)]
 pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> anyhow::Result<Vec<RegionData>> {
     let mut by_region: FxHashMap<IVec3, Vec<&MicroChunkSnapshot>> = FxHashMap::default();
 
