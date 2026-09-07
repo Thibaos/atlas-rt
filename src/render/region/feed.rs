@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{Context, bail};
 use glam::IVec3;
+use rustc_hash::FxBuildHasher;
 
 use crate::{
     render::region::pack::{RegionData, pack_region},
@@ -21,14 +22,14 @@ use crate::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegionMirror {
     region_index: IVec3,
-    microchunks: HashMap<IVec3, MicroChunkSnapshot>,
+    microchunks: HashMap<IVec3, MicroChunkSnapshot, FxBuildHasher>,
 }
 
 impl RegionMirror {
     pub fn new(region_index: IVec3) -> Self {
         Self {
             region_index,
-            microchunks: HashMap::new(),
+            microchunks: HashMap::default(),
         }
     }
 
@@ -64,10 +65,10 @@ impl RegionMirror {
 }
 
 struct ChangeQueueInner {
-    pending: Mutex<HashMap<IVec3, MicroChunkSnapshot>>,
+    pending: Mutex<HashMap<IVec3, MicroChunkSnapshot, FxBuildHasher>>,
     wake_worker: Condvar,
     wake_renderer: Condvar,
-    mirrors: Mutex<HashMap<IVec3, RegionMirror>>,
+    mirrors: Mutex<HashMap<IVec3, RegionMirror, FxBuildHasher>>,
     applied_regions: Mutex<Vec<IVec3>>,
     idle: AtomicBool,
     busy: AtomicBool,
@@ -77,10 +78,10 @@ struct ChangeQueueInner {
 impl ChangeQueueInner {
     fn new() -> Self {
         Self {
-            pending: Mutex::new(HashMap::new()),
+            pending: Mutex::new(HashMap::default()),
             wake_worker: Condvar::new(),
             wake_renderer: Condvar::new(),
-            mirrors: Mutex::new(HashMap::new()),
+            mirrors: Mutex::new(HashMap::default()),
             applied_regions: Mutex::new(Vec::new()),
             idle: AtomicBool::new(false),
             busy: AtomicBool::new(false),
@@ -332,7 +333,7 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) -> anyhow::Result<()> {
 }
 
 pub fn apply_snapshots(
-    mirrors: &mut HashMap<IVec3, RegionMirror>,
+    mirrors: &mut HashMap<IVec3, RegionMirror, FxBuildHasher>,
     snapshots: Vec<MicroChunkSnapshot>,
 ) -> Vec<IVec3> {
     let mut dirty: Vec<IVec3> = Vec::new();
@@ -357,6 +358,8 @@ pub fn apply_snapshots(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
     use crate::{
         render::region::pack::pack_regions,
         world::{
@@ -434,7 +437,7 @@ mod tests {
 
     #[test]
     fn apply_is_idempotent_and_last_wins() {
-        let mut mirrors = HashMap::new();
+        let mut mirrors = HashMap::default();
         let coords = IVec3::new(0, 0, 0);
         let region = region_index_of(coords);
 
@@ -466,7 +469,7 @@ mod tests {
 
     #[test]
     fn region_ids_derived_from_global_coords() {
-        let mut mirrors = HashMap::new();
+        let mut mirrors = HashMap::default();
         apply_snapshots(
             &mut mirrors,
             vec![
@@ -538,7 +541,7 @@ mod tests {
             snapshot(coords_c, &[(0, 3)]),
         ];
 
-        let direct = pack_regions(&expected);
+        let direct = pack_regions(&expected).unwrap();
         let through_contract = input.packed_regions().unwrap();
 
         assert_eq!(through_contract.len(), 1);
@@ -559,7 +562,7 @@ mod tests {
         input.submit_batch(snapshots.iter().cloned()).unwrap();
         input.wait_until_idle().unwrap();
 
-        let direct = pack_regions(&snapshots);
+        let direct = pack_regions(&snapshots).unwrap();
         let through_contract = input.packed_regions().unwrap();
 
         assert_eq!(through_contract.len(), 2);
@@ -621,7 +624,7 @@ mod tests {
             })
             .collect();
 
-        let direct = pack_regions(&expected);
+        let direct = pack_regions(&expected).unwrap();
         let through_contract = input.packed_regions().unwrap();
 
         assert_eq!(through_contract.len(), direct.len());
@@ -720,5 +723,75 @@ mod tests {
             "last Micro-chunk removed → mirror dropped"
         );
         assert!(input.packed_regions().unwrap().is_empty());
+    }
+
+    fn synthetic_batch(micro_chunks: usize) -> Vec<MicroChunkSnapshot> {
+        const SLOT_MASK: i32 = 0x001F_FFFF;
+        const STRIDE: i32 = 0x0012_D687;
+
+        let mut pattern_mask = [0u8; 64];
+        pattern_mask[0] = 0x0F;
+        let pattern_materials = vec![1, 2, 3, 4];
+
+        let mut slot = 0i32;
+        let mut batch = Vec::with_capacity(micro_chunks);
+
+        for _ in 0..micro_chunks {
+            slot = slot.wrapping_add(STRIDE) & SLOT_MASK;
+
+            let lx = slot & 31;
+            let ly = slot.wrapping_shr(5) & 31;
+            let lz = slot.wrapping_shr(10) & 31;
+
+            let region = slot.wrapping_shr(15);
+
+            let rx = region & 3;
+            let ry = region.wrapping_shr(2) & 3;
+            let rz = region.wrapping_shr(4) & 3;
+
+            batch.push(MicroChunkSnapshot {
+                global_coords: IVec3::new(
+                    rx.wrapping_mul(256).wrapping_add(lx.wrapping_mul(8)),
+                    ry.wrapping_mul(256).wrapping_add(ly.wrapping_mul(8)),
+                    rz.wrapping_mul(256).wrapping_add(lz.wrapping_mul(8)),
+                ),
+                mask: pattern_mask,
+                materials: pattern_materials.clone(),
+            });
+        }
+
+        batch
+    }
+
+    #[test]
+    #[ignore = "bench: cargo test --release mirror_apply_timings -- --ignored --nocapture"]
+    fn mirror_apply_timings() {
+        const MICRO_CHUNKS: usize = 1_750_000;
+        const REGIONS: usize = 64;
+
+        let build_start = Instant::now();
+        let batch = synthetic_batch(MICRO_CHUNKS);
+        let build = build_start.elapsed();
+
+        let reapply_batch = batch.clone();
+        let mut mirrors = HashMap::default();
+
+        let start = Instant::now();
+        let dirty = apply_snapshots(&mut mirrors, batch);
+        let build_apply = start.elapsed();
+
+        let start = Instant::now();
+        let reapply_dirty = apply_snapshots(&mut mirrors, reapply_batch);
+        let reapply = start.elapsed();
+
+        println!("micro chunks    {MICRO_CHUNKS}");
+        println!("regions         {REGIONS}");
+        println!("build batch     {build:.3?}");
+        println!("apply (build)   {build_apply:.3?}");
+        println!("apply (reapply) {reapply:.3?}");
+
+        assert_eq!(mirrors.len(), REGIONS);
+        assert_eq!(dirty.len(), REGIONS);
+        assert!(reapply_dirty.is_empty());
     }
 }
