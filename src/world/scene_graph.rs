@@ -300,35 +300,7 @@ mod tests {
 
     use super::VoxelPlacement;
     use crate::world::grid;
-
-    struct Rng(u64);
-
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed | 1)
-        }
-
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        fn below(&mut self, bound: u64) -> u64 {
-            self.next() % bound
-        }
-    }
-
-    fn rotation_bytes() -> Vec<u8> {
-        (0u8..128)
-            .filter(|byte| {
-                let first = byte & 0b11;
-                let second = (byte >> 2) & 0b11;
-                first != 0b11 && second != 0b11 && first != second
-            })
-            .collect()
-    }
+    use crate::world::testing::{Rng, rotation_bytes};
 
     fn placement(translation: [i32; 3], rotation: u8, size: (u32, u32, u32)) -> VoxelPlacement {
         VoxelPlacement::new(
@@ -492,7 +464,6 @@ mod tests {
 
     #[test]
     fn straddling_translations_clip_per_axis() {
-        // identity on a 4x4x4 model: the x span is [t - 2, t + 1]
         for (translation, expected) in [
             ([2046, 0, 0], 64u64),
             ([2047, 0, 0], 48),
@@ -515,8 +486,6 @@ mod tests {
 
     #[test]
     fn the_y_plus_one_shift_is_respected_on_straddle() {
-        // identity on a (2, 4, 4) model: out_y = t_y + z - 2 and out_z = t_y + y - 1;
-        // the input y translation drives out_z over the +1-shifted y input [-1, 2]
         let high = placement([0, 2047, 0], 0b0000100, (2, 4, 4));
 
         assert_eq!(high.in_lattice_capacity(32), 16);

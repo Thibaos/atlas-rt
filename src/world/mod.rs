@@ -25,6 +25,9 @@ pub mod snapshot;
 #[cfg(test)]
 mod bench;
 
+#[cfg(test)]
+mod testing;
+
 const SHARD_COUNT: usize = 64;
 const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();
 const BUILD_CHUNK: usize = 8_192;
@@ -60,6 +63,7 @@ fn fold(position: IVec3) -> u64 {
         | u64::from(biased.z)
 }
 
+// call sites gate inputs with grid::in_lattice, so every field fits i32
 #[allow(clippy::as_conversions, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
 fn unfold(key: u64) -> IVec3 {
     let axis = |field: u64| (field as i32).wrapping_sub(LATTICE_BIAS);
@@ -185,8 +189,6 @@ impl World {
                 placements.push((placement, voxels));
             }
         }
-
-        world.reserve(live);
 
         clipped = clipped.saturating_add(world.build(&placements, live, policy));
 
@@ -448,43 +450,16 @@ mod placement_differential {
 
     use rustc_hash::FxHasher;
 
+    use crate::world::testing::{Rng, rotation_bytes};
+
     use super::grid;
     use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
     use super::{BoundsPolicy, ModelSpec, World, scene_fixture};
-
-    struct Rng(u64);
-
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed | 1)
-        }
-
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        fn below(&mut self, bound: u64) -> u64 {
-            self.next() % bound
-        }
-    }
 
     const TRANSLATIONS: &[i32] = &[
         0, 1, -1, 3, -3, 2047, -2047, 2048, -2048, 2049, -2049, 100_000, -100_000, 1_000_000,
         -1_000_000,
     ];
-
-    fn rotation_bytes() -> Vec<u8> {
-        (0u8..128)
-            .filter(|byte| {
-                let first = byte & 0b11;
-                let second = (byte >> 2) & 0b11;
-                first != 0b11 && second != 0b11 && first != second
-            })
-            .collect()
-    }
 
     fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
         let mut axis = || {

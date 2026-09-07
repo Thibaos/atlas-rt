@@ -9,10 +9,19 @@ use crate::world::{
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
 };
 
-const MICRO_EDGE: i32 = 8;
-const _: () = assert!(MICRO_CHUNK_LENGTH == 8, "snapshot packing assumes 8-wide micro chunks");
+const MICRO_EDGE: i32 = MICRO_CHUNK_LENGTH.cast_signed();
 
 const BUCKET_COUNT: usize = 256;
+const X_ORDINALS_PER_BUCKET: u16 = 2;
+
+const CHUNK_FIELD_BITS: u32 = 9;
+const SLOT_FIELD_BITS: u32 = 9;
+const MATERIAL_FIELD_BITS: u32 = 8;
+const CHUNK_ID_SHIFT: u32 = SLOT_FIELD_BITS + MATERIAL_FIELD_BITS;
+const CHUNK_ID_MASK: u64 = (1u64 << (3 * CHUNK_FIELD_BITS)) - 1;
+const AXIS_MASK: u32 = (1u32 << CHUNK_FIELD_BITS) - 1;
+const SLOT_MASK: u64 = (1u64 << SLOT_FIELD_BITS) - 1;
+const MATERIAL_MASK: u64 = (1u64 << MATERIAL_FIELD_BITS) - 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
@@ -32,19 +41,19 @@ impl MicroChunkSnapshot {
 }
 
 #[derive(Clone, Copy)]
-struct CellGroup {
+struct SlotGroup {
     materials: [u8; 8],
     occupied: u8,
 }
 
 struct ChunkBuf {
-    groups: [CellGroup; 64],
+    groups: [SlotGroup; 64],
 }
 
 impl ChunkBuf {
     const fn new() -> Self {
         Self {
-            groups: [CellGroup { materials: [0; 8], occupied: 0 }; 64],
+            groups: [SlotGroup { materials: [0; 8], occupied: 0 }; 64],
         }
     }
 
@@ -152,14 +161,16 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
                 .strict_add(local.z.strict_mul(64)),
         )?;
 
-        let record = (u64::from(chunk_x) << 18)
-            | (u64::from(chunk_y) << 9)
+        let chunk_id = (u64::from(chunk_x) << (2 * CHUNK_FIELD_BITS))
+            | (u64::from(chunk_y) << CHUNK_FIELD_BITS)
             | u64::from(chunk_z);
-        let record = (record << 17) | (u64::from(idx) << 8) | u64::from(material);
+        let record = (chunk_id << CHUNK_ID_SHIFT)
+            | (u64::from(idx) << MATERIAL_FIELD_BITS)
+            | u64::from(material);
 
         buckets
-            .get_mut(usize::from(chunk_x) / 2)
-            .context("bucket index out of range")?
+            .get_mut(usize::from(chunk_x / X_ORDINALS_PER_BUCKET))
+            .context("x slab bucket out of range")?
             .push(record);
     }
 
@@ -173,10 +184,11 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
         let mut chunks: HashMap<u32, ChunkBuf, FxBuildHasher> = HashMap::default();
 
         for record in records {
-            let chunk_id = u32::try_from((record >> 17) & 0x7FF_FFFF)
+            let chunk_id = u32::try_from((record >> CHUNK_ID_SHIFT) & CHUNK_ID_MASK)
                 .context("chunk id bits out of range")?;
-            let idx = u16::try_from((record >> 8) & 0x1FF).context("cell idx out of range")?;
-            let material = u8::try_from(record & 0xFF).context("material bits out of range")?;
+            let idx = u16::try_from((record >> MATERIAL_FIELD_BITS) & SLOT_MASK)
+                .context("slot idx out of range")?;
+            let material = u8::try_from(record & MATERIAL_MASK).context("material bits out of range")?;
 
             chunks
                 .entry(chunk_id)
@@ -186,9 +198,9 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
 
         for (chunk_id, chunk) in chunks {
             let origin = IVec3::new(
-                origin_axis(chunk_id >> 18)?,
-                origin_axis((chunk_id >> 9) & 0x1FF)?,
-                origin_axis(chunk_id & 0x1FF)?,
+                origin_axis(chunk_id >> (2 * CHUNK_FIELD_BITS))?,
+                origin_axis((chunk_id >> CHUNK_FIELD_BITS) & AXIS_MASK)?,
+                origin_axis(chunk_id & AXIS_MASK)?,
             );
 
             snapshots.push(chunk.into_snapshot(origin)?);
@@ -204,6 +216,7 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::world::testing::Rng;
 
     fn emit_snapshots_two_pass(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
         let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>, FxBuildHasher> = HashMap::default();
@@ -267,25 +280,6 @@ mod tests {
         snapshots.sort_unstable_by_key(|s| s.global_coords.to_array());
 
         Ok(snapshots)
-    }
-
-    struct Rng(u64);
-
-    impl Rng {
-        fn new(seed: u64) -> Self {
-            Self(seed | 1)
-        }
-
-        fn next(&mut self) -> u64 {
-            self.0 ^= self.0 << 13;
-            self.0 ^= self.0 >> 7;
-            self.0 ^= self.0 << 17;
-            self.0
-        }
-
-        fn below(&mut self, bound: u64) -> u64 {
-            self.next() % bound
-        }
     }
 
     fn i32_below(rng: &mut Rng, bound: u64) -> i32 {
