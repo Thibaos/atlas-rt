@@ -9,6 +9,11 @@ use crate::world::{
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
 };
 
+const MICRO_EDGE: i32 = 8;
+const _: () = assert!(MICRO_CHUNK_LENGTH == 8, "snapshot packing assumes 8-wide micro chunks");
+
+const BUCKET_COUNT: usize = 256;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
     pub global_coords: IVec3,
@@ -26,8 +31,100 @@ impl MicroChunkSnapshot {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CellGroup {
+    materials: [u8; 8],
+    occupied: u8,
+}
+
+struct ChunkBuf {
+    groups: [CellGroup; 64],
+}
+
+impl ChunkBuf {
+    const fn new() -> Self {
+        Self {
+            groups: [CellGroup { materials: [0; 8], occupied: 0 }; 64],
+        }
+    }
+
+    fn record(&mut self, idx: u16, material: u8) -> anyhow::Result<()> {
+        let group = self
+            .groups
+            .get_mut(usize::from(idx >> 3))
+            .with_context(|| format!("mask byte for cell {idx} out of range"))?;
+        group.occupied |= 1 << (idx & 7);
+
+        let slot = group
+            .materials
+            .get_mut(usize::from(idx & 7))
+            .with_context(|| format!("material slot for cell {idx} out of range"))?;
+        *slot = material;
+
+        Ok(())
+    }
+
+    fn into_snapshot(self, global_coords: IVec3) -> anyhow::Result<MicroChunkSnapshot> {
+        let mut mask = [0u8; 64];
+
+        for (byte, group) in mask.iter_mut().zip(self.groups.iter()) {
+            *byte = group.occupied;
+        }
+
+        let occupied: u32 = mask.iter().map(|byte| byte.count_ones()).sum();
+        let mut materials = Vec::with_capacity(usize::try_from(occupied)?);
+
+        for group in &self.groups {
+            let mut bits = group.occupied;
+
+            while bits != 0 {
+                let bit = usize::try_from(bits.trailing_zeros())?;
+                let material = *group
+                    .materials
+                    .get(bit)
+                    .with_context(|| format!("material slot for bit {bit} out of range"))?;
+                materials.push(material);
+                bits &= bits.strict_sub(1);
+            }
+        }
+
+        let snapshot = MicroChunkSnapshot {
+            global_coords,
+            mask,
+            materials,
+        };
+
+        debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+
+        Ok(snapshot)
+    }
+}
+
+fn chunk_axis_ordinal(origin_axis: i32) -> anyhow::Result<u16> {
+    let biased = (origin_axis >> 3)
+        .checked_add(256)
+        .context("voxel outside the micro chunk ordinal range")?;
+
+    u16::try_from(biased).context("chunk ordinal out of range")
+}
+
+fn origin_axis(biased: u32) -> anyhow::Result<i32> {
+    Ok(
+        i32::try_from(biased)
+            .context("chunk ordinal out of range")?
+            .checked_sub(256)
+            .context("chunk ordinal out of lattice range")?
+            .strict_mul(MICRO_EDGE),
+    )
+}
+
 pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
-    let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>, FxBuildHasher> = HashMap::default();
+    let mut buckets: [Vec<u64>; BUCKET_COUNT] = std::array::from_fn(|_| Vec::new());
+
+    let total = world.voxel_count();
+    for bucket in &mut buckets {
+        bucket.reserve(total / BUCKET_COUNT);
+    }
 
     for (global, voxel) in world.iter_voxels() {
         let origin = grid_origin(global, MICRO_CHUNK_LENGTH);
@@ -42,48 +139,61 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
                 .all()
         );
 
-        let idx = u32::try_from(
+        let material = u8::try_from(*voxel)?;
+
+        let chunk_x = chunk_axis_ordinal(origin.x)?;
+        let chunk_y = chunk_axis_ordinal(origin.y)?;
+        let chunk_z = chunk_axis_ordinal(origin.z)?;
+
+        let idx = u16::try_from(
             local
                 .x
                 .strict_add(local.y.strict_mul(8))
                 .strict_add(local.z.strict_mul(64)),
         )?;
 
-        per_microchunk
-            .entry(origin)
-            .or_default()
-            .push((idx, u8::try_from(*voxel)?));
+        let record = (u64::from(chunk_x) << 18)
+            | (u64::from(chunk_y) << 9)
+            | u64::from(chunk_z);
+        let record = (record << 17) | (u64::from(idx) << 8) | u64::from(material);
+
+        buckets
+            .get_mut(usize::from(chunk_x) / 2)
+            .context("bucket index out of range")?
+            .push(record);
     }
 
-    let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk
-        .into_iter()
-        .map(
-            |(global_coords, mut cells)| -> anyhow::Result<MicroChunkSnapshot> {
-                cells.sort_unstable_by_key(|&(idx, _)| idx);
+    let mut snapshots: Vec<MicroChunkSnapshot> = Vec::new();
 
-                let mut mask = [0u8; 64];
-                let mut materials = Vec::with_capacity(cells.len());
+    for records in buckets {
+        if records.is_empty() {
+            continue;
+        }
 
-                for (idx, material) in cells {
-                    let slot = mask
-                        .get_mut(usize::try_from(idx / 8)?)
-                        .with_context(|| format!("mask byte for cell {idx} out of range"))?;
-                    *slot |= 1 << (idx % 8);
-                    materials.push(material);
-                }
+        let mut chunks: HashMap<u32, ChunkBuf, FxBuildHasher> = HashMap::default();
 
-                let snapshot = MicroChunkSnapshot {
-                    global_coords,
-                    mask,
-                    materials,
-                };
+        for record in records {
+            let chunk_id = u32::try_from((record >> 17) & 0x7FF_FFFF)
+                .context("chunk id bits out of range")?;
+            let idx = u16::try_from((record >> 8) & 0x1FF).context("cell idx out of range")?;
+            let material = u8::try_from(record & 0xFF).context("material bits out of range")?;
 
-                debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+            chunks
+                .entry(chunk_id)
+                .or_insert_with(ChunkBuf::new)
+                .record(idx, material)?;
+        }
 
-                Ok(snapshot)
-            },
-        )
-        .collect::<anyhow::Result<_>>()?;
+        for (chunk_id, chunk) in chunks {
+            let origin = IVec3::new(
+                origin_axis(chunk_id >> 18)?,
+                origin_axis((chunk_id >> 9) & 0x1FF)?,
+                origin_axis(chunk_id & 0x1FF)?,
+            );
+
+            snapshots.push(chunk.into_snapshot(origin)?);
+        }
+    }
 
     snapshots.sort_unstable_by_key(|s| s.global_coords.to_array());
 
@@ -91,8 +201,138 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn emit_snapshots_two_pass(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
+        let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>, FxBuildHasher> = HashMap::default();
+
+        for (global, voxel) in world.iter_voxels() {
+            let origin = grid_origin(global, MICRO_CHUNK_LENGTH);
+            let local = global
+                .checked_sub(origin)
+                .context("voxel below its micro chunk origin")?;
+
+            debug_assert!(local.cmpge(IVec3::ZERO).all());
+            debug_assert!(
+                local
+                    .cmplt(UVec3::splat(MICRO_CHUNK_LENGTH).as_ivec3())
+                    .all()
+            );
+
+            let idx = u32::try_from(
+                local
+                    .x
+                    .strict_add(local.y.strict_mul(8))
+                    .strict_add(local.z.strict_mul(64)),
+            )?;
+
+            per_microchunk
+                .entry(origin)
+                .or_default()
+                .push((idx, u8::try_from(*voxel)?));
+        }
+
+        let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk
+            .into_iter()
+            .map(
+                |(global_coords, mut cells)| -> anyhow::Result<MicroChunkSnapshot> {
+                    cells.sort_unstable_by_key(|&(idx, _)| idx);
+
+                    let mut mask = [0u8; 64];
+                    let mut materials = Vec::with_capacity(cells.len());
+
+                    for (idx, material) in cells {
+                        let slot = mask
+                            .get_mut(usize::try_from(idx / 8)?)
+                            .with_context(|| format!("mask byte for cell {idx} out of range"))?;
+                        *slot |= 1 << (idx % 8);
+                        materials.push(material);
+                    }
+
+                    let snapshot = MicroChunkSnapshot {
+                        global_coords,
+                        mask,
+                        materials,
+                    };
+
+                    debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+
+                    Ok(snapshot)
+                },
+            )
+            .collect::<anyhow::Result<_>>()?;
+
+        snapshots.sort_unstable_by_key(|s| s.global_coords.to_array());
+
+        Ok(snapshots)
+    }
+
+    struct Rng(u64);
+
+    impl Rng {
+        fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    fn i32_below(rng: &mut Rng, bound: u64) -> i32 {
+        i32::try_from(rng.below(bound)).unwrap_or(i32::MAX)
+    }
+
+    fn u32_below(rng: &mut Rng, bound: u64) -> u32 {
+        u32::try_from(rng.below(bound)).unwrap_or(u32::MAX)
+    }
+
+    fn random_world(rng: &mut Rng) -> World {
+        let mut world = World::default();
+
+        for _ in 0..rng.below(8).saturating_add(1) {
+            let center = IVec3::new(
+                i32_below(rng, 96).saturating_sub(48),
+                i32_below(rng, 96).saturating_sub(48),
+                i32_below(rng, 96).saturating_sub(48),
+            );
+
+            let extent = IVec3::splat(i32_below(rng, 12).saturating_add(1));
+
+            for dx in 0..extent.x {
+                for dy in 0..extent.y {
+                    for dz in 0..extent.z {
+                        if rng.below(4) == 0 {
+                            continue;
+                        }
+
+                        world.insert_voxel_at(center + IVec3::new(dx, dy, dz), u32_below(rng, 256));
+                    }
+                }
+            }
+        }
+
+        for _ in 0..rng.below(24).saturating_add(1) {
+            let position = IVec3::new(
+                i32_below(rng, 128).saturating_sub(64),
+                i32_below(rng, 128).saturating_sub(64),
+                i32_below(rng, 128).saturating_sub(64),
+            );
+
+            world.insert_voxel_at(position, u32_below(rng, 256));
+        }
+
+        world
+    }
 
     #[test]
     fn mask_bit_convention() {
@@ -144,5 +384,43 @@ mod tests {
         let snapshot = &snapshots[0];
         assert_eq!(snapshot.materials, vec![1, 2, 3, 4]);
         assert_eq!(snapshot.occupied_count(), 4);
+    }
+
+    #[test]
+    fn single_pass_matches_two_pass_oracle_on_random_worlds() {
+        let mut rng = Rng::new(0xC0FFEE);
+
+        for case in 0..64u32 {
+            let world = random_world(&mut rng);
+            assert_eq!(
+                emit_snapshots(&world).unwrap(),
+                emit_snapshots_two_pass(&world).unwrap(),
+                "case {case}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "asset: cargo test --release church_matches_two_pass_oracle -- --ignored --nocapture"]
+    fn church_matches_two_pass_oracle() {
+        let data = dot_vox::load("assets/church.vox").unwrap();
+        let (world, _) = World::new_clipped(&data);
+
+        assert_eq!(
+            emit_snapshots(&world).unwrap(),
+            emit_snapshots_two_pass(&world).unwrap()
+        );
+    }
+
+    #[test]
+    #[ignore = "asset: cargo test --release bistro_matches_two_pass_oracle -- --ignored --nocapture"]
+    fn bistro_matches_two_pass_oracle() {
+        let data = dot_vox::load("assets/bistro.vox").unwrap();
+        let (world, _) = World::new_clipped(&data);
+
+        assert_eq!(
+            emit_snapshots(&world).unwrap(),
+            emit_snapshots_two_pass(&world).unwrap()
+        );
     }
 }
