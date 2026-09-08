@@ -16,7 +16,7 @@
 bool ExternalMemoryHooks::create_vulkan_instance(const VkInstanceCreateInfo *p_vulkan_create_info, VkInstance *r_instance) {
 	VkResult err = vkCreateInstance(p_vulkan_create_info, nullptr, r_instance);
 	if (err != VK_SUCCESS) {
-		ERR_FAIL_V_MSG(false, vformat("ExternalMemoryHooks: vkCreateInstance failed (%d).", (int)err));
+		ERR_FAIL_V_MSG(false, String("ExternalMemoryHooks: vkCreateInstance failed (") + itos(err) + ").");
 	}
 
 	instance = *r_instance;
@@ -38,7 +38,7 @@ bool ExternalMemoryHooks::get_physical_device(VkPhysicalDevice *r_device) {
 	devices.resize(device_count);
 	err = vkEnumeratePhysicalDevices(instance, &device_count, devices.ptr());
 	if (err != VK_SUCCESS) {
-		ERR_FAIL_V_MSG(false, vformat("ExternalMemoryHooks: vkEnumeratePhysicalDevices failed (%d).", (int)err));
+		ERR_FAIL_V_MSG(false, String("ExternalMemoryHooks: vkEnumeratePhysicalDevices failed (") + itos(err) + ").");
 	}
 
 	// The driver collapses enumeration to the single device the hook returns.
@@ -101,7 +101,7 @@ bool ExternalMemoryHooks::create_vulkan_device(const VkDeviceCreateInfo *p_devic
 
 	VkResult err = vkCreateDevice(physical_device, &create_info, nullptr, r_device);
 	if (err != VK_SUCCESS) {
-		ERR_FAIL_V_MSG(false, vformat("ExternalMemoryHooks: vkCreateDevice failed (%d).", (int)err));
+		ERR_FAIL_V_MSG(false, String("ExternalMemoryHooks: vkCreateDevice failed (") + itos(err) + ").");
 	}
 
 	return true;
