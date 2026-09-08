@@ -38,6 +38,7 @@ pub struct RenderContext {
     pub compute_flight_id: Id<Flight>,
 }
 
+#[allow(clippy::too_many_lines)]
 fn create_device(
     instance: &Arc<Instance>,
     presentation: Option<&EventLoop<()>>,

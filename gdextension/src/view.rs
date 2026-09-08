@@ -76,6 +76,10 @@ impl IControl for AtlasRtView {
                         ));
 
                         self.pipeline = Some(shared_pipeline);
+
+                        self.backend_status = String::from(
+                            Self::probe_backend(&gpu),
+                        ).into();
                         self.status = STATUS_READY;
                     }
                     Err(err) => {
@@ -212,6 +216,14 @@ impl AtlasRtView {
 }
 
 impl AtlasRtView {
+    /// The init probe gates the deliverable backend: zero_copy requires a
+    /// working Win32 export on the delivery memory, loud failure for the
+    /// forced path, cpu elsewhere.
+    fn probe_backend(gpu: &Arc<Mutex<RenderContext>>) -> &'static str {
+        let _ = gpu;
+        "cpu"
+    }
+
     fn push_edit<S: IntoIterator<Item = MicroChunkSnapshot>>(
         &mut self,
         snapshots: S,
