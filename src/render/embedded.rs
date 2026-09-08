@@ -14,6 +14,7 @@ use vulkano_taskgraph::{
 };
 
 use vulkano::memory::DeviceMemory;
+use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
     context::RenderContext,
@@ -190,6 +191,12 @@ impl EmbeddedPipeline {
         let physical = self.delivery.physical_id(slot)?;
 
         delivery_memory(&gpu.resources, physical)
+    }
+
+    pub fn slot_image_handle(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<u64> {
+        let image = self.slot_image(gpu, slot)?;
+
+        Ok(image.handle().as_raw())
     }
 
     #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
