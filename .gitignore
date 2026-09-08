@@ -32,3 +32,4 @@ nul
 docs/agents
 *.svg
 .tmp*
+.cargo-home/

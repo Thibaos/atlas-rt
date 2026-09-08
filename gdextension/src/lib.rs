@@ -1,10 +1,11 @@
-use godot::init::ExtensionLibrary;
+use godot::init::{gdextension, ExtensionLibrary};
+
+pub mod view;
+pub mod worker;
 
 struct AtlasExtension;
 
-impl ExtensionLibrary for AtlasExtension {}
+unsafe impl ExtensionLibrary for AtlasExtension {}
 
 #[gdextension]
 unsafe impl ExtensionLibrary for AtlasExtension {}
-
-pub mod view;

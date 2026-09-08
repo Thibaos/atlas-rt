@@ -1,17 +1,20 @@
 use std::sync::{Arc, Mutex};
 
+use godot::classes::{Camera3D, Control, IControl};
 use godot::prelude::*;
 
 use atlas_rt::render::{
     context::RenderContext,
-    embedded::EmbeddedPipeline,
+    embedded::{EmbeddedPipeline, PublishedSlot},
     pipeline::DEFAULT_FOV,
-    world::{
-        format::{get_palette, open_file},
-        grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
-        snapshot::emit_snapshots,
-        World,
-    },
+    region::task::RenderMode,
+};
+
+use atlas_rt::world::{
+    format::{get_palette, open_file},
+    grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
+    snapshot::{emit_snapshots, MicroChunkSnapshot},
+    World,
 };
 
 use crate::worker::{Kick, Worker};
@@ -288,9 +291,11 @@ impl AtlasRtView {
             return Err(format!("coords {} outside the lattice", coords));
         }
 
-        let multiples = coords.x % MICRO_CHUNK_LENGTH == 0
-            && coords.y % MICRO_CHUNK_LENGTH == 0
-            && coords.z % MICRO_CHUNK_LENGTH == 0;
+        let chunk_step = MICRO_CHUNK_LENGTH as i32;
+
+        let multiples = coords.x % chunk_step == 0
+            && coords.y % chunk_step == 0
+            && coords.z % chunk_step == 0;
 
         if !multiples {
             return Err(format!("coords {} not a multiple of 8", coords));

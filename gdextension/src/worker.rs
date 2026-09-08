@@ -27,7 +27,7 @@ struct Mailbox {
 
 impl Mailbox {
     fn kick(&self, kick: Kick) {
-        if self.shutdown.load(Ordering::acquire) {
+        if self.shutdown.load(Ordering::Acquire) {
             return;
         }
 
@@ -43,19 +43,16 @@ impl Mailbox {
                 return Some(kick);
             }
 
-            if self.shutdown.load(Ordering::acquire) {
+            if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
 
-            cell = self.signal.wait(cell).map_or_else(
-                |poisoned| poisoned.into_inner(),
-                Ok,
-            );
+            cell = self.signal.wait(cell).unwrap_or_else(|poisoned| poisoned.into_inner());
         }
     }
 
     fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::release);
+        self.shutdown.store(true, Ordering::Release);
         self.signal.notify_one();
     }
 }
@@ -67,7 +64,9 @@ struct Shared {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().map_or_else(|poisoned| poisoned.into_inner(), Ok)
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub struct Worker {
