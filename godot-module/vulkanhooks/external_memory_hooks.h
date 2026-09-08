@@ -15,9 +15,13 @@ public:
 	virtual bool use_subsampled_images() override;
 
 private:
+	static constexpr const char *EXTERNAL_EXTENSIONS[] = {
+		VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_FENCE_WIN32_EXTENSION_NAME,
+	};
+
 	VkInstance instance = nullptr;
 	VkPhysicalDevice physical_device = nullptr;
-
-	LocalVector<CharString> external_extension_names;
-	LocalVector<const char *> external_extension_pointers;
 };
+
