@@ -50,6 +50,10 @@ fn create_device(
         khr_synchronization2: true,
         khr_shader_clock: true,
         khr_swapchain: presentation.is_some(),
+        khr_external_memory_fd: cfg!(unix),
+        khr_external_memory_win32: cfg!(windows),
+        khr_external_semaphore_win32: cfg!(windows),
+        khr_external_fence_win32: cfg!(windows),
         ..BindlessContext::required_extensions(instance)
     };
 
