@@ -1,5 +1,6 @@
 //! The view node: main-thread coordinator for the embedded pipeline.
 #![allow(
+    clippy::doc_markdown,
     clippy::as_conversions,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -14,7 +15,11 @@
 
 use std::sync::{Arc, Mutex, mpsc};
 
-use godot::classes::{Camera3D, Control, IControl};
+use godot::classes::{
+    Camera3D, Control, IControl, RenderingServer,
+    Texture2Drd,
+    rendering_device::{DataFormat, TextureSamples, TextureType, TextureUsageBits},
+};
 use godot::prelude::*;
 
 use atlas_rt::render::{
@@ -23,11 +28,10 @@ use atlas_rt::render::{
     pipeline::DEFAULT_FOV,
     region::task::RenderMode,
 };
-
 use atlas_rt::world::{
     format::{get_palette, open_file},
     grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
-    snapshot::{emit_snapshots, MicroChunkSnapshot},
+    snapshot::{MicroChunkSnapshot, emit_snapshots},
 };
 
 use crate::worker::{Kick, Worker, lock};
@@ -43,7 +47,6 @@ pub struct AtlasRtView {
     status: i32,
     fov: f32,
     backend_status: GString,
-
     origin: Vector3,
     basis: Basis,
     render_mode: i32,
@@ -51,7 +54,11 @@ pub struct AtlasRtView {
     gpu: Option<Arc<Mutex<RenderContext>>>,
     pipeline: Option<Arc<Mutex<EmbeddedPipeline>>>,
     worker: Option<Worker>,
+
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
+    wrapped_texture: Option<Gd<Texture2Drd>>,
+    scene_texture: Option<Rid>,
+    last_wrapped_frame: Option<u64>,
 
     base: Base<Control>,
 }
@@ -70,6 +77,9 @@ impl IControl for AtlasRtView {
             pipeline: None,
             worker: None,
             worker_publish_in: None,
+            wrapped_texture: None,
+            scene_texture: None,
+            last_wrapped_frame: None,
             base,
         }
     }
@@ -84,7 +94,7 @@ impl IControl for AtlasRtView {
                 let gpu = Arc::new(Mutex::new(context));
 
                 let built = {
-                    let gpu_guard = crate::worker::lock(&gpu);
+                    let gpu_guard = lock(&gpu);
                     EmbeddedPipeline::new(&gpu_guard, [1280, 720])
                 };
 
@@ -100,9 +110,14 @@ impl IControl for AtlasRtView {
                             published_tx,
                         ));
 
-                        self.pipeline = Some(shared_pipeline);
+                        self.pipeline = Some(shared_pipeline.clone());
                         self.worker_publish_in = Some(published_rx);
                         self.status = STATUS_READY;
+
+                        self.backend_status = GString::from(Self::probe_backend(
+                            &gpu,
+                            &shared_pipeline,
+                        ));
                     }
                     Err(err) => {
                         godot_error!("atlas_rt: pipeline init failed: {}", err);
@@ -124,15 +139,44 @@ impl IControl for AtlasRtView {
             return;
         }
 
-        if let Some(worker) = &self.worker {
-            worker.kick(Kick {
-                view_mat: self.view_matrix().to_cols_array(),
-                fov: self.fov,
-                extent: self.viewport_extent(),
-                mode: self.kick_mode(),
-                delta_time: (delta as f32)
-            });
+        let Some(worker) = &self.worker else { return; };
+
+        worker.kick(Kick {
+            view_mat: self.view_matrix().to_cols_array(),
+            fov: self.fov,
+            extent: self.viewport_extent(),
+            mode: self.kick_mode(),
+            delta_time: delta as f32,
+        });
+
+        if let Some(published_in) = &self.worker_publish_in {
+            let mut newest: Option<PublishedSlot> = None;
+
+            while let Ok(slot) = published_in.try_recv() {
+                newest = Some(slot);
+            }
+
+            if let Some(slot) = newest
+                && self.last_wrapped_frame.is_none_or(|prev| prev < slot.frame as u64)
+            {
+                self.last_wrapped_frame = Some(slot.frame as u64);
+                self.hand_off_zero_copy(slot.slot);
+                self.to_gd().queue_redraw();
+            }
         }
+    }
+
+    fn draw(&mut self) {
+        let Some(wrapped) = &self.wrapped_texture else {
+            self.to_gd().draw_rect(
+                Rect2::new(Vector2::ZERO, self.to_gd().get_size()),
+                Color::from_rgba(0.02, 0.02, 0.03, 1.0),
+            );
+
+            return;
+        };
+
+        self.to_gd().draw_texture_rect(wrapped, Rect2::new(Vector2::ZERO, self.to_gd().get_size()), false);
     }
 }
 
@@ -156,6 +200,7 @@ impl AtlasRtView {
     pub fn set_render_mode(&mut self, mode: i32) {
         if !(0..=2).contains(&mode) {
             godot_error!("atlas_rt: render mode {mode} unsupported");
+
             return;
         }
 
@@ -200,15 +245,13 @@ impl AtlasRtView {
         if let Some(gpu_shared) = self.gpu.as_ref() {
             let gpu = lock(gpu_shared);
 
-            match pipeline.upload_palette(
+            if let Err(err) = pipeline.upload_palette(
                 &gpu,
                 get_palette(&voxel_data).map(|color| [color.x, color.y, color.z, 1.0]),
             ) {
-                Ok(()) => {}
-                Err(err) => {
-                    godot_error!("atlas_rt: palette upload failed: {}", err);
-                    return false;
-                }
+                godot_error!("atlas_rt: palette upload failed: {}", err);
+
+                return false;
             }
         }
 
@@ -278,6 +321,81 @@ impl AtlasRtView {
         };
 
         lock(pipeline).input().submit_batch(snapshots).is_ok()
+    }
+
+    /// The init probe gates the deliverable backend: zero_copy requires a
+    /// working Win32 export on the delivery memory, loud failure for the
+    /// forced path, cpu elsewhere.
+    #[must_use]
+    fn probe_backend(
+        gpu: &Arc<Mutex<RenderContext>>,
+        pipeline: &Arc<Mutex<EmbeddedPipeline>>,
+    ) -> &'static str {
+        let pipeline_guard = lock(pipeline);
+
+        let available = match gpu.lock() {
+            Ok(gpu_guard) => {
+                pipeline_guard
+                    .slot_memory(&gpu_guard, 0)
+                    .and_then(|memory| atlas_rt::render::delivery::export_win32_handle(&memory))
+                    .is_ok()
+            }
+            Err(_) => false,
+        };
+
+        if available { "zero_copy" } else { "cpu" }
+    }
+
+    fn hand_off_zero_copy(&mut self, slot: usize) {
+        let Some(gpu) = &self.gpu else { return; };
+
+        let Some(pipeline) = &self.pipeline else { return; };
+
+        let (image_handle, extent) = {
+            let gpu_guard = lock(gpu);
+            let pipeline_guard = lock(pipeline);
+
+            match pipeline_guard.slot_image_handle(&gpu_guard, slot) {
+                Ok(handle) => (handle, pipeline_guard.extent()),
+                Err(err) => {
+                    godot_error!("atlas_rt: slot handle failed: {}", err);
+                    return;
+                }
+            }
+        };
+
+        let Some(mut rd) = RenderingServer::singleton().get_rendering_device()
+        else {
+            return;
+        };
+
+        let mut server = RenderingServer::singleton();
+
+        let rd_texture = rd.texture_create_from_extension(
+            TextureType::TYPE_2D,
+            DataFormat::R16G16B16A16_SFLOAT,
+            TextureSamples::SAMPLES_1,
+            TextureUsageBits::SAMPLING_BIT | TextureUsageBits::STORAGE_BIT,
+            image_handle,
+            u64::from(extent[0]),
+            u64::from(extent[1]),
+            1,
+            1,
+        );
+
+        let scene_texture = server.texture_rd_create(rd_texture);
+
+        let wrapped = self
+            .wrapped_texture
+            .get_or_insert_with(Texture2Drd::new_gd);
+
+        wrapped.set_texture_rd_rid(scene_texture);
+
+        if let Some(old) = self.scene_texture.take() {
+            server.free_rid(old);
+        }
+
+        self.scene_texture = Some(scene_texture);
     }
 
     fn validate_edit(
