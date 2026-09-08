@@ -5,7 +5,5 @@ pub mod worker;
 
 struct AtlasExtension;
 
-unsafe impl ExtensionLibrary for AtlasExtension {}
-
 #[gdextension]
 unsafe impl ExtensionLibrary for AtlasExtension {}

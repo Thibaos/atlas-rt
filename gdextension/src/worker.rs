@@ -1,15 +1,19 @@
-use std::sync::{Arc, Condvar, Mutex, MutexGuard};
-
-use godot::prelude::*;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::{JoinHandle, spawn};
+use std::{
+    sync::{
+        Arc, Condvar, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::{JoinHandle, spawn},
+};
 
 use glam::Mat4;
 
-use atlas_rt::render::context::RenderContext;
-use atlas_rt::render::embedded::{EmbeddedPipeline, PublishedSlot};
-use atlas_rt::render::pipeline::FrameInput;
-use atlas_rt::render::region::task::RenderMode;
+use atlas_rt::render::{
+    context::RenderContext,
+    embedded::{EmbeddedPipeline, PublishedSlot},
+    pipeline::FrameInput,
+    region::task::RenderMode,
+};
 
 pub struct Kick {
     pub view_mat: [f32; 16],
@@ -26,12 +30,20 @@ struct Mailbox {
 }
 
 impl Mailbox {
+    const fn new() -> Self {
+        Self {
+            cell: Mutex::new(None),
+            signal: Condvar::new(),
+            shutdown: AtomicBool::new(false),
+        }
+    }
+
     fn kick(&self, kick: Kick) {
         if self.shutdown.load(Ordering::Acquire) {
             return;
         }
 
-        *lock(&self.cell) = Some(kick);
+        lock(&self.cell).replace(kick);
         self.signal.notify_one();
     }
 
@@ -47,7 +59,10 @@ impl Mailbox {
                 return None;
             }
 
-            cell = self.signal.wait(cell).unwrap_or_else(|poisoned| poisoned.into_inner());
+            cell = self
+                .signal
+                .wait(cell)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
@@ -63,10 +78,10 @@ struct Shared {
     published: Arc<Mutex<Vec<PublishedSlot>>>,
 }
 
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 pub struct Worker {
@@ -81,11 +96,7 @@ impl Worker {
         pipeline: Arc<Mutex<EmbeddedPipeline>>,
         published: Arc<Mutex<Vec<PublishedSlot>>>,
     ) -> Self {
-        let mailbox = Arc::new(Mailbox {
-            cell: Mutex::new(None),
-            signal: Condvar::new(),
-            shutdown: AtomicBool::new(false),
-        });
+        let mailbox = Arc::new(Mailbox::new());
 
         let shared = Arc::new(Shared {
             gpu,
@@ -93,31 +104,31 @@ impl Worker {
             published,
         });
 
-        let thread_shared = shared.clone();
+        let thread_shared = Arc::clone(&shared);
+        let mailbox_handle = Arc::clone(&mailbox);
 
-        let handle = spawn(move || loop {
-            let Some(kick) = mailbox.take() else {
-                break;
-            };
+        let handle = spawn(move || {
+            while let Some(kick) = mailbox_handle.take() {
+                let input = FrameInput {
+                    view: Mat4::from_cols_array(&kick.view_mat),
+                    extent: kick.extent,
+                    fov: kick.fov,
+                    resized: false,
+                    render_mode: kick.mode,
+                    delta_time: kick.delta_time,
+                };
 
-            let input = FrameInput {
-                view: Mat4::from_cols_array(&kick.view_mat),
-                extent: kick.extent,
-                fov: kick.fov,
-                resized: false,
-                render_mode: kick.mode,
-                delta_time: kick.delta_time,
-            };
+                let gpu_guard = lock(&thread_shared.gpu);
+                let mut pipeline_guard = lock(&thread_shared.pipeline);
 
-            let published = lock(&thread_shared.gpu);
-            let mut pipeline = lock(&thread_shared.pipeline);
+                let result = pipeline_guard.run_frame(&gpu_guard, &input).ok().flatten();
 
-            let result = pipeline.run_frame(&published, &input).ok().flatten();
-            drop(pipeline);
-            drop(published);
+                drop(pipeline_guard);
+                drop(gpu_guard);
 
-            if let Some(slot) = result {
-                lock(&thread_shared.published).push(slot);
+                if let Some(slot) = result {
+                    lock(&thread_shared.published).push(slot);
+                }
             }
         });
 
@@ -132,6 +143,7 @@ impl Worker {
         self.mailbox.kick(kick);
     }
 
+    #[must_use]
     pub fn drain(&self) -> Vec<PublishedSlot> {
         lock(&self.shared.published).drain(..).collect()
     }
@@ -145,7 +157,7 @@ impl Drop for Worker {
             let joined = handle.join();
 
             if joined.is_err() {
-                godot_error!("atlas_rt: worker thread panicked");
+                godot::prelude::godot_error!("atlas_rt: worker thread panicked");
             }
         }
     }
