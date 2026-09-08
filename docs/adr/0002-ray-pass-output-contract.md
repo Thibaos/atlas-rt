@@ -13,10 +13,11 @@ t_max = far (10000), so the ray pass clips exactly like the camera.
 
 ## Status
 
-accepted (rendering-core ticket 05, 2026-08-10). **Superseded by
-[0007](0007-path-trace-output-contract.md)** (path-tracing ticket 02,
-2026-08-17) for the app path; the validator's capture path was removed
-with the validation teardown (2026-08-27).
+accepted (rendering-core ticket 05, 2026-08-10). Superseded by
+[0006](0006-offscreen-output-contract.md) (godot-integration ticket 05,
+2026-09-07), which restates the output contract for both sinks; the
+validator's capture path was removed with the validation teardown
+(2026-08-27).
 
 ## Considered Options
 

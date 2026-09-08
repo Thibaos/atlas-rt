@@ -85,6 +85,14 @@ world enqueues, the renderer drains. Coalescing is last-wins per
 Micro-chunk.
 _Avoid_: Event bus, message bus
 
+**World load**:
+The unit of world supply: one .vox source, clipped to the lattice, its
+Micro-chunks queued as Snapshots and its Palette loaded with them. A clear
+empties the loaded world; a load after a clear replaces it. The pipeline
+outlives loads.
+_Avoid_: world streaming (the later incremental form), level (a game-side
+concept)
+
 **Resident region**:
 A Region holding at least one non-empty Micro-chunk: it owns a BLAS, a
 voxel pool, and a TLAS instance. It becomes resident on its first non-empty
@@ -147,24 +155,74 @@ _Avoid_: Sky, empty space
 ## Display path
 
 **Composite**:
-The node that exposes the ray pass's color image to the swapchain: the ACES
+The color pipeline that exposes the ray pass's radiance for display: the ACES
 curve at a fixed identity exposure, gamma, and a one-LSB display dither.
-Debug Render modes paint the swapchain directly and bypass it.
+Standalone it is a taskgraph node writing the swapchain; embedded it is the
+extension's full-rect canvas shader over the Delivery image. Debug Render
+modes paint directly and bypass it.
 _Avoid_: post-processing (beyond exposure/tonemap, out of scope), final pass,
-eye adaptation (the exposure is a constant, not a meter)
+eye adaptation (the exposure is a constant, not a meter), color grade
 
 ## Frame lifecycle
 
 **Frame images**:
-The renderer's extent-bound image set: the ray pass's color output and the
-swapchain's bindless storage views. A resize destroys and recreates them
-together.
+The renderer's extent-bound image set: the ray pass's color images (the
+Delivery images when embedded) and, standalone, the swapchain's bindless
+storage views. A resize destroys and recreates them together.
 _Avoid_: render targets, trace-pass images, G-buffer
 
+**Delivery image**:
+The renderer's exported output in the embedded path: the ray pass's color
+Frame images themselves, three of them (a ring), each carrying
+Win32-exportable memory; the host imports each as a shadow image and samples
+it. Standalone has none (the swapchain plays the role).
+_Avoid_: shared image, handoff texture, export image
+
+**Delivery backend**:
+How a published Delivery image reaches the host in the embedded path:
+zero-copy, where the frame image's memory is exported and the host device
+maps it through a shadow image, or CPU delivery. Picked once per session
+by the Init probe; one set of Frame images serves both (ADR 0005).
+_Avoid_: transport mode, delivery path
+
+**Init probe**:
+The one-time capability test at extension startup that picks the Delivery
+backend for the session: Vulkan RD backend, VK_KHR_external_memory_win32
+among Godot's enabled extensions, export, import, and shadow-image
+creation all succeeding. Capability is the whole engine-build check;
+engine build identity is only a provenance log line.
+_Avoid_: handshake, capability check, startup probe
+
+**CPU delivery**:
+The fallback Delivery backend: the finished Delivery image is read back to
+a host-visible buffer and uploaded as an ImageTexture. Correct on any
+engine; about two 66 MB PCIe crossings per frame at 4K. Entered on a
+failed Init probe or a runtime failure at a frame boundary.
+_Avoid_: fallback mode, software rendering
+
+**Publish**:
+The worker marking a Delivery slot finished: the frame's submission completed
+under the bounded fence wait, covering the exit transition (zero-copy) or the
+readback copy (CPU fallback). The coordinator wraps only published slots.
+_Avoid_: commit, flush, signal
+
+**Wrap**:
+The coordinator adopting the newest published Delivery slot as the sampled
+texture at frame_post_draw. Pause freezes by finding nothing new to wrap; the
+canvas keeps sampling the previous Wrap.
+_Avoid_: swap, flip, handoff
+
+**Rewrite gate**:
+The rule that a Delivery slot is rewritten only three coordinator ticks after
+its Wrap. Godot's own frame-slot stall makes the count sound at
+frame_queue_size 2; it stands in for a cross-device fence, which cannot exist
+through Godot's public RD API.
+_Avoid_: pacing gate, fence gate
+
 **Frame input**:
-What the app reports to the renderer each frame: the player's view, a
-swapchain resize, and a render-mode request. The renderer derives the
-projection itself.
+What the app reports to the renderer each frame: the player's view
+(transform and fov), the render extent, and a render-mode request. The
+renderer derives the projection from the view's fov and the extent.
 _Avoid_: camera update, render parameters
 
 ## Render mode

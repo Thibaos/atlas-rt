@@ -31,3 +31,4 @@ docs/vulkan
 nul
 docs/agents
 *.svg
+.tmp*
