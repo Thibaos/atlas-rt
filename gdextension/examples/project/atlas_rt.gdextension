@@ -1,0 +1,10 @@
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = "4.3"
+
+[libraries]
+
+windows.template_debug.x86_64 = "res://lib/atlas_rt_godot.dll"
+windows.template_release.x86_64 = "res://lib/atlas_rt_godot.dll"
+debug.template_release.x86_64 = "res://lib/atlas_rt_godot.dll"
