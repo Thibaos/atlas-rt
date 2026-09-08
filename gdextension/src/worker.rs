@@ -2,6 +2,7 @@ use std::{
     sync::{
         Arc, Condvar, Mutex, MutexGuard,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     thread::{JoinHandle, spawn},
 };
@@ -72,12 +73,6 @@ impl Mailbox {
     }
 }
 
-struct Shared {
-    gpu: Arc<Mutex<RenderContext>>,
-    pipeline: Arc<Mutex<EmbeddedPipeline>>,
-    published: Arc<Mutex<Vec<PublishedSlot>>>,
-}
-
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
@@ -86,7 +81,6 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 pub struct Worker {
     mailbox: Arc<Mailbox>,
-    shared: Arc<Shared>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -94,17 +88,9 @@ impl Worker {
     pub fn spawn(
         gpu: Arc<Mutex<RenderContext>>,
         pipeline: Arc<Mutex<EmbeddedPipeline>>,
-        published: Arc<Mutex<Vec<PublishedSlot>>>,
+        published_tx: mpsc::Sender<PublishedSlot>,
     ) -> Self {
         let mailbox = Arc::new(Mailbox::new());
-
-        let shared = Arc::new(Shared {
-            gpu,
-            pipeline,
-            published,
-        });
-
-        let thread_shared = Arc::clone(&shared);
         let mailbox_handle = Arc::clone(&mailbox);
 
         let handle = spawn(move || {
@@ -118,34 +104,30 @@ impl Worker {
                     delta_time: kick.delta_time,
                 };
 
-                let gpu_guard = lock(&thread_shared.gpu);
-                let mut pipeline_guard = lock(&thread_shared.pipeline);
+                let gpu_guard = lock(&gpu);
+                let mut pipeline_guard = lock(&pipeline);
 
                 let result = pipeline_guard.run_frame(&gpu_guard, &input).ok().flatten();
 
                 drop(pipeline_guard);
                 drop(gpu_guard);
 
-                if let Some(slot) = result {
-                    lock(&thread_shared.published).push(slot);
+                if let Some(slot) = result
+                    && published_tx.send(slot).is_err()
+                {
+                    return;
                 }
             }
         });
 
         Self {
             mailbox,
-            shared,
             handle: Some(handle),
         }
     }
 
     pub fn kick(&self, kick: Kick) {
         self.mailbox.kick(kick);
-    }
-
-    #[must_use]
-    pub fn drain(&self) -> Vec<PublishedSlot> {
-        lock(&self.shared.published).drain(..).collect()
     }
 }
 
