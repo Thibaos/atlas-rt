@@ -30,15 +30,16 @@ use crate::render::{
 };
 use crate::world::{World, snapshot::emit_snapshots};
 
-const PROJ_FOV: f32 = std::f32::consts::FRAC_PI_2;
+pub const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_2;
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
 
 pub struct FrameInput {
     pub view: Mat4,
+    pub extent: [u32; 2],
+    pub fov: f32,
     pub resized: bool,
-    #[cfg(debug_assertions)]
-    pub next_mode: bool,
+    pub render_mode: RenderMode,
     pub delta_time: f32,
 }
 
@@ -137,7 +138,7 @@ impl FramePipeline {
             .entry_point("main")
             .context("main entry point not found for raygen shader")?;
 
-        let rt_pass = RegionRenderTask::new(gpu, &store, virtual_swapchain_id, &raygen)?;
+        let rt_pass = RegionRenderTask::new(gpu, &store, Some(virtual_swapchain_id), &raygen)?;
         let instance_buffer_id = rt_pass.instance_buffer_id();
 
         let mut rt_node = task_graph.create_task_node("Render", QueueFamilyType::Graphics, rt_pass);
@@ -199,6 +200,7 @@ impl FramePipeline {
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
+            render_extent: [0, 0],
         };
 
         frame_images.bind_into(&mut region);
@@ -266,13 +268,10 @@ impl FramePipeline {
 
         self.store.apply(gpu, &self.input)?;
 
-        #[cfg(debug_assertions)]
-        if input.next_mode {
-            self.region.mode = next_render_mode(self.region.mode);
-        }
+        self.region.mode = input.render_mode;
 
         let aspect = extent.width as f32 / extent.height as f32;
-        let proj = perspective(PROJ_FOV, aspect, PROJ_NEAR, PROJ_FAR);
+        let proj = perspective(input.fov, aspect, PROJ_NEAR, PROJ_FAR);
         self.region.camera = production_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),
             view_inverse: input.view.inverse().to_cols_array_2d(),
@@ -330,7 +329,7 @@ const fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FrameP
 }
 
 #[cfg(debug_assertions)]
-const fn next_render_mode(mode: RenderMode) -> RenderMode {
+pub const fn next_render_mode(mode: RenderMode) -> RenderMode {
     match mode {
         RenderMode::Voxel => RenderMode::Hull,
         RenderMode::Hull => RenderMode::Normal,

@@ -93,9 +93,7 @@ pub mod hull_closest_hit {
 pub enum RenderMode {
     #[default]
     Voxel = 0,
-    #[cfg(debug_assertions)]
     Hull = 1,
-    #[cfg(debug_assertions)]
     Normal = 2,
 }
 
@@ -106,10 +104,11 @@ pub struct RegionRenderContext {
     pub color_image_id: StorageImageId,
     pub delta_time: f32,
     pub mode: RenderMode,
+    pub render_extent: [u32; 2],
 }
 
 pub struct RegionRenderTask {
-    swapchain_id: Id<Swapchain>,
+    swapchain_id: Option<Id<Swapchain>>,
     bindings: RegionBindingsIds,
     shader_binding_table: ShaderBindingTable,
     pipeline: Arc<RayTracingPipeline>,
@@ -120,7 +119,7 @@ impl RegionRenderTask {
     pub fn new(
         gpu: &RenderContext,
         store: &RegionStore,
-        virtual_swapchain_id: Id<Swapchain>,
+        virtual_swapchain_id: Option<Id<Swapchain>>,
         raygen: &EntryPoint,
     ) -> anyhow::Result<Self> {
         let pipeline = {
@@ -160,6 +159,7 @@ impl RegionRenderTask {
             pipeline,
             _blases: store.blases(),
         })
+
     }
 
     pub const fn instance_buffer_id(&self) -> Id<Buffer> {
@@ -301,28 +301,35 @@ impl Task for RegionRenderTask {
         tcx: &mut TaskContext<'_>,
         rcx: &Self::World,
     ) -> TaskResult {
-        let swapchain_state = tcx.swapchain(self.swapchain_id);
+        let (image_id, extent) = match self.swapchain_id {
+            None => (rcx.color_image_id, [rcx.render_extent[0], rcx.render_extent[1], 1]),
+            Some(swapchain_id) => {
+                let swapchain_state = tcx.swapchain(swapchain_id);
 
-        let Some(image_index) = swapchain_state.current_image_index() else {
-            eprintln!("swapchain has no current image");
-            return Ok(());
-        };
+                let Some(image_index) = swapchain_state.current_image_index() else {
+                    eprintln!("swapchain has no current image");
+                    return Ok(());
+                };
 
-        let Ok(image_index) = usize::try_from(image_index) else {
-            eprintln!("swapchain image index does not fit usize");
-            return Ok(());
-        };
+                let Ok(image_index) = usize::try_from(image_index) else {
+                    eprintln!("swapchain image index does not fit usize");
+                    return Ok(());
+                };
 
-        let Some(swapchain_first_image) = swapchain_state.images().first() else {
-            eprintln!("swapchain has no images");
-            return Ok(());
-        };
+                let Some(swapchain_first_image) = swapchain_state.images().first() else {
+                    eprintln!("swapchain has no images");
+                    return Ok(());
+                };
 
-        let extent = swapchain_first_image.extent();
+                let extent = swapchain_first_image.extent();
 
-        let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index) else {
-            eprintln!("no storage image bound for the current swapchain image");
-            return Ok(());
+                let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index) else {
+                    eprintln!("no storage image bound for the current swapchain image");
+                    return Ok(());
+                };
+
+                (*image_id, extent)
+            }
         };
 
         unsafe { cbf.update_buffer(self.bindings.camera_buffer, 0, &rcx.camera) };
@@ -347,7 +354,7 @@ impl Task for RegionRenderTask {
                 self.pipeline.layout(),
                 0,
                 &production_raygen::RegionPushConstants {
-                    image_id: *image_id,
+                    image_id,
                     acceleration_structure_id: self.bindings.acceleration_structure,
                     camera_buffer_id: self.bindings.camera_storage,
                     palette_buffer_id: self.bindings.palette_storage,

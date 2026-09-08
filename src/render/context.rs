@@ -40,7 +40,7 @@ pub struct RenderContext {
 
 fn create_device(
     instance: &Arc<Instance>,
-    event_loop: &EventLoop<()>,
+    presentation: Option<&EventLoop<()>>,
 ) -> anyhow::Result<(Arc<Device>, Vec<Arc<Queue>>)> {
     let device_extensions = DeviceExtensions {
         khr_acceleration_structure: true,
@@ -49,7 +49,7 @@ fn create_device(
         khr_ray_tracing_pipeline: true,
         khr_synchronization2: true,
         khr_shader_clock: true,
-        khr_swapchain: true,
+        khr_swapchain: presentation.is_some(),
         ..BindlessContext::required_extensions(instance)
     };
 
@@ -83,7 +83,12 @@ fn create_device(
                 .position(|(i, q)| {
                     u32::try_from(i).is_ok_and(|queue_family_index| {
                         q.queue_flags.intersects(QueueFlags::GRAPHICS)
-                            && p.presentation_support(queue_family_index, event_loop)
+                            && match &presentation {
+                                Some(event_loop) => {
+                                    p.presentation_support(queue_family_index, event_loop)
+                                }
+                                None => true,
+                            }
                     })
                 })
                 .map(|i| (p, u32::try_from(i)))
@@ -96,7 +101,7 @@ fn create_device(
             PhysicalDeviceType::Other => 4,
             _ => 5,
         })
-        .context("no physical device with graphics and presentation support")?;
+        .context("no physical device with graphics support")?;
 
     let compute_family_index = u32::try_from(
         physical_device
@@ -165,8 +170,31 @@ impl RenderContext {
             },
         )?;
 
-        let (device, queues) = create_device(&instance, event_loop)?;
+        let (device, queues) = create_device(&instance, Some(event_loop))?;
 
+        Self::from_queues(instance, device, queues)
+    }
+
+    pub fn new_headless() -> anyhow::Result<Self> {
+        let library = unsafe { VulkanLibrary::new() }?;
+        let instance = Instance::new(
+            &library,
+            &InstanceCreateInfo {
+                flags: InstanceCreateFlags::ENUMERATE_PORTABILITY,
+                ..InstanceCreateInfo::default()
+            },
+        )?;
+
+        let (device, queues) = create_device(&instance, None)?;
+
+        Self::from_queues(instance, device, queues)
+    }
+
+    fn from_queues(
+        instance: Arc<Instance>,
+        device: Arc<Device>,
+        queues: Vec<Arc<Queue>>,
+    ) -> anyhow::Result<Self> {
         let mut queues_iter = queues.into_iter();
 
         let graphics_queue = queues_iter

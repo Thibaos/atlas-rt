@@ -24,10 +24,9 @@ use crate::{
         player::PlayerController,
         schedule::ScheduleController,
     },
-    render::{
-        context::RenderContext,
-        pipeline::{FrameInput, FramePipeline},
-    },
+    render::pipeline::{FrameInput, FramePipeline, DEFAULT_FOV, next_render_mode},
+    render::region::task::RenderMode,
+    render::context::RenderContext,
     world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
 };
 
@@ -49,6 +48,8 @@ pub struct App {
 
     log_frames: u16,
     log_since: Instant,
+
+    render_mode: RenderMode,
 
     window: Option<Arc<Window>>,
     pipeline: Option<FramePipeline>,
@@ -98,6 +99,8 @@ impl App {
 
             log_frames: 0u16,
             log_since: Instant::now(),
+
+            render_mode: RenderMode::default(),
 
             voxel_data,
             world,
@@ -223,17 +226,27 @@ impl ApplicationHandler for App {
                 let view = self.player_view();
 
                 let resized = std::mem::take(&mut self.resize_pending);
+
                 #[cfg(debug_assertions)]
-                let next_mode = std::mem::take(&mut self.mode_toggle_pending);
+                if std::mem::take(&mut self.mode_toggle_pending) {
+                    self.render_mode = next_render_mode(self.render_mode);
+                }
+
+                let extent = self.window.as_ref().map(|w| w.inner_size());
+
+                let view_extent: [u32; 2] = extent.map_or([0, 0], |extent| {
+                    [extent.width, extent.height]
+                });
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(
                         &self.gpu,
                         &FrameInput {
                             view,
+                            extent: view_extent,
+                            fov: DEFAULT_FOV,
                             resized,
-                            #[cfg(debug_assertions)]
-                            next_mode,
+                            render_mode: self.render_mode,
                             delta_time: self.delta_time.as_secs_f32(),
                         },
                     ) {

@@ -244,6 +244,7 @@ mod tests {
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
+            render_extent: [0, 0],
         }
     }
 

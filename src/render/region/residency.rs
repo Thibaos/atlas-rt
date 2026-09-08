@@ -84,6 +84,7 @@ pub struct RegionBindingsIds {
 
 pub struct RegionStore {
     pub bindings: RegionBindingsIds,
+    palette_buffer_id: Id<Buffer>,
     region_table_buffer_id: Id<Buffer>,
     aabb_table_buffer_id: Id<Buffer>,
     instances: Vec<AccelerationStructureInstance>,
@@ -100,21 +101,18 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
-    pub fn new(
-        gpu: &RenderContext,
-        voxel_data: &DotVoxData,
-        input: &RendererInput,
-    ) -> anyhow::Result<Self> {
+    pub fn new_empty(gpu: &RenderContext) -> anyhow::Result<Self> {
         let buffers = create_scene_buffers(gpu)?;
         let (tlas, tlas_storage_size) = create_tlas(gpu, buffers.instance)?;
         let dummy_blas = create_dummy_blas(gpu)?;
 
-        upload_initial_globals(gpu, &buffers, voxel_data)?;
+        upload_default_globals(gpu, &buffers)?;
 
         let bindings = create_bindings(gpu, &buffers, &tlas)?;
 
         let mut store = Self {
             bindings,
+            palette_buffer_id: buffers.palette,
             region_table_buffer_id: buffers.region_table,
             aabb_table_buffer_id: buffers.aabb_table,
             instances: static_instances()?,
@@ -129,6 +127,24 @@ impl RegionStore {
             dummy_blas,
             alloc_stats: AllocStats::default(),
         };
+
+        store.ensure_tlas_initialized(gpu)?;
+        store.write_aabb_table(gpu, buffers.aabb_table)?;
+
+        Ok(store)
+    }
+
+    pub fn new(
+        gpu: &RenderContext,
+        voxel_data: &DotVoxData,
+        input: &RendererInput,
+    ) -> anyhow::Result<Self> {
+        let mut store = Self::new_empty(gpu)?;
+
+        store.upload_palette(
+            gpu,
+            get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]),
+        )?;
 
         input.wait_until_idle()?;
 
@@ -145,10 +161,15 @@ impl RegionStore {
             "the initial batch only creates residency"
         );
 
-        store.ensure_tlas_initialized(gpu)?;
-        store.write_aabb_table(gpu, buffers.aabb_table)?;
-
         Ok(store)
+    }
+
+    pub fn upload_palette(
+        &self,
+        gpu: &RenderContext,
+        colors: [[f32; 4]; 256],
+    ) -> anyhow::Result<()> {
+        upload_palette_colors(gpu, self.palette_buffer_id, colors)
     }
 
     fn write_aabb_table(
@@ -881,12 +902,11 @@ fn create_tlas(
     )
 }
 
-fn upload_initial_globals(
+fn upload_default_globals(
     gpu: &RenderContext,
     buffers: &SceneBuffers,
-    voxel_data: &DotVoxData,
 ) -> anyhow::Result<()> {
-    let palette = get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]);
+    let default_palette = [[0.0; 4]; 256];
 
     unsafe {
         vulkano_taskgraph::execute(
@@ -895,7 +915,9 @@ fn upload_initial_globals(
             gpu.graphics_flight_id,
             |_cbf, tcx| {
                 *tcx.write_buffer::<production_raygen::Palette>(buffers.palette, ..) =
-                    production_raygen::Palette { colors: palette };
+                    production_raygen::Palette {
+                        colors: default_palette,
+                    };
                 *tcx.write_buffer::<production_raygen::Scene>(buffers.scene, ..) = default_scene();
                 Ok(())
             },
@@ -903,6 +925,32 @@ fn upload_initial_globals(
                 (buffers.palette, HostAccessType::Write),
                 (buffers.scene, HostAccessType::Write),
             ],
+            [],
+            [],
+        )?;
+    }
+
+    gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
+
+    Ok(())
+}
+
+fn upload_palette_colors(
+    gpu: &RenderContext,
+    palette_buffer_id: Id<Buffer>,
+    colors: [[f32; 4]; 256],
+) -> anyhow::Result<()> {
+    unsafe {
+        vulkano_taskgraph::execute(
+            &gpu.transfer_queue,
+            &gpu.resources,
+            gpu.graphics_flight_id,
+            |_cbf, tcx| {
+                *tcx.write_buffer::<production_raygen::Palette>(palette_buffer_id, ..) =
+                    production_raygen::Palette { colors };
+                Ok(())
+            },
+            [(palette_buffer_id, HostAccessType::Write)],
             [],
             [],
         )?;
