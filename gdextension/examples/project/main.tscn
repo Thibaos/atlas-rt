@@ -1,11 +1,16 @@
 [gd_scene format=3 uid="uid://b1idham0c2n4d"]
 
 [ext_resource type="Script" uid="uid://b6i2vx0jqn3q7" path="res://main.gd" id="1_main"]
-[ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://camera_3d.gd" id="2_0xm2m"]
+[ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://fly_camera.gd" id="2_0xm2m"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
 
 [node name="Main" type="Node2D" unique_id=756664440]
 script = ExtResource("1_main")
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=833197557]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 40)
+[node name="player" type="CharacterBody3D" parent="." unique_id=276233651]
 script = ExtResource("2_0xm2m")
+fly_speed = 200.0
+
+[node name="collider" type="CollisionShape3D" parent="player" unique_id=1681754065]
+shape = SubResource("BoxShape3D_hjdlg")
