@@ -11,7 +11,7 @@ use glam::Mat4;
 
 use atlas_rt::render::{
     context::RenderContext,
-    embedded::{EmbeddedPipeline, PublishedSlot},
+    embedded::{EmbeddedPipeline, PublishedSlot, WrapLedger},
     pipeline::FrameInput,
     region::task::RenderMode,
 };
@@ -22,6 +22,7 @@ pub struct Kick {
     pub extent: [u32; 2],
     pub mode: RenderMode,
     pub delta_time: f32,
+    pub ledger: WrapLedger,
 }
 
 struct Mailbox {
@@ -107,7 +108,19 @@ impl Worker {
                 let gpu_guard = lock(&gpu);
                 let mut pipeline_guard = lock(&pipeline);
 
-                let result = pipeline_guard.run_frame(&gpu_guard, &input).ok().flatten();
+                let result = pipeline_guard.run_frame(&gpu_guard, &input, &kick.ledger);
+
+                let result = match result {
+                    Ok(Some(slot)) => Some(slot),
+                    Ok(None) => None,
+                    Err(error) => {
+                        // Not godot_error!: the worker thread must not call
+                        // into the engine; stderr shows in the console.
+                        eprintln!("atlas_rt: frame failed: {error:#}");
+
+                        None
+                    }
+                };
 
                 drop(pipeline_guard);
                 drop(gpu_guard);

@@ -14,6 +14,8 @@ public:
 	virtual void get_fragment_density_offsets(LocalVector<VkOffset2D> &r_offsets, const Vector2i &p_granularity) override;
 	virtual bool use_subsampled_images() override;
 
+	VkDevice get_vulkan_device() const { return captured_device; }
+
 private:
 	static constexpr const char *EXTERNAL_EXTENSIONS[] = {
 		VK_KHR_EXTERNAL_MEMORY_WIN32_EXTENSION_NAME,
@@ -23,5 +25,6 @@ private:
 
 	VkInstance instance = nullptr;
 	VkPhysicalDevice physical_device = nullptr;
+	VkDevice captured_device = nullptr;
 };
 

@@ -30,6 +30,17 @@ use crate::render::{
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
 
+/// A delivery slot may be rewritten only this many coordinator ticks after
+/// its last wrap (CONTEXT.md: rewrite gate).
+pub const REWRITE_GATE_TICKS: u64 = 3;
+
+/// The coordinator's wrap record handed to the frame path.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WrapLedger {
+    pub wraps: [Option<u64>; SLOT_COUNT],
+    pub tick: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct PublishedSlot {
     pub slot: usize,
@@ -64,6 +75,106 @@ fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Ca
         proj_inverse: proj.inverse().to_cols_array_2d(),
         view_inverse: input.inverse().to_cols_array_2d(),
     }
+}
+
+fn slot_storage_ids(
+    gpu: &RenderContext,
+    delivery: &DeliveryRing,
+) -> anyhow::Result<Vec<StorageImageId>> {
+    (0..SLOT_COUNT)
+        .map(|slot| {
+            let physical = delivery.physical_id(slot)?;
+            let image = gpu.resources.image(physical).image().clone();
+            let view = ImageView::new_default(&image)?;
+
+            let bcx = gpu
+                .resources
+                .bindless_context()
+                .context("bindless context not found")?;
+
+            Ok::<StorageImageId, anyhow::Error>(
+                bcx.global_set()
+                    .add_storage_image(view, ImageLayout::General),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{REWRITE_GATE_TICKS, WrapLedger, gated_slot};
+    use crate::render::delivery::SLOT_COUNT;
+
+    fn ledger(wraps: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapLedger {
+        WrapLedger { wraps, tick }
+    }
+
+    #[test]
+    fn never_wrapped_slots_start_eligible() {
+        assert_eq!(gated_slot(0, &ledger([None; SLOT_COUNT], 0)), Some(0));
+    }
+
+    #[test]
+    fn the_ring_slot_waits_full_gate_even_fresh() {
+        let ledger = ledger([Some(0), None, None], REWRITE_GATE_TICKS - 1);
+
+        assert_eq!(gated_slot(0, &ledger), Some(1));
+        assert_eq!(gated_slot(1, &ledger), Some(1));
+    }
+
+    #[test]
+    fn the_gate_opens_on_the_third_tick() {
+        let wrap_ledger = ledger([Some(0), None, None], REWRITE_GATE_TICKS);
+
+        assert_eq!(gated_slot(0, &wrap_ledger), Some(0));
+    }
+
+    #[test]
+    fn every_recently_wrapped_slot_skips_the_frame() {
+        let wrap_ledger = ledger([Some(9), Some(9), Some(9)], 10);
+
+        assert_eq!(gated_slot(1, &wrap_ledger), None);
+    }
+}
+
+/// The delivery slot the frame writes: the ring slot if the rewrite gate lets
+/// it, else an eligible slot, preferring a never-wrapped slot and then the
+/// oldest wrap. `None` when every slot is still inside the gate; a rotating
+/// wrap schedule never reaches that (SLOT_COUNT == REWRITE_GATE_TICKS == 3).
+fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
+    let eligible = |slot: usize| -> bool {
+        ledger.wraps
+            .get(slot)
+            .copied()
+            .flatten()
+            .is_none_or(|wrap| ledger.tick >= wrap + REWRITE_GATE_TICKS)
+    };
+
+    if eligible(bind) {
+        return Some(bind);
+    }
+
+    let mut fallback_slot = None;
+    let mut oldest_wrap = None;
+
+    for (slot, wrap) in ledger.wraps.iter().enumerate() {
+        if !eligible(slot) {
+            continue;
+        }
+
+        fallback_slot.get_or_insert(slot);
+
+        match (wrap, oldest_wrap) {
+            (Some(tick), Some((_, oldest))) if *tick < oldest => {
+                oldest_wrap = Some((slot, *tick));
+            }
+            (Some(tick), None) => oldest_wrap = Some((slot, *tick)),
+            _ => {}
+        }
+    }
+
+    oldest_wrap
+        .map_or(fallback_slot, |(slot, _)| Some(slot))
 }
 
 impl EmbeddedPipeline {
@@ -117,23 +228,7 @@ impl EmbeddedPipeline {
             })
         }?;
 
-        let storage_ids = (0..SLOT_COUNT)
-            .map(|slot| {
-                let physical = delivery.physical_id(slot)?;
-                let image = gpu.resources.image(physical).image().clone();
-                let view = ImageView::new_default(&image)?;
-
-                let bcx = gpu
-                    .resources
-                    .bindless_context()
-                    .context("bindless context not found")?;
-
-                Ok::<StorageImageId, anyhow::Error>(
-                    bcx.global_set()
-                        .add_storage_image(view, ImageLayout::General),
-                )
-            })
-            .collect::<anyhow::Result<Vec<_>>>()?;
+        let storage_ids = slot_storage_ids(gpu, &delivery)?;
 
         let region = RegionRenderContext {
             camera: production_raygen::Camera {
@@ -204,6 +299,7 @@ impl EmbeddedPipeline {
         &mut self,
         gpu: &RenderContext,
         input: &FrameInput,
+        ledger: &WrapLedger,
     ) -> anyhow::Result<Option<PublishedSlot>> {
         let extent = [input.extent[0], input.extent[1]];
 
@@ -212,7 +308,20 @@ impl EmbeddedPipeline {
         }
 
         if extent != self.delivery.extent() {
+            gpu.resources
+                .flight(gpu.graphics_flight_id)
+                .wait_idle()?;
+
+            let mut batch = gpu.resources.create_deferred_batch();
+
+            for storage_id in &self.storage_ids {
+                batch.destroy_storage_image(*storage_id);
+            }
+
+            batch.enqueue();
+
             self.delivery.recreate(gpu, extent)?;
+            self.storage_ids = slot_storage_ids(gpu, &self.delivery)?;
         }
 
         gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
@@ -224,7 +333,11 @@ impl EmbeddedPipeline {
         self.region.render_extent = extent;
         self.region.camera = projection(&input.view, input.fov, extent);
 
-        let slot = bind_slot(self.frame);
+        let bind = bind_slot(self.frame);
+
+        let Some(slot) = gated_slot(bind, ledger) else {
+            return Ok(None);
+        };
 
         self.region.color_image_id = self
             .storage_ids
@@ -243,7 +356,7 @@ impl EmbeddedPipeline {
         }
 
         let published = PublishedSlot {
-            slot: bind_slot(self.frame),
+            slot,
             extent,
             frame: self.frame,
         };

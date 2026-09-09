@@ -2,13 +2,19 @@
 ///
 /// Panics if `path` cannot be read or parsed as a `.vox` file.
 pub fn open_file(path: &str) -> dot_vox::DotVoxData {
-    let vox_data =
-        dot_vox::load(path).unwrap_or_else(|error| panic!("could not load {path}: {error}"));
+    let bytes = std::fs::read(path)
+        .unwrap_or_else(|error| panic!("could not read {path}: {error}"));
+
+    open_bytes(&bytes).unwrap_or_else(|error| panic!("could not load {path}: {error}"))
+}
+
+pub fn open_bytes(bytes: &[u8]) -> Result<dot_vox::DotVoxData, &'static str> {
+    let data = dot_vox::load_bytes(bytes)?;
 
     #[cfg(debug_assertions)]
-    assert!(vox_data.palette.len() <= 256);
+    assert!(data.palette.len() <= 256);
 
-    vox_data
+    Ok(data)
 }
 
 pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {

@@ -4,16 +4,18 @@ use std::sync::Arc;
 use vulkano::{
     VulkanError,
     ash::vk,
-    device::{Device, DeviceOwned},
-    memory::DeviceMemory,
+    device::DeviceOwned,
     format::Format,
     image::{Image, ImageCreateInfo, ImageType, ImageUsage, sys::RawImage},
     memory::{
         DedicatedAllocation, ExternalMemoryHandleType, ExternalMemoryHandleTypes,
-        MemoryAllocateInfo, MemoryPropertyFlags, ResourceMemory,
+        MemoryAllocateInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory,
     },
     VulkanObject,
 };
+
+pub use vulkano::memory::DeviceMemory;
+
 use vulkano_taskgraph::{Id, resource::Resources};
 
 use crate::render::context::RenderContext;
@@ -44,22 +46,29 @@ fn delivery_create_info(extent: [u32; 2]) -> ImageCreateInfo<'static> {
         format: DELIVERY_FORMAT,
         extent: slot_extent(extent),
         usage: delivery_usage(),
+        external_memory_handle_types: export_handle_types(),
         ..ImageCreateInfo::default()
     }
 }
 
-fn device_local_memory_type_indices(device: &Device) -> Vec<u32> {
-    let types = &device.physical_device().memory_properties().memory_types;
+fn exportable_memory_type_indices(
+    gpu: &RenderContext,
+    requirements: &MemoryRequirements,
+) -> Vec<u32> {
+    let types = &gpu.device.physical_device().memory_properties().memory_types;
 
     types
         .iter()
         .enumerate()
-        .filter(|(_, memory_type)| {
-            memory_type
+        .filter_map(|(index, memory_type)| {
+            let index = u32::try_from(index).ok()?;
+
+            (memory_type
                 .property_flags
                 .intersects(MemoryPropertyFlags::DEVICE_LOCAL)
+                && requirements.memory_type_bits & 1_u32.checked_shl(index).unwrap_or(0) != 0)
+                .then(|| index)
         })
-        .filter_map(|(index, _)| u32::try_from(index).ok())
         .collect()
 }
 
@@ -84,7 +93,7 @@ fn allocate_slot(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Arc<Im
 
     let mut memory = None;
 
-    for index in device_local_memory_type_indices(&gpu.device) {
+    for index in exportable_memory_type_indices(gpu, &requirements) {
         let allocate_info = MemoryAllocateInfo {
             allocation_size: requirements.layout.size(),
             memory_type_index: index,

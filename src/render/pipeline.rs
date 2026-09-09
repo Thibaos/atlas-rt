@@ -328,7 +328,6 @@ const fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FrameP
     }
 }
 
-#[cfg(debug_assertions)]
 pub const fn next_render_mode(mode: RenderMode) -> RenderMode {
     match mode {
         RenderMode::Voxel => RenderMode::Hull,

@@ -15,21 +15,18 @@
 
 use std::sync::{Arc, Mutex, mpsc};
 
-use godot::classes::{
-    Camera3D, Control, IControl, RenderingServer,
-    Texture2Drd,
-    rendering_device::{DataFormat, TextureSamples, TextureType, TextureUsageBits},
-};
+use godot::classes::{Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, Texture2Drd};
 use godot::prelude::*;
 
 use atlas_rt::render::{
     context::RenderContext,
-    embedded::{EmbeddedPipeline, PublishedSlot},
+    delivery::{DeviceMemory, SLOT_COUNT},
+    embedded::{EmbeddedPipeline, PublishedSlot, WrapLedger},
     pipeline::DEFAULT_FOV,
     region::task::RenderMode,
 };
 use atlas_rt::world::{
-    format::{get_palette, open_file},
+    format::{get_palette, open_bytes},
     grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
     snapshot::{MicroChunkSnapshot, emit_snapshots},
 };
@@ -46,7 +43,6 @@ const REJECT: &str = "atlas_rt: rejected input: ";
 pub struct AtlasRtView {
     status: i32,
     fov: f32,
-    backend_status: GString,
     origin: Vector3,
     basis: Basis,
     render_mode: i32,
@@ -57,8 +53,8 @@ pub struct AtlasRtView {
 
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
     wrapped_texture: Option<Gd<Texture2Drd>>,
-    scene_texture: Option<Rid>,
-    last_wrapped_frame: Option<u64>,
+    wrapped_at: [Option<u64>; SLOT_COUNT],
+    tick: u64,
 
     base: Base<Control>,
 }
@@ -69,7 +65,6 @@ impl IControl for AtlasRtView {
         Self {
             status: STATUS_LOADING,
             fov: DEFAULT_FOV,
-            backend_status: GString::from("cpu"),
             origin: Vector3::ZERO,
             basis: Basis::IDENTITY,
             render_mode: 0,
@@ -78,8 +73,8 @@ impl IControl for AtlasRtView {
             worker: None,
             worker_publish_in: None,
             wrapped_texture: None,
-            scene_texture: None,
-            last_wrapped_frame: None,
+            wrapped_at: [None; SLOT_COUNT],
+            tick: 0,
             base,
         }
     }
@@ -89,13 +84,21 @@ impl IControl for AtlasRtView {
             godot::classes::control::LayoutPreset::FULL_RECT,
         );
 
+        self.match_viewport_size();
+
         match RenderContext::new_headless() {
             Ok(context) => {
                 let gpu = Arc::new(Mutex::new(context));
 
                 let built = {
                     let gpu_guard = lock(&gpu);
-                    EmbeddedPipeline::new(&gpu_guard, [1280, 720])
+                    let extent = self.viewport_extent();
+
+                    EmbeddedPipeline::new(&gpu_guard, if extent == [0, 0] {
+                        [1280, 720]
+                    } else {
+                        extent
+                    })
                 };
 
                 match built {
@@ -114,10 +117,19 @@ impl IControl for AtlasRtView {
                         self.worker_publish_in = Some(published_rx);
                         self.status = STATUS_READY;
 
-                        self.backend_status = GString::from(Self::probe_backend(
-                            &gpu,
-                            &shared_pipeline,
-                        ));
+                        if let Err(probe) = Self::probe_backend(&gpu, &shared_pipeline) {
+                            godot_error!("atlas_rt: init probe failed: {}", probe);
+                            self.status = STATUS_FAILED;
+                        } else {
+                            Signal::from_object_signal(
+                                &RenderingServer::singleton(),
+                                "frame_post_draw",
+                            )
+                            .connect(&Callable::from_object_method(
+                                &self.to_gd(),
+                                "on_frame_post_draw",
+                            ));
+                        }
                     }
                     Err(err) => {
                         godot_error!("atlas_rt: pipeline init failed: {}", err);
@@ -139,6 +151,8 @@ impl IControl for AtlasRtView {
             return;
         }
 
+        self.match_viewport_size();
+
         let Some(worker) = &self.worker else { return; };
 
         worker.kick(Kick {
@@ -147,23 +161,11 @@ impl IControl for AtlasRtView {
             extent: self.viewport_extent(),
             mode: self.kick_mode(),
             delta_time: delta as f32,
+            ledger: WrapLedger {
+                wraps: self.wrapped_at,
+                tick: self.tick,
+            },
         });
-
-        if let Some(published_in) = &self.worker_publish_in {
-            let mut newest: Option<PublishedSlot> = None;
-
-            while let Ok(slot) = published_in.try_recv() {
-                newest = Some(slot);
-            }
-
-            if let Some(slot) = newest
-                && self.last_wrapped_frame.is_none_or(|prev| prev < slot.frame as u64)
-            {
-                self.last_wrapped_frame = Some(slot.frame as u64);
-                self.hand_off_zero_copy(slot.slot);
-                self.to_gd().queue_redraw();
-            }
-        }
     }
 
     fn draw(&mut self) {
@@ -182,6 +184,37 @@ impl IControl for AtlasRtView {
 
 #[godot_api]
 impl AtlasRtView {
+    /// The Wrap point per CONTEXT.md: the coordinator adopts the newest
+    /// published slot once Godot has finished drawing the frame, and the
+    /// rewrite gate counts its ticks from here.
+    #[func]
+    pub fn on_frame_post_draw(&mut self) {
+        if self.status != STATUS_READY {
+            return;
+        }
+
+        self.tick += 1;
+
+        let Some(published_in) = &self.worker_publish_in else {
+            return;
+        };
+
+        let mut newest: Option<PublishedSlot> = None;
+
+        while let Ok(slot) = published_in.try_recv() {
+            newest = Some(slot);
+        }
+
+        if let Some(PublishedSlot { slot, .. }) = newest
+            && let Some(entry) = self.wrapped_at.get_mut(slot)
+            && entry.is_none_or(|prev| prev < self.tick)
+        {
+            *entry = Some(self.tick);
+            self.hand_off_zero_copy(slot);
+            self.to_gd().queue_redraw();
+        }
+    }
+
     #[func]
     pub fn set_camera(&mut self, camera: Gd<Camera3D>) {
         let camera = camera.get_global_transform();
@@ -219,7 +252,19 @@ impl AtlasRtView {
 
         let pipeline = lock(pipeline);
 
-        let voxel_data = open_file(&path.to_string());
+        let vox_bytes = FileAccess::get_file_as_bytes(&path);
+
+        if vox_bytes.is_empty() {
+            godot_error!("atlas_rt: could not open {path}");
+
+            return false;
+        }
+
+        let Ok(voxel_data) = open_bytes(vox_bytes.as_slice()) else {
+            godot_error!("atlas_rt: could not parse {path}");
+
+            return false;
+        };
 
         let (world, clipped) = atlas_rt::world::World::new_clipped(&voxel_data);
 
@@ -281,6 +326,11 @@ impl AtlasRtView {
 }
 
 impl AtlasRtView {
+    #[allow(clippy::needless_pass_by_ref_mut)]
+    fn match_viewport_size(&mut self) {
+        self.to_gd().set_size(self.to_gd().get_viewport_rect().size);
+    }
+
     fn kick_mode(&self) -> RenderMode {
         match self.render_mode {
             1 => RenderMode::Hull,
@@ -323,27 +373,76 @@ impl AtlasRtView {
         lock(pipeline).input().submit_batch(snapshots).is_ok()
     }
 
-    /// The init probe gates the deliverable backend: zero_copy requires a
-    /// working Win32 export on the delivery memory, loud failure for the
-    /// forced path, cpu elsewhere.
-    #[must_use]
+    /// The Init probe per CONTEXT.md: the whole engine-build check. Export on
+    /// the delivery memory, then import + shadow-image creation on Godot's
+    /// device through the bridge (a fourth, non-delivery slot), retired
+    /// immediately. Any failure is loud: without the zero_copy backend the
+    /// session delivers nothing.
     fn probe_backend(
         gpu: &Arc<Mutex<RenderContext>>,
         pipeline: &Arc<Mutex<EmbeddedPipeline>>,
-    ) -> &'static str {
-        let pipeline_guard = lock(pipeline);
+    ) -> Result<(), String> {
+        let mut bridge = Self::bridge()?;
 
-        let available = match gpu.lock() {
-            Ok(gpu_guard) => {
-                pipeline_guard
-                    .slot_memory(&gpu_guard, 0)
-                    .and_then(|memory| atlas_rt::render::delivery::export_win32_handle(&memory))
-                    .is_ok()
-            }
-            Err(_) => false,
-        };
+        let memory = {
+            let pipeline_guard = lock(pipeline);
 
-        if available { "zero_copy" } else { "cpu" }
+            let gpu_guard = gpu
+                .lock()
+                .map_err(|_| String::from("gpu mutex poisoned"))?;
+
+            pipeline_guard
+                .slot_memory(&gpu_guard, 0)
+                .map_err(|err| format!("slot memory failed: {err:#}"))
+        }?;
+
+        let extent = lock(pipeline).extent();
+
+        Self::create_bridge_image(&mut bridge, SLOT_COUNT, &memory, extent)?;
+
+        bridge.call("release_all", &[]);
+
+        Ok(())
+    }
+
+    fn bridge() -> Result<Gd<Object>, String> {
+        Engine::singleton().get_singleton("VulkanHooksBridge").ok_or_else(|| {
+            String::from("VulkanHooksBridge singleton missing (engine module not loaded?)")
+        })
+    }
+
+    fn create_bridge_image(
+        bridge: &mut Gd<Object>,
+        slot: usize,
+        memory: &Arc<DeviceMemory>,
+        extent: [u32; 2],
+    ) -> Result<Rid, String> {
+        let handle =
+            atlas_rt::render::delivery::export_win32_handle(memory)
+                .map_err(|error| format!("memory export failed: {error:#}"))?;
+
+        let alloc_size = memory.allocation_size();
+        let type_index = memory.memory_type_index();
+
+        let variant = bridge.call(
+            "create_image",
+            &[
+                Variant::from(slot as i64),
+                Variant::from(handle as i64),
+                Variant::from(alloc_size as i64),
+                Variant::from(i64::from(type_index)),
+                Variant::from(i64::from(extent[0])),
+                Variant::from(i64::from(extent[1])),
+            ],
+        );
+
+        let rid = variant
+            .try_to::<Rid>()
+            .map_err(|_| String::from("bridge returned no texture rid"))?;
+
+        rid.is_valid()
+            .then_some(rid)
+            .ok_or_else(|| String::from("bridge texture rid invalid"))
     }
 
     fn hand_off_zero_copy(&mut self, slot: usize) {
@@ -351,51 +450,40 @@ impl AtlasRtView {
 
         let Some(pipeline) = &self.pipeline else { return; };
 
-        let (image_handle, extent) = {
+        let (memory, extent) = {
             let gpu_guard = lock(gpu);
             let pipeline_guard = lock(pipeline);
 
-            match pipeline_guard.slot_image_handle(&gpu_guard, slot) {
-                Ok(handle) => (handle, pipeline_guard.extent()),
+            match pipeline_guard.slot_memory(&gpu_guard, slot) {
+                Ok(memory) => (memory, pipeline_guard.extent()),
                 Err(err) => {
-                    godot_error!("atlas_rt: slot handle failed: {}", err);
+                    godot_error!("atlas_rt: slot memory failed: {}", err);
                     return;
                 }
             }
         };
 
-        let Some(mut rd) = RenderingServer::singleton().get_rendering_device()
-        else {
+        let Some(bridge) = Engine::singleton().get_singleton("VulkanHooksBridge") else {
+            godot_error!("atlas_rt: VulkanHooksBridge singleton missing (engine module not loaded?)");
             return;
         };
 
-        let mut server = RenderingServer::singleton();
+        let mut bridge = bridge;
 
-        let rd_texture = rd.texture_create_from_extension(
-            TextureType::TYPE_2D,
-            DataFormat::R16G16B16A16_SFLOAT,
-            TextureSamples::SAMPLES_1,
-            TextureUsageBits::SAMPLING_BIT | TextureUsageBits::STORAGE_BIT,
-            image_handle,
-            u64::from(extent[0]),
-            u64::from(extent[1]),
-            1,
-            1,
-        );
+        let rid = match Self::create_bridge_image(&mut bridge, slot, &memory, extent) {
+            Ok(rid) => rid,
+            Err(err) => {
+                godot_error!("atlas_rt: {err}");
 
-        let scene_texture = server.texture_rd_create(rd_texture);
+                return;
+            }
+        };
 
         let wrapped = self
             .wrapped_texture
             .get_or_insert_with(Texture2Drd::new_gd);
 
-        wrapped.set_texture_rd_rid(scene_texture);
-
-        if let Some(old) = self.scene_texture.take() {
-            server.free_rid(old);
-        }
-
-        self.scene_texture = Some(scene_texture);
+        wrapped.set_texture_rd_rid(rid);
     }
 
     fn validate_edit(

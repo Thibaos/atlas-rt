@@ -104,6 +104,7 @@ bool ExternalMemoryHooks::create_vulkan_device(const VkDeviceCreateInfo *p_devic
 		ERR_FAIL_V_MSG(false, String("ExternalMemoryHooks: vkCreateDevice failed (") + itos(err) + ").");
 	}
 
+	captured_device = *r_device;
 	return true;
 }
 

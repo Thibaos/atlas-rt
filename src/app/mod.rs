@@ -24,11 +24,13 @@ use crate::{
         player::PlayerController,
         schedule::ScheduleController,
     },
-    render::pipeline::{FrameInput, FramePipeline, DEFAULT_FOV, next_render_mode},
+    render::pipeline::{FrameInput, FramePipeline, DEFAULT_FOV},
     render::region::task::RenderMode,
     render::context::RenderContext,
     world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
 };
+#[cfg(debug_assertions)]
+use crate::render::pipeline::next_render_mode;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {

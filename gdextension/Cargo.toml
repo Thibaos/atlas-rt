@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 godot = "0.5.5"
 atlas-rt = { path = ".." }
-glam = "0.33.6"
+glam = "0.33"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
