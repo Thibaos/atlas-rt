@@ -1,3 +1,18 @@
+//! The view node: main-thread coordinator for the embedded pipeline.
+#![allow(
+    clippy::doc_markdown,
+    clippy::as_conversions,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    clippy::uninlined_format_args,
+    clippy::map_unwrap_or,
+    clippy::arithmetic_side_effects,
+    clippy::needless_pass_by_value,
+    clippy::missing_const_for_fn,
+    clippy::option_if_let_else,
+)]
+
 use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
@@ -42,6 +57,7 @@ pub struct AtlasRtView {
     wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
     tick: u64,
+    camera: Option<Gd<Camera3D>>,
 
     base: Base<Control>,
 }
@@ -62,6 +78,7 @@ impl IControl for AtlasRtView {
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
             tick: 0,
+            camera: None,
             base,
         }
     }
@@ -141,6 +158,7 @@ impl IControl for AtlasRtView {
         }
 
         self.match_viewport_size();
+        self.sync_camera();
 
         let Some(worker) = &self.worker else {
             return;
@@ -212,10 +230,8 @@ impl AtlasRtView {
 
     #[func]
     pub fn set_camera(&mut self, camera: Gd<Camera3D>) {
-        let camera = camera.get_global_transform();
-
-        self.origin = camera.origin;
-        self.basis = camera.basis;
+        self.camera = Some(camera);
+        self.sync_camera();
     }
 
     #[func]
@@ -321,6 +337,22 @@ impl AtlasRtView {
 }
 
 impl AtlasRtView {
+    fn sync_camera(&mut self) {
+        let Some(camera) = &self.camera else {
+            return;
+        };
+
+        if !camera.is_instance_valid() {
+            self.camera = None;
+
+            return;
+        }
+
+        let transform = camera.get_global_transform();
+        self.origin = transform.origin;
+        self.basis = transform.basis;
+    }
+
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn match_viewport_size(&mut self) {
         self.to_gd().set_size(self.to_gd().get_viewport_rect().size);
