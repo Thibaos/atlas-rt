@@ -72,6 +72,7 @@ pub fn as_build_post_barrier(cbf: &mut RecordingCommandBuffer<'_>) {
 /// # Panics
 ///
 /// Panics if `ty` is neither top level nor bottom level.
+#[must_use]
 pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureFlags {
     match ty {
         AccelerationStructureType::TopLevel => {
@@ -85,6 +86,9 @@ pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureF
     }
 }
 
+/// # Errors
+///
+/// Returns an erros if buffer creation, taskgraph execution, or flight waiting failed
 pub fn build_acceleration_structure_in_place(
     geometries: &BuildGeometries,
     primitive_count: u32,
@@ -110,6 +114,7 @@ pub fn build_acceleration_structure_in_place(
         &as_build_geometry_info,
         &[primitive_count],
     );
+
     debug_assert!(
         as_build_sizes_info.acceleration_structure_size <= storage_capacity,
         "in-place build of {primitive_count} primitives needs {} bytes but the storage holds {storage_capacity}",
@@ -179,6 +184,9 @@ pub fn acceleration_structure_build_sizes(
     )
 }
 
+/// # Errors
+///
+/// Returns an error if buffer creation, or acceleration structure creation failed
 pub fn create_blas_aabbs_storage(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     primitive_count: u32,
@@ -218,6 +226,9 @@ pub fn create_blas_aabbs_storage(
     ))
 }
 
+/// # Errors
+///
+/// Returns an error if buffer creation, acceleration structure creation, or acceleration build failed
 pub fn build_acceleration_structure_fresh(
     geometries: &BuildGeometries,
     primitive_count: u32,
@@ -276,6 +287,9 @@ pub fn build_acceleration_structure_fresh(
     Ok((built, as_build_sizes_info.acceleration_structure_size))
 }
 
+/// # Errors
+///
+/// Returns an error if geometries creation, or acceleration structure build failed
 pub fn build_blas_aabbs_fresh(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
     primitive_count: u32,
@@ -297,6 +311,9 @@ pub fn build_blas_aabbs_fresh(
     )
 }
 
+/// # Errors
+///
+/// Returns an error if geometries creation, buffer creation, or acceleration structure creation failed
 pub fn create_tlas_storage(
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
     max_instances: u32,
@@ -343,6 +360,9 @@ pub fn create_tlas_storage(
     ))
 }
 
+/// # Errors
+///
+/// Returns an error if device address fetch failed
 pub fn aabb_geometries(
     aabb_buffer: &Subbuffer<[AabbPositions]>,
 ) -> anyhow::Result<BuildGeometries> {
@@ -357,6 +377,9 @@ pub fn aabb_geometries(
     )])
 }
 
+/// # Errors
+///
+/// Returns an error if device address fetch failed
 pub fn instance_geometries(
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
 ) -> anyhow::Result<BuildGeometries> {
@@ -370,6 +393,9 @@ pub fn instance_geometries(
     )])
 }
 
+/// # Errors
+///
+/// Returns an error if geometries creation failed
 pub fn blas_build_sizes(
     gpu: &RenderContext,
     aabb_buffer: &Subbuffer<[AabbPositions]>,
@@ -383,6 +409,9 @@ pub fn blas_build_sizes(
     ))
 }
 
+/// # Errors
+///
+/// Returns an error if geometries creation failed
 pub fn tlas_build_sizes(
     gpu: &RenderContext,
     instance_buffer: &Subbuffer<[AccelerationStructureInstance]>,
@@ -396,6 +425,9 @@ pub fn tlas_build_sizes(
     ))
 }
 
+/// # Errors
+///
+/// Returns an error if buffer creation failed
 pub fn allocate_scratch(gpu: &RenderContext, size: DeviceSize) -> anyhow::Result<Arc<Buffer>> {
     Ok(Buffer::new_slice::<u8>(
         &gpu.memory_allocator,

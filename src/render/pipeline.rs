@@ -106,6 +106,19 @@ fn create_swapchain(
 }
 
 impl FramePipeline {
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///   - `emit_snapshots` failed
+    ///   - Input `submit_batch` failed
+    ///   - `RegionStore::new` failed
+    ///   - `Surface::from_window` failed
+    ///   - `create_swapchain` failed
+    ///   - Swapchain images is empty
+    ///   - Frame images `recreate` failed
+    ///   - Raygen shader loading failed
+    ///   - `RegionRenderTask::new` failed
+    ///   - Taskgraph `add_edge` failed
     pub fn new(
         gpu: &RenderContext,
         window: Arc<Window>,
@@ -249,6 +262,9 @@ impl FramePipeline {
         Ok(true)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if flight waiting or frame execution failed
     #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn run_frame(&mut self, gpu: &RenderContext, input: &FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
@@ -328,6 +344,7 @@ const fn frame_plan(recreate_requested: bool, width: u32, height: u32) -> FrameP
     }
 }
 
+#[must_use]
 pub const fn next_render_mode(mode: RenderMode) -> RenderMode {
     match mode {
         RenderMode::Voxel => RenderMode::Hull,

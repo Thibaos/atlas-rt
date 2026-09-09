@@ -1,21 +1,8 @@
-//! The view node: main-thread coordinator for the embedded pipeline.
-#![allow(
-    clippy::doc_markdown,
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::uninlined_format_args,
-    clippy::map_unwrap_or,
-    clippy::arithmetic_side_effects,
-    clippy::needless_pass_by_value,
-    clippy::missing_const_for_fn,
-    clippy::option_if_let_else,
-)]
-
 use std::sync::{Arc, Mutex, mpsc};
 
-use godot::classes::{Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, Texture2Drd};
+use godot::classes::{
+    Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, Texture2Drd,
+};
 use godot::prelude::*;
 
 use atlas_rt::render::{
@@ -80,9 +67,8 @@ impl IControl for AtlasRtView {
     }
 
     fn ready(&mut self) {
-        self.to_gd().set_anchors_and_offsets_preset(
-            godot::classes::control::LayoutPreset::FULL_RECT,
-        );
+        self.to_gd()
+            .set_anchors_and_offsets_preset(godot::classes::control::LayoutPreset::FULL_RECT);
 
         self.match_viewport_size();
 
@@ -94,11 +80,14 @@ impl IControl for AtlasRtView {
                     let gpu_guard = lock(&gpu);
                     let extent = self.viewport_extent();
 
-                    EmbeddedPipeline::new(&gpu_guard, if extent == [0, 0] {
-                        [1280, 720]
-                    } else {
-                        extent
-                    })
+                    EmbeddedPipeline::new(
+                        &gpu_guard,
+                        if extent == [0, 0] {
+                            [1280, 720]
+                        } else {
+                            extent
+                        },
+                    )
                 };
 
                 match built {
@@ -153,7 +142,9 @@ impl IControl for AtlasRtView {
 
         self.match_viewport_size();
 
-        let Some(worker) = &self.worker else { return; };
+        let Some(worker) = &self.worker else {
+            return;
+        };
 
         worker.kick(Kick {
             view_mat: self.view_matrix().to_cols_array(),
@@ -178,7 +169,11 @@ impl IControl for AtlasRtView {
             return;
         };
 
-        self.to_gd().draw_texture_rect(wrapped, Rect2::new(Vector2::ZERO, self.to_gd().get_size()), false);
+        self.to_gd().draw_texture_rect(
+            wrapped,
+            Rect2::new(Vector2::ZERO, self.to_gd().get_size()),
+            false,
+        );
     }
 }
 
@@ -353,19 +348,14 @@ impl AtlasRtView {
     }
 
     fn viewport_extent(&self) -> [u32; 2] {
-        self.to_gd()
-            .get_viewport()
-            .map_or([0, 0], |viewport| {
-                let size = viewport.get_visible_rect().size;
+        self.to_gd().get_viewport().map_or([0, 0], |viewport| {
+            let size = viewport.get_visible_rect().size;
 
-                [size.x.max(0.0) as u32, size.y.max(0.0) as u32]
-            })
+            [size.x.max(0.0) as u32, size.y.max(0.0) as u32]
+        })
     }
 
-    fn push_edit(
-        &self,
-        snapshots: impl IntoIterator<Item = MicroChunkSnapshot>,
-    ) -> bool {
+    fn push_edit(&self, snapshots: impl IntoIterator<Item = MicroChunkSnapshot>) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
         };
@@ -387,9 +377,7 @@ impl AtlasRtView {
         let memory = {
             let pipeline_guard = lock(pipeline);
 
-            let gpu_guard = gpu
-                .lock()
-                .map_err(|_| String::from("gpu mutex poisoned"))?;
+            let gpu_guard = gpu.lock().map_err(|_| String::from("gpu mutex poisoned"))?;
 
             pipeline_guard
                 .slot_memory(&gpu_guard, 0)
@@ -406,9 +394,11 @@ impl AtlasRtView {
     }
 
     fn bridge() -> Result<Gd<Object>, String> {
-        Engine::singleton().get_singleton("VulkanHooksBridge").ok_or_else(|| {
-            String::from("VulkanHooksBridge singleton missing (engine module not loaded?)")
-        })
+        Engine::singleton()
+            .get_singleton("VulkanHooksBridge")
+            .ok_or_else(|| {
+                String::from("VulkanHooksBridge singleton missing (engine module not loaded?)")
+            })
     }
 
     fn create_bridge_image(
@@ -417,9 +407,8 @@ impl AtlasRtView {
         memory: &Arc<DeviceMemory>,
         extent: [u32; 2],
     ) -> Result<Rid, String> {
-        let handle =
-            atlas_rt::render::delivery::export_win32_handle(memory)
-                .map_err(|error| format!("memory export failed: {error:#}"))?;
+        let handle = atlas_rt::render::delivery::export_win32_handle(memory)
+            .map_err(|error| format!("memory export failed: {error:#}"))?;
 
         let alloc_size = memory.allocation_size();
         let type_index = memory.memory_type_index();
@@ -446,9 +435,13 @@ impl AtlasRtView {
     }
 
     fn hand_off_zero_copy(&mut self, slot: usize) {
-        let Some(gpu) = &self.gpu else { return; };
+        let Some(gpu) = &self.gpu else {
+            return;
+        };
 
-        let Some(pipeline) = &self.pipeline else { return; };
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
 
         let (memory, extent) = {
             let gpu_guard = lock(gpu);
@@ -464,7 +457,9 @@ impl AtlasRtView {
         };
 
         let Some(bridge) = Engine::singleton().get_singleton("VulkanHooksBridge") else {
-            godot_error!("atlas_rt: VulkanHooksBridge singleton missing (engine module not loaded?)");
+            godot_error!(
+                "atlas_rt: VulkanHooksBridge singleton missing (engine module not loaded?)"
+            );
             return;
         };
 
@@ -479,9 +474,7 @@ impl AtlasRtView {
             }
         };
 
-        let wrapped = self
-            .wrapped_texture
-            .get_or_insert_with(Texture2Drd::new_gd);
+        let wrapped = self.wrapped_texture.get_or_insert_with(Texture2Drd::new_gd);
 
         wrapped.set_texture_rd_rid(rid);
     }
@@ -504,19 +497,15 @@ impl AtlasRtView {
         }
 
         let chunk_step = MICRO_CHUNK_LENGTH.cast_signed();
-        let multiples = coords.x % chunk_step == 0
-            && coords.y % chunk_step == 0
-            && coords.z % chunk_step == 0;
+        let multiples =
+            coords.x % chunk_step == 0 && coords.y % chunk_step == 0 && coords.z % chunk_step == 0;
 
         if !multiples {
             return Err(format!("coords {coords} not a multiple of 8"));
         }
 
         if mask.len() != 64 {
-            return Err(format!(
-                "mask has {} bytes; expected 64",
-                mask.len()
-            ));
+            return Err(format!("mask has {} bytes; expected 64", mask.len()));
         }
 
         let occupied = mask

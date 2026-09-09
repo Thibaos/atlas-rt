@@ -64,7 +64,11 @@ fn fold(position: IVec3) -> u64 {
 }
 
 // call sites gate inputs with grid::in_lattice, so every field fits i32
-#[allow(clippy::as_conversions, clippy::cast_possible_wrap, clippy::cast_possible_truncation)]
+#[allow(
+    clippy::as_conversions,
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation
+)]
 fn unfold(key: u64) -> IVec3 {
     let axis = |field: u64| (field as i32).wrapping_sub(LATTICE_BIAS);
 
@@ -140,12 +144,14 @@ impl World {
         }
     }
 
+    #[must_use]
     pub fn new(voxel_data: &DotVoxData) -> Self {
         let (world, clipped) = Self::load(voxel_data, BoundsPolicy::Panic);
         debug_assert_eq!(clipped, 0);
         world
     }
 
+    #[must_use]
     pub fn new_clipped(voxel_data: &DotVoxData) -> (Self, usize) {
         Self::load(voxel_data, BoundsPolicy::Clip)
     }
@@ -208,7 +214,10 @@ impl World {
         let per_shard = live / SHARD_COUNT;
         let staged: Vec<Mutex<StagedMap>> = (0..SHARD_COUNT)
             .map(|_| {
-                Mutex::new(StagedMap::with_capacity_and_hasher(per_shard, FxBuildHasher))
+                Mutex::new(StagedMap::with_capacity_and_hasher(
+                    per_shard,
+                    FxBuildHasher,
+                ))
             })
             .collect();
 
@@ -246,11 +255,13 @@ impl World {
         clipped
     }
 
+    #[must_use]
     pub fn contains(&self, position: &IVec3) -> bool {
         Self::assert_in_lattice(position);
         self.shard(*position).contains_key(&fold(*position))
     }
 
+    #[must_use]
     pub fn get_voxel(&self, position: &IVec3) -> Option<&u32> {
         Self::assert_in_lattice(position);
         self.shard(*position).get(&fold(*position))
@@ -259,7 +270,8 @@ impl World {
     #[cfg(test)]
     pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
         Self::assert_in_lattice(&position);
-        self.shard_mut(position).insert(fold(position), material_index);
+        self.shard_mut(position)
+            .insert(fold(position), material_index);
     }
 
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
@@ -268,6 +280,7 @@ impl World {
             .flat_map(|map| map.iter().map(|(key, voxel)| (unfold(*key), voxel)))
     }
 
+    #[must_use]
     pub fn voxel_bounds(&self) -> Option<(IVec3, IVec3)> {
         let mut min: Option<IVec3> = None;
         let mut max: Option<IVec3> = None;
@@ -651,7 +664,7 @@ mod placement_differential {
     #[test]
     fn integer_placement_matches_legacy_float_on_exact_quaternion_classes() {
         let exact_pairs = [(0u8, 1u8), (1, 2), (2, 0)];
-        let mut rng = Rng::new(0xC0FFEE);
+        let mut rng = Rng::new(0x00C0_FFEE);
 
         for rotation in rotation_bytes() {
             let pair = (rotation & 0b11, (rotation >> 2) & 0b11);
@@ -747,7 +760,7 @@ mod placement_differential {
 
     #[test]
     fn parallel_load_matches_serial_oracle_on_randomized_scenes() {
-        let mut rng = Rng::new(0x5011_0AD);
+        let mut rng = Rng::new(0x0501_10AD);
         let valid_rotations = rotation_bytes();
 
         for rotation in &valid_rotations {
@@ -960,7 +973,7 @@ mod tests {
                     i: 0,
                 },
             ],
-            rotation: 0b0000100,
+            rotation: 0b000_0100,
             translation: [0, 0, 0],
         }]);
         let world = World::new(&data);

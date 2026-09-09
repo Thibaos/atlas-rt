@@ -56,6 +56,7 @@ pub struct RebuildPlan {
 }
 
 impl RebuildPlan {
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.uploads.is_empty()
             && self.blas_builds.is_empty()
@@ -64,6 +65,9 @@ impl RebuildPlan {
             && self.tlas.is_none()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if arithmetics casts failed
     pub fn log(&self) -> anyhow::Result<Vec<RebuildLogEntry>> {
         let mut log = Vec::new();
 
@@ -131,9 +135,13 @@ struct UploadRegionsTask {
     instance_buffer_id: Id<Buffer>,
     region_table_buffer_id: Id<Buffer>,
 }
+
 impl Task for UploadRegionsTask {
     type World = ();
 
+    /// # Errors
+    ///
+    /// Returns an error if the GPU task failed
     unsafe fn execute(
         &self,
         _cbf: &mut RecordingCommandBuffer<'_>,
@@ -177,6 +185,7 @@ impl Task for UploadRegionsTask {
                 eprintln!("instances could not be cast to device size");
                 return Ok(());
             };
+
             let Ok(as_size) = DeviceSize::try_from(size_of::<AccelerationStructureInstance>())
             else {
                 eprintln!("AccelerationStructureInstance size could not be cast to device size");
@@ -187,6 +196,7 @@ impl Task for UploadRegionsTask {
                 self.instance_buffer_id,
                 0..(instances_size.strict_mul(as_size)),
             );
+
             for (slot, instance) in dst.iter_mut().zip(instances) {
                 *slot = *instance;
             }
@@ -301,6 +311,9 @@ pub struct RebuildGraph {
 }
 
 impl RebuildGraph {
+    /// # Errors
+    ///
+    /// Returns an error if taskgraph compilation failed
     pub fn new(
         gpu: &RenderContext,
         store: &RegionStore,
@@ -405,6 +418,9 @@ impl RebuildGraph {
         Ok(Self { executable })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `resource_map` creation, taskgraph execution, or flight waiting failed
     pub fn execute(self, gpu: &RenderContext) -> anyhow::Result<()> {
         let resource_map = resource_map!(&self.executable)?;
 

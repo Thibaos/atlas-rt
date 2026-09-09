@@ -145,6 +145,10 @@ pub struct VoxelPlacement {
 }
 
 impl VoxelPlacement {
+    #[must_use]
+    /// # Panics
+    ///
+    /// Panics if rotation is zero
     pub fn new(translation: IVec3, rotation: Rotation, size: UVec3) -> Self {
         let columns = rotation.to_cols_array_2d();
         let one = 1.0_f32.to_bits();
@@ -200,6 +204,10 @@ impl VoxelPlacement {
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics if the model size is greater than 256
+    #[must_use]
     pub fn misses_lattice(&self) -> bool {
         let half = grid::LATTICE_HALF_EXTENT.cast_signed();
         let neg_half = half.wrapping_neg();
@@ -225,6 +233,7 @@ impl VoxelPlacement {
             || max.z < neg_half
     }
 
+    #[must_use]
     pub fn in_lattice_capacity(&self, voxels: u64) -> u64 {
         let corner = |extent: u32| i32::try_from(extent.saturating_sub(1)).unwrap_or(i32::MAX);
         let low = self.project(0, 0, 0);
@@ -248,7 +257,9 @@ impl VoxelPlacement {
                 return 0;
             }
 
-            let length = i64::from(hi).saturating_sub(i64::from(lo)).saturating_add(1);
+            let length = i64::from(hi)
+                .saturating_sub(i64::from(lo))
+                .saturating_add(1);
             u64::try_from(length).unwrap_or(u64::MAX)
         };
 
@@ -258,6 +269,7 @@ impl VoxelPlacement {
             .min(voxels)
     }
 
+    #[must_use]
     pub fn place(&self, voxel: Voxel) -> IVec3 {
         self.project(i32::from(voxel.x), i32::from(voxel.y), i32::from(voxel.z))
     }
@@ -440,10 +452,16 @@ mod tests {
 
     #[test]
     fn fully_inside_models_reserve_the_full_attempt_count() {
-        for size in [(1u32, 1u32, 1u32), (2, 2, 2), (3, 5, 7), (8, 8, 8), (255, 1, 2)] {
+        for size in [
+            (1u32, 1u32, 1u32),
+            (2, 2, 2),
+            (3, 5, 7),
+            (8, 8, 8),
+            (255, 1, 2),
+        ] {
             let volume = u64::from(size.0) * u64::from(size.1) * u64::from(size.2);
 
-            for rotation in [0b0000100u8, 0b0001] {
+            for rotation in [0b000_0100u8, 0b0001] {
                 for translation in [[0, 0, 0], [10, -20, 30], [1500, -1500, 1500]] {
                     let placement = placement(translation, rotation, size);
 
@@ -476,9 +494,13 @@ mod tests {
             ([-2049, 0, 0], 16),
             ([-2050, 0, 0], 0),
         ] {
-            let placement = placement(translation, 0b0000100, (4, 4, 4));
+            let placement = placement(translation, 0b000_0100, (4, 4, 4));
 
-            assert_eq!(placement.in_lattice_capacity(64), expected, "{translation:?}");
+            assert_eq!(
+                placement.in_lattice_capacity(64),
+                expected,
+                "{translation:?}"
+            );
 
             assert_eq!(placement.misses_lattice(), expected == 0, "{translation:?}");
         }
@@ -486,18 +508,18 @@ mod tests {
 
     #[test]
     fn the_y_plus_one_shift_is_respected_on_straddle() {
-        let high = placement([0, 2047, 0], 0b0000100, (2, 4, 4));
+        let high = placement([0, 2047, 0], 0b000_0100, (2, 4, 4));
 
         assert_eq!(high.in_lattice_capacity(32), 16);
 
-        let low = placement([0, -2047, 0], 0b0000100, (2, 4, 4));
+        let low = placement([0, -2047, 0], 0b000_0100, (2, 4, 4));
 
         assert_eq!(low.in_lattice_capacity(32), 32);
     }
 
     #[test]
     fn sparse_models_cap_the_capacity_at_the_attempt_count() {
-        let placement = placement([0, 0, 0], 0b0000100, (5, 5, 5));
+        let placement = placement([0, 0, 0], 0b000_0100, (5, 5, 5));
 
         assert_eq!(placement.in_lattice_capacity(10), 10);
         assert_eq!(placement.in_lattice_capacity(124), 124);
@@ -534,7 +556,10 @@ mod tests {
 
             let capacity = placement.in_lattice_capacity(attempts);
 
-            assert!(capacity <= attempts, "rotation {rotation:#010b}, {translation:?}");
+            assert!(
+                capacity <= attempts,
+                "rotation {rotation:#010b}, {translation:?}"
+            );
             assert!(
                 landed <= capacity,
                 "the reserve must cover every landed attempt: {landed} > {capacity}"

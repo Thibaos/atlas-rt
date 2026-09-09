@@ -101,6 +101,9 @@ pub struct RegionStore {
 }
 
 impl RegionStore {
+    /// # Errors
+    ///
+    /// Returns an error if `upload_default_globals`, `create_bindings`, store `ensure_tlas_initialized` or `write_aabb_table` failed
     pub fn new_empty(gpu: &RenderContext) -> anyhow::Result<Self> {
         let buffers = create_scene_buffers(gpu)?;
         let (tlas, tlas_storage_size) = create_tlas(gpu, buffers.instance)?;
@@ -134,6 +137,9 @@ impl RegionStore {
         Ok(store)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `Self::new_empty`, packing regions, or store rebuild failed
     pub fn new(
         gpu: &RenderContext,
         voxel_data: &DotVoxData,
@@ -164,12 +170,15 @@ impl RegionStore {
         Ok(store)
     }
 
+    /// # Errors
+    ///
+    /// See `upload_palette_colors`
     pub fn upload_palette(
         &self,
         gpu: &RenderContext,
         colors: [[f32; 4]; 256],
     ) -> anyhow::Result<()> {
-        upload_palette_colors(gpu, self.palette_buffer_id, colors)
+        upload_palette_colors(gpu, self.palette_buffer_id, &colors)
     }
 
     fn write_aabb_table(
@@ -256,6 +265,9 @@ impl RegionStore {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if packing regions failed
     pub fn apply(
         &mut self,
         gpu: &RenderContext,
@@ -275,6 +287,7 @@ impl RegionStore {
         self.rebuild(gpu, packs)
     }
 
+    #[must_use]
     pub fn blases(&self) -> Vec<Arc<AccelerationStructure>> {
         self.regions
             .iter()
@@ -902,10 +915,7 @@ fn create_tlas(
     )
 }
 
-fn upload_default_globals(
-    gpu: &RenderContext,
-    buffers: &SceneBuffers,
-) -> anyhow::Result<()> {
+fn upload_default_globals(gpu: &RenderContext, buffers: &SceneBuffers) -> anyhow::Result<()> {
     let default_palette = [[0.0; 4]; 256];
 
     unsafe {
@@ -935,10 +945,13 @@ fn upload_default_globals(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if taskgraph execution or flight waiting failed
 fn upload_palette_colors(
     gpu: &RenderContext,
     palette_buffer_id: Id<Buffer>,
-    colors: [[f32; 4]; 256],
+    colors: &[[f32; 4]; 256],
 ) -> anyhow::Result<()> {
     unsafe {
         vulkano_taskgraph::execute(
@@ -947,7 +960,7 @@ fn upload_palette_colors(
             gpu.graphics_flight_id,
             |_cbf, tcx| {
                 *tcx.write_buffer::<production_raygen::Palette>(palette_buffer_id, ..) =
-                    production_raygen::Palette { colors };
+                    production_raygen::Palette { colors: *colors };
                 Ok(())
             },
             [(palette_buffer_id, HostAccessType::Write)],

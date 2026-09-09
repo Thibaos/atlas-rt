@@ -1,5 +1,4 @@
 #![allow(clippy::as_conversions)]
-// Lattice edges are crate constants, bounded far below i32 ranges.
 #![allow(clippy::cast_possible_wrap)]
 use glam::{IVec3, UVec3};
 
@@ -8,27 +7,36 @@ pub const REGION_LENGTH: u32 = 256;
 pub const REGION_HALF_EXTENT: u32 = 8;
 pub const LATTICE_HALF_EXTENT: u32 = REGION_HALF_EXTENT * REGION_LENGTH;
 
+#[must_use]
 pub fn grid_index(global: IVec3, edge: u32) -> IVec3 {
     global.div_euclid(IVec3::splat(edge as i32))
 }
 
+#[must_use]
 pub fn grid_origin(global: IVec3, edge: u32) -> IVec3 {
     grid_index(global, edge).saturating_mul(IVec3::splat(edge as i32))
 }
 
+#[must_use]
 pub fn in_lattice(global: IVec3) -> bool {
     let half = IVec3::splat(LATTICE_HALF_EXTENT as i32);
 
     global.cmpge(half.saturating_mul(IVec3::splat(-1))).all() && global.cmplt(half).all()
 }
 
+#[must_use]
 pub fn region_index_in_lattice(region_index: IVec3) -> bool {
     let half = IVec3::splat(REGION_HALF_EXTENT as i32);
 
-    region_index.cmpge(half.saturating_mul(IVec3::splat(-1))).all()
+    region_index
+        .cmpge(half.saturating_mul(IVec3::splat(-1)))
+        .all()
         && region_index.cmplt(half).all()
 }
 
+/// # Panics
+///
+/// Panics if `region_index` is out of bounds
 pub fn assert_region_index_in_lattice(region_index: IVec3) {
     assert!(
         region_index_in_lattice(region_index),
@@ -36,6 +44,7 @@ pub fn assert_region_index_in_lattice(region_index: IVec3) {
     );
 }
 
+#[must_use]
 pub fn region_id(region_index: IVec3) -> u32 {
     assert_region_index_in_lattice(region_index);
     let UVec3 { x, y, z } = region_index.as_uvec3();
@@ -45,6 +54,7 @@ pub fn region_id(region_index: IVec3) -> u32 {
         | (z.wrapping_add(REGION_HALF_EXTENT) & 0xF)
 }
 
+#[must_use]
 pub fn region_index_of(global_coords: IVec3) -> IVec3 {
     grid_index(global_coords, REGION_LENGTH)
 }

@@ -31,7 +31,8 @@ pub struct MicroChunkSnapshot {
 }
 
 impl MicroChunkSnapshot {
-    #[allow(clippy::as_conversions)] // count_ones is bounded by the mask width
+    #[allow(clippy::as_conversions)]
+    #[must_use]
     pub fn occupied_count(&self) -> usize {
         self.mask
             .iter()
@@ -53,7 +54,10 @@ struct ChunkBuf {
 impl ChunkBuf {
     const fn new() -> Self {
         Self {
-            groups: [SlotGroup { materials: [0; 8], occupied: 0 }; 64],
+            groups: [SlotGroup {
+                materials: [0; 8],
+                occupied: 0,
+            }; 64],
         }
     }
 
@@ -118,15 +122,16 @@ fn chunk_axis_ordinal(origin_axis: i32) -> anyhow::Result<u16> {
 }
 
 fn origin_axis(biased: u32) -> anyhow::Result<i32> {
-    Ok(
-        i32::try_from(biased)
-            .context("chunk ordinal out of range")?
-            .checked_sub(256)
-            .context("chunk ordinal out of lattice range")?
-            .strict_mul(MICRO_EDGE),
-    )
+    Ok(i32::try_from(biased)
+        .context("chunk ordinal out of range")?
+        .checked_sub(256)
+        .context("chunk ordinal out of lattice range")?
+        .strict_mul(MICRO_EDGE))
 }
 
+/// # Errors
+///
+/// Returns an error if unsigned grid operation, material index, chunk bucketing, or snapshot creation failed.
 pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
     let mut buckets: [Vec<u64>; BUCKET_COUNT] = std::array::from_fn(|_| Vec::new());
 
@@ -188,7 +193,8 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
                 .context("chunk id bits out of range")?;
             let idx = u16::try_from((record >> MATERIAL_FIELD_BITS) & SLOT_MASK)
                 .context("slot idx out of range")?;
-            let material = u8::try_from(record & MATERIAL_MASK).context("material bits out of range")?;
+            let material =
+                u8::try_from(record & MATERIAL_MASK).context("material bits out of range")?;
 
             chunks
                 .entry(chunk_id)
@@ -382,7 +388,7 @@ mod tests {
 
     #[test]
     fn single_pass_matches_two_pass_oracle_on_random_worlds() {
-        let mut rng = Rng::new(0xC0FFEE);
+        let mut rng = Rng::new(0x00C0_FFEE);
 
         for case in 0..64u32 {
             let world = random_world(&mut rng);

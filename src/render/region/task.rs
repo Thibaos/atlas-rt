@@ -116,6 +116,9 @@ pub struct RegionRenderTask {
 }
 
 impl RegionRenderTask {
+    /// # Errors
+    ///
+    /// Returns an error if any shader or SBT creation failed
     pub fn new(
         gpu: &RenderContext,
         store: &RegionStore,
@@ -159,14 +162,15 @@ impl RegionRenderTask {
             pipeline,
             _blases: store.blases(),
         })
-
     }
 
+    #[must_use]
     pub const fn instance_buffer_id(&self) -> Id<Buffer> {
         self.bindings.instance_buffer
     }
 }
 
+#[must_use]
 pub const fn default_scene() -> production_raygen::Scene {
     production_raygen::Scene {
         sky_knots: [0.15, 0.6, 1.2, 0.0],
@@ -302,7 +306,10 @@ impl Task for RegionRenderTask {
         rcx: &Self::World,
     ) -> TaskResult {
         let (image_id, extent) = match self.swapchain_id {
-            None => (rcx.color_image_id, [rcx.render_extent[0], rcx.render_extent[1], 1]),
+            None => (
+                rcx.color_image_id,
+                [rcx.render_extent[0], rcx.render_extent[1], 1],
+            ),
             Some(swapchain_id) => {
                 let swapchain_state = tcx.swapchain(swapchain_id);
 

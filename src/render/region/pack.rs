@@ -8,9 +8,7 @@ use rustc_hash::FxHashMap;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::world::{
-    grid::{
-        MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of,
-    },
+    grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of},
     snapshot::MicroChunkSnapshot,
 };
 
@@ -32,6 +30,7 @@ pub struct RegionData {
 }
 
 impl RegionData {
+    #[must_use]
     pub fn region_id(&self) -> u32 {
         region_id(self.region_index)
     }
@@ -42,6 +41,9 @@ impl RegionData {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if `pack_region`
 pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> anyhow::Result<Vec<RegionData>> {
     let mut by_region: FxHashMap<IVec3, Vec<&MicroChunkSnapshot>> = FxHashMap::default();
 
@@ -86,6 +88,9 @@ pub fn pack_regions_serial(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> 
     regions
 }
 
+/// # Errors
+///
+/// Returns an error if any snapshot is out of the region
 pub fn pack_region(
     region_index: IVec3,
     snapshots: &[&MicroChunkSnapshot],
@@ -211,7 +216,6 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use crate::world::{World, snapshot::emit_snapshots};
 
@@ -366,7 +370,7 @@ mod tests {
             boundary,
             layout,
             randomized_world(0x5EED_1F00, 6_000),
-            randomized_world(0x00C0FFEE, 6_000),
+            randomized_world(0x00C0_FFEE, 6_000),
             randomized_world(0xBAD_C0DE, 6_000),
         ] {
             let snapshots = emit_snapshots(&world).unwrap();

@@ -2,7 +2,7 @@ use anyhow::Context;
 use std::mem::MaybeUninit;
 use std::sync::Arc;
 use vulkano::{
-    VulkanError,
+    VulkanError, VulkanObject,
     ash::vk,
     device::DeviceOwned,
     format::Format,
@@ -11,7 +11,6 @@ use vulkano::{
         DedicatedAllocation, ExternalMemoryHandleType, ExternalMemoryHandleTypes,
         MemoryAllocateInfo, MemoryPropertyFlags, MemoryRequirements, ResourceMemory,
     },
-    VulkanObject,
 };
 
 pub use vulkano::memory::DeviceMemory;
@@ -32,11 +31,12 @@ pub struct DeliveryRing {
     extent: [u32; 2],
 }
 
-pub fn bind_slot(frame: usize) -> usize {
+#[must_use]
+pub const fn bind_slot(frame: usize) -> usize {
     frame % SLOT_COUNT
 }
 
-fn slot_extent(extent: [u32; 2]) -> [u32; 3] {
+const fn slot_extent(extent: [u32; 2]) -> [u32; 3] {
     [extent[0], extent[1], 1]
 }
 
@@ -55,7 +55,11 @@ fn exportable_memory_type_indices(
     gpu: &RenderContext,
     requirements: &MemoryRequirements,
 ) -> Vec<u32> {
-    let types = &gpu.device.physical_device().memory_properties().memory_types;
+    let types = &gpu
+        .device
+        .physical_device()
+        .memory_properties()
+        .memory_types;
 
     types
         .iter()
@@ -67,12 +71,12 @@ fn exportable_memory_type_indices(
                 .property_flags
                 .intersects(MemoryPropertyFlags::DEVICE_LOCAL)
                 && requirements.memory_type_bits & 1_u32.checked_shl(index).unwrap_or(0) != 0)
-                .then(|| index)
+                .then_some(index)
         })
         .collect()
 }
 
-fn export_handle_types() -> ExternalMemoryHandleTypes {
+const fn export_handle_types() -> ExternalMemoryHandleTypes {
     if cfg!(windows) {
         ExternalMemoryHandleTypes::OPAQUE_WIN32
     } else if cfg!(unix) {
@@ -102,13 +106,10 @@ fn allocate_slot(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Arc<Im
             ..MemoryAllocateInfo::default()
         };
 
-        match DeviceMemory::try_allocate(&gpu.device, &allocate_info) {
-            Ok(allocated) => {
-                memory = Some(allocated);
+        if let Ok(allocated) = DeviceMemory::try_allocate(&gpu.device, &allocate_info) {
+            memory = Some(allocated);
 
-                break;
-            }
-            Err(_) => continue,
+            break;
         }
     }
 
@@ -117,11 +118,14 @@ fn allocate_slot(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Arc<Im
 
     let image = raw
         .try_bind_memory([ResourceMemory::new_dedicated(memory)])
-        .map_err(|(err, _raw, _allocations)| anyhow::anyhow!("{:?}", err))?;
+        .map_err(|(err, _raw, _allocations)| anyhow::anyhow!("{err:?}"))?;
 
     Ok(Arc::new(image))
 }
 
+/// # Errors
+///
+/// Returns an error if `get_memory_win32_handle_khr` call returned an error
 #[cfg(windows)]
 pub fn export_win32_handle(memory: &DeviceMemory) -> anyhow::Result<vk::HANDLE> {
     let info_vk = vk::MemoryGetWin32HandleInfoKHR::default()
@@ -134,7 +138,7 @@ pub fn export_win32_handle(memory: &DeviceMemory) -> anyhow::Result<vk::HANDLE> 
     unsafe {
         (fns.khr_external_memory_win32.get_memory_win32_handle_khr)(
             memory.device().handle(),
-            &info_vk,
+            &raw const info_vk,
             output.as_mut_ptr(),
         )
     }
@@ -149,7 +153,13 @@ pub fn export_win32_handle(_memory: &DeviceMemory) -> anyhow::Result<std::ffi::c
     anyhow::bail!("win32 export requires windows")
 }
 
-pub fn delivery_memory(resources: &Resources, physical_id: Id<Image>) -> anyhow::Result<Arc<DeviceMemory>> {
+/// # Errors
+///
+/// Returns an error if delivery image memory is not bound
+pub fn delivery_memory(
+    resources: &Resources,
+    physical_id: Id<Image>,
+) -> anyhow::Result<Arc<DeviceMemory>> {
     let image = resources.image(physical_id).image().clone();
 
     match image.memory() {
@@ -163,6 +173,9 @@ pub fn delivery_memory(resources: &Resources, physical_id: Id<Image>) -> anyhow:
 }
 
 impl DeliveryRing {
+    /// # Errors
+    ///
+    /// Returns an error image allocation failed
     pub fn new(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Self> {
         let physical = (0..SLOT_COUNT)
             .map(|_| {
@@ -174,6 +187,9 @@ impl DeliveryRing {
         Ok(Self { physical, extent })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if image allocation failed
     pub fn recreate(&mut self, gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<()> {
         if extent == self.extent {
             return Ok(());
@@ -200,10 +216,14 @@ impl DeliveryRing {
         Ok(())
     }
 
-    pub fn extent(&self) -> [u32; 2] {
+    #[must_use]
+    pub const fn extent(&self) -> [u32; 2] {
         self.extent
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if slot at index does not exist
     pub fn image(&self, resources: &Resources, slot: usize) -> anyhow::Result<Arc<Image>> {
         let id = self
             .physical
@@ -213,6 +233,9 @@ impl DeliveryRing {
         Ok(resources.image(*id).image().clone())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if slot at index does not exist
     pub fn physical_id(&self, slot: usize) -> anyhow::Result<Id<Image>> {
         self.physical
             .get(slot)

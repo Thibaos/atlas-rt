@@ -2,10 +2,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use glam::{Mat4, camera::lh::proj::vulkan::perspective};
-use vulkano::{
-    image::{Image, ImageCreateInfo, ImageLayout, ImageType, ImageUsage, view::ImageView},
-
-};
+use vulkano::image::{Image, ImageCreateInfo, ImageLayout, ImageType, ImageUsage, view::ImageView};
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
     descriptor_set::StorageImageId,
@@ -18,12 +15,14 @@ use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
     context::RenderContext,
-    pipeline::FrameInput,
     delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, bind_slot, delivery_memory},
+    pipeline::FrameInput,
     region::{
         feed::RendererInput,
         residency::RegionStore,
-        task::{RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen},
+        task::{
+            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+        },
     },
 };
 
@@ -67,7 +66,11 @@ fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Ca
         _ => width as f32 / height as f32,
     };
 
-    let fov = if fov > 0.0 { fov } else { crate::render::pipeline::DEFAULT_FOV };
+    let fov = if fov > 0.0 {
+        fov
+    } else {
+        crate::render::pipeline::DEFAULT_FOV
+    };
 
     let proj = perspective(fov, aspect, PROJ_NEAR, PROJ_FAR);
 
@@ -77,6 +80,9 @@ fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Ca
     }
 }
 
+/// # Errors
+///
+/// Returns an error if any delivery slot is empty, or image view creation failed
 fn slot_storage_ids(
     gpu: &RenderContext,
     delivery: &DeliveryRing,
@@ -140,14 +146,18 @@ mod tests {
 /// The delivery slot the frame writes: the ring slot if the rewrite gate lets
 /// it, else an eligible slot, preferring a never-wrapped slot and then the
 /// oldest wrap. `None` when every slot is still inside the gate; a rotating
-/// wrap schedule never reaches that (SLOT_COUNT == REWRITE_GATE_TICKS == 3).
+/// wrap schedule never reaches that (`SLOT_COUNT` == `REWRITE_GATE_TICKS` == 3).
 fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
     let eligible = |slot: usize| -> bool {
-        ledger.wraps
+        ledger
+            .wraps
             .get(slot)
             .copied()
             .flatten()
-            .is_none_or(|wrap| ledger.tick >= wrap + REWRITE_GATE_TICKS)
+            .is_none_or(|wrap| {
+                wrap.checked_add(REWRITE_GATE_TICKS)
+                    .is_some_and(|res| ledger.tick >= res)
+            })
     };
 
     if eligible(bind) {
@@ -173,11 +183,18 @@ fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
         }
     }
 
-    oldest_wrap
-        .map_or(fallback_slot, |(slot, _)| Some(slot))
+    oldest_wrap.map_or(fallback_slot, |(slot, _)| Some(slot))
 }
 
 impl EmbeddedPipeline {
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///   - Region store creation failed
+    ///   - Renderer input creation failed
+    ///   - Shader loading failed
+    ///   - Region render task creation failed
+    ///   - Image storage is empty
     pub fn new(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Self> {
         let delivery = DeliveryRing::new(gpu, extent)?;
         let store = RegionStore::new_empty(gpu)?;
@@ -237,10 +254,7 @@ impl EmbeddedPipeline {
             },
             scene: default_scene(),
             swapchain_storage_image_ids: Vec::new(),
-            color_image_id: storage_ids
-                .first()
-                .copied()
-                .context("no delivery slots")?,
+            color_image_id: storage_ids.first().copied().context("no delivery slots")?,
             delta_time: 0.0,
             mode: RenderMode::default(),
             render_extent: extent,
@@ -258,6 +272,9 @@ impl EmbeddedPipeline {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error is store upload failed
     pub fn upload_palette(
         &self,
         gpu: &RenderContext,
@@ -266,34 +283,51 @@ impl EmbeddedPipeline {
         self.store.upload_palette(gpu, colors)
     }
 
-    pub fn input(&self) -> &RendererInput {
+    pub const fn input(&self) -> &RendererInput {
         &self.input
     }
 
-    pub fn extent(&self) -> [u32; 2] {
+    pub const fn extent(&self) -> [u32; 2] {
         self.delivery.extent()
     }
 
-    pub fn slot_image(
-        &self,
-        gpu: &RenderContext,
-        slot: usize,
-    ) -> anyhow::Result<Arc<Image>> {
+    /// # Errors
+    ///
+    /// Returns an error if delivery image fetch failed
+    pub fn slot_image(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<Arc<Image>> {
         self.delivery.image(&gpu.resources, slot)
     }
 
-    pub fn slot_memory(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<Arc<DeviceMemory>> {
+    /// # Errors
+    ///
+    /// Returns an error if store upload failed
+    pub fn slot_memory(
+        &self,
+        gpu: &RenderContext,
+        slot: usize,
+    ) -> anyhow::Result<Arc<DeviceMemory>> {
         let physical = self.delivery.physical_id(slot)?;
 
         delivery_memory(&gpu.resources, physical)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if store image fetch failed
     pub fn slot_image_handle(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<u64> {
         let image = self.slot_image(gpu, slot)?;
 
         Ok(image.handle().as_raw())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if:
+    ///   - Flight waiting failed
+    ///   - Delivery recreation failed
+    ///   - `slot_storage_ids` failed
+    ///   - Store `apply` failed
+    ///   - Current slot is invalid
     #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn run_frame(
         &mut self,
@@ -308,9 +342,7 @@ impl EmbeddedPipeline {
         }
 
         if extent != self.delivery.extent() {
-            gpu.resources
-                .flight(gpu.graphics_flight_id)
-                .wait_idle()?;
+            gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
 
             let mut batch = gpu.resources.create_deferred_batch();
 

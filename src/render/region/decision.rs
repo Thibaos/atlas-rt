@@ -42,6 +42,9 @@ pub struct ResidencyDecision {
     pub table_changed: bool,
 }
 
+/// # Errors
+///
+/// Returns an error if index casting or `slot_of` failed
 pub fn decide(
     slots: &[Option<RegionSlot>],
     resident_ids: &[u32],

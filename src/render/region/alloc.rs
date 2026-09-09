@@ -64,6 +64,9 @@ pub struct BlasAllocation {
     pub(crate) as_storage: Option<(Arc<AccelerationStructure>, u64)>,
 }
 
+/// # Errors
+///
+/// Returns an error if buffer creation failed
 pub fn allocate_pool(
     gpu: &RenderContext,
     free: &mut FreeLists,
@@ -101,6 +104,9 @@ pub fn allocate_pool(
     }
 }
 
+/// # Errors
+///
+/// Returns an error if device layout creation failed
 pub fn allocate_blas(
     gpu: &RenderContext,
     free: &mut FreeLists,

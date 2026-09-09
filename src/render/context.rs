@@ -38,7 +38,13 @@ pub struct RenderContext {
     pub compute_flight_id: Id<Flight>,
 }
 
-#[allow(clippy::too_many_lines)]
+/// # Errors
+///
+/// Returns an error if:
+///   - No physical device
+///   - Physical device has no graphics support
+///   - No queue with graphics support found
+///   - No queue with compute support found
 fn create_device(
     instance: &Arc<Instance>,
     presentation: Option<&EventLoop<()>>,
@@ -68,7 +74,6 @@ fn create_device(
         shader_float64: true,
         shader_int64: true,
         shader_buffer_int64_atomics: true,
-        shader_int8: true,
         shader_subgroup_clock: true,
         shader_device_clock: cfg!(debug_assertions),
         storage_buffer8_bit_access: true,
@@ -88,12 +93,9 @@ fn create_device(
                 .position(|(i, q)| {
                     u32::try_from(i).is_ok_and(|queue_family_index| {
                         q.queue_flags.intersects(QueueFlags::GRAPHICS)
-                            && match &presentation {
-                                Some(event_loop) => {
-                                    p.presentation_support(queue_family_index, event_loop)
-                                }
-                                None => true,
-                            }
+                            && presentation.as_ref().is_none_or(|event_loop| {
+                                p.presentation_support(queue_family_index, event_loop)
+                            })
                     })
                 })
                 .map(|i| (p, u32::try_from(i)))
@@ -159,6 +161,9 @@ fn create_device(
 }
 
 impl RenderContext {
+    /// # Errors
+    ///
+    /// Returns an error if vulkan library or device creation failed
     pub fn new(event_loop: &EventLoop<()>) -> anyhow::Result<Self> {
         let required_extensions = Surface::required_extensions(event_loop);
 
@@ -180,8 +185,12 @@ impl RenderContext {
         Self::from_queues(instance, device, queues)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if vulkan library or device creation failed
     pub fn new_headless() -> anyhow::Result<Self> {
         let library = unsafe { VulkanLibrary::new() }?;
+
         let instance = Instance::new(
             &library,
             &InstanceCreateInfo {

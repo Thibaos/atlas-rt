@@ -26,6 +26,7 @@ pub struct RegionMirror {
 }
 
 impl RegionMirror {
+    #[must_use]
     pub fn new(region_index: IVec3) -> Self {
         Self {
             region_index,
@@ -33,6 +34,7 @@ impl RegionMirror {
         }
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.microchunks.is_empty()
     }
@@ -55,6 +57,9 @@ impl RegionMirror {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error from `pack_region`
     pub fn pack(&self) -> anyhow::Result<RegionData> {
         debug_assert!(!self.is_empty(), "packing an empty mirror");
 
@@ -115,6 +120,9 @@ impl ChangeQueue {
         self.inner.wake_worker.notify_all();
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if any snapshot region is out of lattice
     pub fn submit_batch<I>(&self, snapshots: I) -> anyhow::Result<()>
     where
         I: IntoIterator<Item = MicroChunkSnapshot>,
@@ -163,6 +171,9 @@ pub struct RendererInput {
 }
 
 impl RendererInput {
+    /// # Errors
+    ///
+    /// Returns an error if thread spawn failed
     pub fn new() -> anyhow::Result<Self> {
         let queue = ChangeQueue::new();
         let inner = queue.inner.clone();
@@ -186,6 +197,9 @@ impl RendererInput {
         self.queue.submit_microchunk(snapshot);
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if queue `submit_batch` failed
     pub fn submit_batch<I>(&self, snapshots: I) -> anyhow::Result<()>
     where
         I: IntoIterator<Item = MicroChunkSnapshot>,
@@ -193,6 +207,9 @@ impl RendererInput {
         self.queue.submit_batch(snapshots)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if pending lock poisoned
     pub fn wait_until_idle(&self) -> anyhow::Result<()> {
         let Ok(mut pending) = self.queue.inner.pending.lock() else {
             bail!("pending lock poisoned");
@@ -219,6 +236,9 @@ impl RendererInput {
         dirty
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if packed lock poisoned or region has no ready pack
     pub fn packed_region(&self, region_index: IVec3) -> anyhow::Result<Option<RegionData>> {
         let ready = {
             let Ok(mut packed) = self.queue.inner.packed.lock() else {
@@ -243,6 +263,9 @@ impl RendererInput {
         Ok(None)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if packed lock poisoned
     pub fn packed_regions(&self) -> anyhow::Result<Vec<RegionData>> {
         let Ok(mut packed) = self.queue.inner.packed.lock() else {
             bail!("packed lock poisoned");
@@ -912,7 +935,8 @@ mod tests {
     #[test]
     #[ignore = "bench: cargo test --release input_worker_pack_timings -- --ignored --nocapture"]
     fn input_worker_pack_timings() {
-        let path = std::env::var("ATLAS_BENCH_VOX").unwrap_or_else(|_| "assets/bistro.vox".to_string());
+        let path =
+            std::env::var("ATLAS_BENCH_VOX").unwrap_or_else(|_| "assets/bistro.vox".to_string());
         let data = dot_vox::load(&path).unwrap();
         let (world, _) = World::new_clipped(&data);
 
@@ -955,6 +979,9 @@ mod tests {
         println!("packed bytes          {packed_bytes}");
 
         assert_eq!(regions.len(), mirror_regions);
-        assert_eq!(packed_bytes, consumed_bytes, "consume must yield every pack");
+        assert_eq!(
+            packed_bytes, consumed_bytes,
+            "consume must yield every pack"
+        );
     }
 }

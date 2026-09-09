@@ -27,6 +27,9 @@ pub mod composite_shader {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if shader loading, bindless context loading, or pipeline layout creation failed
 pub fn create_composite_pipeline(gpu: &RenderContext) -> anyhow::Result<Arc<ComputePipeline>> {
     let shader = unsafe {
         composite_shader::load(&gpu.device)?
@@ -35,10 +38,12 @@ pub fn create_composite_pipeline(gpu: &RenderContext) -> anyhow::Result<Arc<Comp
     };
 
     let stage = PipelineShaderStageCreateInfo::new(&shader);
+
     let bcx = gpu
         .resources
         .bindless_context()
         .context("bindless context not found")?;
+
     let layout = bcx.pipeline_layout_from_stages(slice::from_ref(&stage))?;
 
     Ok(ComputePipeline::new(
@@ -54,6 +59,7 @@ pub struct CompositeTask {
 }
 
 impl CompositeTask {
+    #[must_use]
     pub const fn new(swapchain_id: Id<Swapchain>) -> Self {
         Self {
             swapchain_id,

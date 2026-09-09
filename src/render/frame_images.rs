@@ -84,6 +84,9 @@ impl FrameImages {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `swapchain_storage_views` or image view creation failed
     pub fn recreate(
         &mut self,
         resources: &Resources,
