@@ -367,16 +367,7 @@ impl AtlasRtView {
     }
 
     fn view_matrix(&self) -> glam::Mat4 {
-        let [x, y, z] = self.basis.rows;
-
-        let world = glam::Mat4::from_cols_array_2d(&[
-            [x.x, y.x, z.x, self.origin.x],
-            [x.y, y.y, z.y, self.origin.y],
-            [x.z, y.z, z.z, self.origin.z],
-            [0.0, 0.0, 0.0, 1.0],
-        ]);
-
-        world.inverse()
+        camera_view(self.origin, self.basis)
     }
 
     fn viewport_extent(&self) -> [u32; 2] {
@@ -566,5 +557,54 @@ impl AtlasRtView {
             mask: mask_bytes,
             materials: materials.to_vec(),
         })
+    }
+}
+
+/// The world matrix from a godot transform, then inverted into the view the
+/// ray camera consumes. Column-major: [axis_x, axis_y, axis_z, origin].
+#[must_use]
+pub fn camera_view(origin: Vector3, basis: Basis) -> glam::Mat4 {
+    let [basis_x, basis_y, basis_z] = basis.rows;
+
+    let world = glam::Mat4::from_cols_array_2d(&[
+        [basis_x.x, basis_x.y, basis_x.z, 0.0],
+        [basis_y.x, basis_y.y, basis_y.z, 0.0],
+        [basis_z.x, basis_z.y, basis_z.z, 0.0],
+        [origin.x, origin.y, origin.z, 1.0],
+    ]);
+
+    world.inverse()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::camera_view;
+    use godot::prelude::*;
+
+    fn near(actual: f32, expected: f32) -> bool {
+        (actual - expected).abs() < 1.0e-4
+    }
+
+    #[test]
+    fn the_view_keeps_the_camera_pose() {
+        let origin = Vector3::new(3.0, 8.0, 40.0);
+        let basis = Basis::IDENTITY.rotated(Vector3::UP, 0.7);
+
+        let world = camera_view(origin, basis).inverse();
+
+        assert!(near(world.w_axis.x, origin.x));
+        assert!(near(world.w_axis.y, origin.y));
+        assert!(near(world.w_axis.z, origin.z));
+        assert!(near(world.w_axis.w, 1.0));
+    }
+
+    #[test]
+    fn translation_reaches_the_view() {
+        let origin = Vector3::new(0.0, 8.0, 40.0);
+        let view = camera_view(origin, Basis::IDENTITY);
+
+        assert!(near(view.w_axis.x, 0.0));
+        assert!(near(view.w_axis.y, -8.0));
+        assert!(near(view.w_axis.z, -40.0));
     }
 }

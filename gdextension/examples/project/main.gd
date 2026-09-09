@@ -22,13 +22,25 @@ func _process(delta: float) -> void:
 	if target == "":
 		return
 
-	$Camera3D.rotate_y(delta * 0.15)
 	probe_frames += 1
+
+	# Simulate holding S (back toward the world) for the close-in capture.
+	if probe_frames == 40:
+		var key := InputEventKey.new()
+		key.physical_keycode = KEY_S
+		key.pressed = true
+		Input.parse_input_event(key)
+
+	if probe_frames == 300:
+		var key := InputEventKey.new()
+		key.physical_keycode = KEY_W
+		key.pressed = false
+		Input.parse_input_event(key)
 
 	if probe_frames == PROBE_FRAME:
 		get_viewport().get_texture().get_image().save_png(target + "-1.png")
-		print("probe: saved ", target + "-1.png")
+		print("probe: camera=", $Camera3D.get_global_transform().origin)
 
 	if probe_frames == PROBE_FRAME_2:
 		get_viewport().get_texture().get_image().save_png(target + "-2.png")
-		print("probe: saved ", target + "-2.png")
+		print("probe: camera=", $Camera3D.get_global_transform().origin)
