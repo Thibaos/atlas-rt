@@ -560,20 +560,24 @@ impl AtlasRtView {
     }
 }
 
-/// The world matrix from a godot transform, then inverted into the view the
-/// ray camera consumes. Column-major: [axis_x, axis_y, axis_z, origin].
+/// The view matrix the ray camera consumes, from a godot camera transform.
+/// Godot bases store their local axes in the columns, and Godot cameras face
+/// -Z while the ray pass reads left-handed view space where forward is +Z, so
+/// the world matrix inverts into that flipped space.
 #[must_use]
 pub fn camera_view(origin: Vector3, basis: Basis) -> glam::Mat4 {
     let [basis_x, basis_y, basis_z] = basis.rows;
 
     let world = glam::Mat4::from_cols_array_2d(&[
-        [basis_x.x, basis_x.y, basis_x.z, 0.0],
-        [basis_y.x, basis_y.y, basis_y.z, 0.0],
-        [basis_z.x, basis_z.y, basis_z.z, 0.0],
+        [basis_x.x, basis_y.x, basis_z.x, 0.0],
+        [basis_x.y, basis_y.y, basis_z.y, 0.0],
+        [basis_x.z, basis_y.z, basis_z.z, 0.0],
         [origin.x, origin.y, origin.z, 1.0],
     ]);
 
-    world.inverse()
+    let forward_flip = glam::Mat4::from_scale(glam::Vec3::new(1.0, 1.0, -1.0));
+
+    forward_flip * world.inverse()
 }
 
 #[cfg(test)]
@@ -585,26 +589,54 @@ mod tests {
         (actual - expected).abs() < 1.0e-4
     }
 
+    fn basis_axes(basis: Basis) -> [glam::Vec3; 3] {
+        let [x, y, z] = basis.rows;
+
+        [
+            glam::Vec3::new(x.x, y.x, z.x),
+            glam::Vec3::new(x.y, y.y, z.y),
+            glam::Vec3::new(x.z, y.z, z.z),
+        ]
+    }
+
+    #[test]
+    fn the_identity_camera_faces_neg_z() {
+        let view = camera_view(Vector3::ZERO, Basis::IDENTITY).inverse();
+        let forward = view.transform_vector3(glam::Vec3::Z);
+
+        assert!(near(forward.z, -1.0));
+    }
+
+    #[test]
+    fn the_camera_rays_follow_the_godot_facing() {
+        let origin = Vector3::new(-2.0, 5.0, 7.0);
+        let basis = Basis::IDENTITY
+            .rotated(Vector3::UP, 0.9)
+            .rotated(Vector3::RIGHT, -0.4);
+
+        let view_inverse = camera_view(origin, basis).inverse();
+        let [axis_x, axis_y, axis_z] = basis_axes(basis);
+
+        let forward = view_inverse.transform_vector3(glam::Vec3::Z);
+        assert!(near(forward.x, -axis_z.x) && near(forward.z, -axis_z.z));
+
+        let right = view_inverse.transform_vector3(glam::Vec3::X);
+        assert!(near(right.x, axis_x.x) && near(right.z, axis_x.z));
+
+        let up = view_inverse.transform_vector3(glam::Vec3::Y);
+        assert!(near(up.y, axis_y.y));
+    }
+
     #[test]
     fn the_view_keeps_the_camera_pose() {
         let origin = Vector3::new(3.0, 8.0, 40.0);
         let basis = Basis::IDENTITY.rotated(Vector3::UP, 0.7);
 
-        let world = camera_view(origin, basis).inverse();
+        let view_inverse = camera_view(origin, basis).inverse();
 
-        assert!(near(world.w_axis.x, origin.x));
-        assert!(near(world.w_axis.y, origin.y));
-        assert!(near(world.w_axis.z, origin.z));
-        assert!(near(world.w_axis.w, 1.0));
-    }
-
-    #[test]
-    fn translation_reaches_the_view() {
-        let origin = Vector3::new(0.0, 8.0, 40.0);
-        let view = camera_view(origin, Basis::IDENTITY);
-
-        assert!(near(view.w_axis.x, 0.0));
-        assert!(near(view.w_axis.y, -8.0));
-        assert!(near(view.w_axis.z, -40.0));
+        assert!(near(view_inverse.w_axis.x, origin.x));
+        assert!(near(view_inverse.w_axis.y, origin.y));
+        assert!(near(view_inverse.w_axis.z, origin.z));
+        assert!(near(view_inverse.w_axis.w, 1.0));
     }
 }

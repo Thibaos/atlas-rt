@@ -112,7 +112,7 @@ enum MouseButton {
 
 ## The factor by which to multiply or divide the camera speed in order to
 ## move faster or slower.
-@export var speed_factor : int = 3
+@export var speed_factor : float = 1.5
 
 ## Adds a sphere collision shape to the camera. You can setup
 ## the collision layers as you please.
@@ -184,8 +184,10 @@ func _ready() -> void:
 	rotation = Vector3.ZERO
 	set_rot(rot)
 
-
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
+	if _is_cam_action_pressed(_ACTION_FASTER):   fly_speed *= speed_factor
+	if _is_cam_action_pressed(_ACTION_SLOWER):   fly_speed /= speed_factor
+	
 	_check_mouse_capture(event)
 
 	if not _mouse_hidden:
@@ -206,19 +208,16 @@ func _physics_process(delta: float) -> void:
 	var aim : Basis = _camera.get_camera_transform().basis
 
 	var dir := Vector3()
-	var spd := fly_speed
 
 	if _mouse_hidden or keep_key_controls:
 		if _is_cam_action_pressed(_ACTION_FORWARD):  dir -= aim[2]
 		if _is_cam_action_pressed(_ACTION_BACKWARD): dir += aim[2]
 		if _is_cam_action_pressed(_ACTION_LEFT):     dir -= aim[0]
 		if _is_cam_action_pressed(_ACTION_RIGHT):    dir += aim[0]
-		if _is_cam_action_pressed(_ACTION_FASTER):   spd *= speed_factor
-		if _is_cam_action_pressed(_ACTION_SLOWER):   spd /= speed_factor
 
 	dir = dir.normalized()
 
-	var target := dir * spd
+	var target := dir * fly_speed
 	velocity = velocity.lerp( target, acceleration*delta )
 	move_and_slide()
 
@@ -226,7 +225,7 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 
 
-func _is_cam_action_pressed(action:String) -> bool:
+func _is_cam_action_pressed(action: String) -> bool:
 	if not use_default_controls and InputMap.has_action(action):
 		return Input.is_action_pressed(action)
 	return Input.is_key_pressed(_actions_to_key[action])
