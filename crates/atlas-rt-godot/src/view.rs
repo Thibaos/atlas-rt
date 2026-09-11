@@ -358,17 +358,14 @@ impl AtlasRtView {
         mask: PackedByteArray,
         materials: PackedByteArray,
     ) -> bool {
-        match Self::validate_edit(coords, &mask, &materials) {
-            Ok(snapshot) => {
-                let planned = batch::plan_edit(vec![snapshot], &self.world_chunks);
+        let edit = Self::validate_edit(coords, &mask, &materials);
 
-                self.apply_batch(planned)
-            }
-            Err(reason) => {
-                godot_error!("{}{}", REJECT, reason);
-                false
-            }
-        }
+        self.submit_edits(edit.map(|snapshot| vec![snapshot]))
+    }
+
+    #[func]
+    pub fn submit_batch(&mut self, edits: Array<Variant>) -> bool {
+        self.submit_edits(Self::validate_edits(&edits))
     }
 }
 
@@ -559,6 +556,48 @@ impl AtlasRtView {
         };
 
         shader.set_shader_parameter(ATLAS_FRAME_UNIFORM, &frame.to_variant());
+    }
+
+    /// Plans validated edits into one batch. A rejected boundary read is logged
+    /// here, once.
+    fn submit_edits(&mut self, edits: Result<Vec<MicroChunkSnapshot>, String>) -> bool {
+        match edits {
+            Ok(snapshots) => self.apply_batch(batch::plan_edit(snapshots, &self.world_chunks)),
+            Err(reason) => {
+                godot_error!("{}{}", REJECT, reason);
+                false
+            }
+        }
+    }
+
+    fn validate_edits(edits: &Array<Variant>) -> Result<Vec<MicroChunkSnapshot>, String> {
+        let mut snapshots = Vec::with_capacity(edits.len());
+
+        for (index, edit) in edits.iter_shared().enumerate() {
+            let fields = edit
+                .try_to::<VarDictionary>()
+                .map_err(|_| format!("edit {index} is not a Dictionary"))?;
+
+            let coords = Self::read_field::<Vector3i>(&fields, index, "coords")?;
+            let mask = Self::read_field::<PackedByteArray>(&fields, index, "mask")?;
+            let materials = Self::read_field::<PackedByteArray>(&fields, index, "materials")?;
+
+            snapshots.push(Self::validate_edit(coords, &mask, &materials)?);
+        }
+
+        Ok(snapshots)
+    }
+
+    fn read_field<T: FromGodot>(
+        fields: &VarDictionary,
+        index: usize,
+        name: &str,
+    ) -> Result<T, String> {
+        fields
+            .get(name)
+            .ok_or_else(|| format!("edit {index} has no {name}"))?
+            .try_to::<T>()
+            .map_err(|_| format!("edit {index} field {name} has the wrong type"))
     }
 
     fn validate_edit(

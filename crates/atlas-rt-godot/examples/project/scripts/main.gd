@@ -34,7 +34,4 @@ func clear_world() -> bool:
 	return view.clear_world()
 
 func load_world(path: String) -> bool:
-	if view.clear_world():
-		return view.load_world(path)
-	
-	return false
+	return view.load_world(path)
