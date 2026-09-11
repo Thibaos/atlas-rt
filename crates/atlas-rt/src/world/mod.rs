@@ -17,6 +17,7 @@ pub enum BoundsPolicy {
     Clip,
 }
 
+pub mod batch;
 pub mod format;
 pub mod grid;
 pub mod scene_graph;

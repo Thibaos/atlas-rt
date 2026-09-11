@@ -31,6 +31,16 @@ pub struct MicroChunkSnapshot {
 }
 
 impl MicroChunkSnapshot {
+    /// A Snapshot that empties its Micro-chunk.
+    #[must_use]
+    pub const fn cleared(global_coords: IVec3) -> Self {
+        Self {
+            global_coords,
+            mask: [0u8; 64],
+            materials: Vec::new(),
+        }
+    }
+
     #[allow(clippy::as_conversions)]
     #[must_use]
     pub fn occupied_count(&self) -> usize {

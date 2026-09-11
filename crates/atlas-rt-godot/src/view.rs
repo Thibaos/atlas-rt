@@ -1,7 +1,4 @@
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex, mpsc},
-};
+use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
     Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, ShaderMaterial, Texture2Drd,
@@ -16,6 +13,7 @@ use atlas_rt::render::{
     region::task::RenderMode,
 };
 use atlas_rt::world::{
+    batch::{self, TrackedCoords},
     format::{get_palette, open_bytes},
     grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
     snapshot::{MicroChunkSnapshot, emit_snapshots},
@@ -46,7 +44,7 @@ pub struct AtlasRtView {
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
     wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
-    world_chunks: HashSet<glam::IVec3>,
+    world_chunks: TrackedCoords,
     tick: u64,
     camera: Option<Gd<Camera3D>>,
 
@@ -68,7 +66,7 @@ impl IControl for AtlasRtView {
             worker_publish_in: None,
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
-            world_chunks: HashSet::new(),
+            world_chunks: TrackedCoords::default(),
             tick: 0,
             camera: None,
             base,
@@ -280,10 +278,6 @@ impl AtlasRtView {
 
         let (world, clipped) = atlas_rt::world::World::new_clipped(&voxel_data);
 
-        if !self.clear_world() {
-            return false;
-        }
-
         let Some(pipeline) = self.pipeline.clone() else {
             return false;
         };
@@ -292,19 +286,21 @@ impl AtlasRtView {
             godot_print!("atlas_rt: clipped {clipped} voxels outside the lattice",);
         }
 
-        match emit_snapshots(&world) {
-            Ok(snapshots) => {
-                if !self.world_edit(snapshots) {
-                    godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
-
-                    return false;
-                }
-            }
+        let snapshots = match emit_snapshots(&world) {
+            Ok(snapshots) => snapshots,
             Err(err) => {
                 godot_error!("atlas_rt: snapshot emit failed: {}", err);
 
                 return false;
             }
+        };
+
+        let planned = batch::plan_load(snapshots, &self.world_chunks);
+
+        if !self.apply_batch(planned) {
+            godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
+
+            return false;
         }
 
         if let Some(gpu_shared) = self.gpu.as_ref() {
@@ -334,7 +330,9 @@ impl AtlasRtView {
             return true;
         }
 
-        if !self.world_edit(std::iter::empty()) {
+        let planned = batch::plan_clear(&self.world_chunks);
+
+        if !self.apply_batch(planned) {
             godot_error!("atlas_rt: clear_world failed: edit queue rejected the clear");
 
             return false;
@@ -361,7 +359,11 @@ impl AtlasRtView {
         materials: PackedByteArray,
     ) -> bool {
         match Self::validate_edit(coords, &mask, &materials) {
-            Ok(snapshot) => self.world_edit([snapshot]),
+            Ok(snapshot) => {
+                let planned = batch::plan_edit(vec![snapshot], &self.world_chunks);
+
+                self.apply_batch(planned)
+            }
             Err(reason) => {
                 godot_error!("{}{}", REJECT, reason);
                 false
@@ -412,34 +414,24 @@ impl AtlasRtView {
         })
     }
 
-    /// Submits an edit batch and records the coordinates it touches. Callers must
-    /// hold no pipeline lock: this takes it, and taking it twice on one thread
-    /// wedges the client.
-    fn world_edit(&mut self, snapshots: impl IntoIterator<Item = MicroChunkSnapshot>) -> bool {
+    /// Submits a planned batch and adopts the tracked set it leaves. Callers
+    /// must hold no pipeline lock: this takes it, and taking it twice on one
+    /// thread wedges the client.
+    fn apply_batch(&mut self, planned: batch::Batch) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
         };
 
-        let snapshots: Vec<MicroChunkSnapshot> = snapshots.into_iter().collect();
+        let submitted = lock(pipeline)
+            .input()
+            .submit_batch(planned.snapshots)
+            .is_ok();
 
-        let edited: Vec<MicroChunkSnapshot> = if self.world_chunks.is_empty() {
-            snapshots
-        } else {
-            let mut edited = snapshots;
+        if submitted {
+            self.world_chunks = planned.tracked;
+        }
 
-            edited.extend(self.world_chunks.iter().map(|&global_coords| MicroChunkSnapshot {
-                global_coords,
-                mask: [0u8; 64],
-                materials: Vec::new(),
-            }));
-
-            edited
-        };
-
-        self.world_chunks
-            .extend(edited.iter().map(|snapshot| snapshot.global_coords));
-
-        lock(pipeline).input().submit_batch(edited).is_ok()
+        submitted
     }
 
     fn probe_backend(
