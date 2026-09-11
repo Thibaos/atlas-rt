@@ -18,19 +18,19 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+#[cfg(debug_assertions)]
+use crate::render::pipeline::next_render_mode;
 use crate::{
     app::{
         input::{Input, InputButton, InputKey},
         player::PlayerController,
         schedule::ScheduleController,
     },
-    render::pipeline::{FrameInput, FramePipeline, DEFAULT_FOV},
-    render::region::task::RenderMode,
     render::context::RenderContext,
+    render::pipeline::{DEFAULT_FOV, FrameInput, FramePipeline},
+    render::region::task::RenderMode,
     world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
 };
-#[cfg(debug_assertions)]
-use crate::render::pipeline::next_render_mode;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -72,7 +72,7 @@ impl App {
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let voxel_data = open_file(world_path);
+        let voxel_data = open_file(&format!("crates/atlas-rt/assets/{world_path}"));
         let (world, clipped) = if clip_oob {
             World::new_clipped(&voxel_data)
         } else {
@@ -236,9 +236,8 @@ impl ApplicationHandler for App {
 
                 let extent = self.window.as_ref().map(|w| w.inner_size());
 
-                let view_extent: [u32; 2] = extent.map_or([0, 0], |extent| {
-                    [extent.width, extent.height]
-                });
+                let view_extent: [u32; 2] =
+                    extent.map_or([0, 0], |extent| [extent.width, extent.height]);
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(

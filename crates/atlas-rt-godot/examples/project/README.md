@@ -5,9 +5,7 @@
 
         cargo build --release
 
-   No copy step: `lib/` is a junction to the workspace target directory
-   (see "Locating the library" below), so the build's output is what Godot
-   loads.
+   Then copy the library Godot loads (see "Locating the library" below).
 
 2. Open the project with the custom template binary:
 
@@ -21,17 +19,13 @@
    retry in v1.
 
 Locating the library. `atlas_rt.gdextension` names `res://lib/atlas_rt_godot.dll`,
-and `lib/` is a directory junction into the workspace's `target/` directory, so a
-build updates the library the project loads and nothing is ever copied by hand.
-Recreate the junction on a fresh checkout:
+so the build's output has to land in `lib/` before Godot sees it:
 
-        cmd /c mklink /J crates\atlas-rt-godot\examples\project\lib target\debug
+        copy target\debug\atlas_rt_godot.dll crates\atlas-rt-godot\examples\project\lib\
 
-The junction points at one profile. It is set to `debug`, so `cargo build` (not
-`--release`) is what updates it. Point it at `target\release` instead if you work
-in release. `lib/` is gitignored, so the junction is per-checkout setup and
-Windows-only. Without it, copy
-`target\<profile>\atlas_rt_godot.dll` into `lib/` after each build.
+Name the profile you actually built, `target\debug` for `cargo build` and
+`target\release` for `cargo build --release`. `lib/` is gitignored, so the copy
+is per-checkout setup and the project does not carry the binary.
 
 Scene layout. main.tscn hosts a Camera3D; main.gd adds an AtlasRtView
 full-rect that reads the camera each tick and loads a .vox world.
