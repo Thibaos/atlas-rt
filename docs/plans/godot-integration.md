@@ -41,13 +41,15 @@ mode.
    bin/godot.windows.template_release.x86_64.exe.
 2. GDExtension crate (godot-rust 0.5.5, default features; api-4-7 is
    opt-in and not needed here). Owns the coordinator, the worker, the
-   atlas-rt pipeline, the composite canvas shader, and every GPU call
-   on atlas-rt's device. All six seam methods are bound at the 4.6
-   default API level: RD.texture_create_from_extension,
-   RD.get_driver_resource, RS.get_rendering_device, RS.texture_rd_create,
+   atlas-rt pipeline, and every GPU call on atlas-rt's device. All six
+   seam methods are bound at the 4.6 default API level:
+   RD.texture_create_from_extension, RD.get_driver_resource,
+   RS.get_rendering_device, RS.texture_rd_create,
    RS.texture_get_native_handle, and Texture2Drd (gdext's casing; no
    shim needed). It opens atlas-rt's internals via pub mod render; pub
-   mod world; with item-level pub grants on the touched items.
+   mod world; with item-level pub grants on the touched items. The
+   display encode is not the extension's: the host applies it (see the
+   color-pipeline bullet under Transport and fallback).
 3. Atlas-rt headless mode. An embedded pipeline constructor with no
    window, no swapchain, no DotVoxData, no World; FrameInput gains
    extent, fov, and an explicit render-mode request (the standalone
@@ -101,13 +103,17 @@ STORAGE | SAMPLED | TRANSFER_SRC, imported as shadow images with
 identical parameters on Godot's device and wrapped same-format.
 
 - The ray pass writes the frame's slot in every Render mode; debug
-  modes paint it raw and the composite shader passes them through its
-  mode uniform. The embedded taskgraph drops the Composite node.
-- The color pipeline (ACES, identity exposure, gamma 2.2, dither) moves
-  into the extension's full-rect canvas shader, sampling a Texture2Drd
+  modes paint it raw and the host's composite shader gates its curve to
+  Voxel through its mode uniform. Neither the embedded nor the
+  standalone taskgraph has a Composite node: the engine stores raw
+  linear radiance and the host encodes it.
+- The color pipeline (ACES, identity exposure, gamma 2.2, dither) lives
+  in the host's full-rect canvas shader, sampling a Texture2Drd
   (zero-copy) or a fallback ImageTexture (16F readback, FORMAT_RGBAH).
   Both backends produce one identical picture. Fixed look in v1:
-  uniforms carry today's constants, no gameplay-facing knobs.
+  uniforms carry today's constants, no gameplay-facing knobs. Its
+  `target_linear` uniform must match the project's 2D color space, and
+  nothing on the engine side can detect a mismatch.
 - Layout per cycle: entry UNDEFINED, transition to General, write in
   General, exit to SHADER_READ_ONLY_OPTIMAL before the release signal.
   Godot samples SHADER_READ_ONLY_OPTIMAL steady state; the CPU readback
@@ -216,8 +222,8 @@ Host API sketch (from ticket 06, unchanged):
 Per-frame flow: _process marshals and kicks; the worker runs one
 atlas-rt frame (drain edits, apply and rebuild, ray pass, exit
 transition, publish); frame_post_draw wraps the newest slot and rotates
-the Texture2Drd; the composite canvas shader draws it, its mode uniform
-passing debug paints through.
+the Texture2Drd; the host's composite canvas shader draws it, its mode
+uniform gating the curve to Voxel and passing debug paints through.
 
 Boundary rule. Every public edit and load entry validates at the
 GDScript boundary (coords inside the lattice and multiples of 8; mask

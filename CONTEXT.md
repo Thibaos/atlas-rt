@@ -156,19 +156,19 @@ _Avoid_: Sky, empty space
 
 **Composite**:
 The color pipeline that exposes the ray pass's radiance for display: the ACES
-curve at a fixed identity exposure, gamma, and a one-LSB display dither.
-Standalone it is a taskgraph node writing the swapchain; embedded it is the
-extension's full-rect canvas shader over the Delivery image. Debug Render
-modes paint directly and bypass it.
+curve at a fixed identity exposure, gamma, and a one-LSB display dither. It is
+the host's, not the engine's: the ray pass stores raw linear radiance and a
+host canvas shader over the Delivery image applies the curve. The shader gates
+it to Voxel; debug Render modes paint directly and bypass it.
 _Avoid_: post-processing (beyond exposure/tonemap, out of scope), final pass,
 eye adaptation (the exposure is a constant, not a meter), color grade
 
 ## Frame lifecycle
 
 **Frame images**:
-The renderer's extent-bound image set: the ray pass's color images (the
-Delivery images when embedded) and, standalone, the swapchain's bindless
-storage views. A resize destroys and recreates them together.
+The renderer's extent-bound image set. Embedded, these are the Delivery
+images; standalone there are none, and the ray pass stores into the
+swapchain's bindless storage views instead.
 _Avoid_: render targets, trace-pass images, G-buffer
 
 **Delivery image**:

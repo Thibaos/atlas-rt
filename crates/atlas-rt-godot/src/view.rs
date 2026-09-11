@@ -10,13 +10,13 @@
     clippy::arithmetic_side_effects,
     clippy::needless_pass_by_value,
     clippy::missing_const_for_fn,
-    clippy::option_if_let_else,
+    clippy::option_if_let_else
 )]
 
 use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
-    Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, Texture2Drd,
+    Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, ShaderMaterial, Texture2Drd,
 };
 use godot::prelude::*;
 
@@ -39,6 +39,8 @@ const STATUS_LOADING: i32 = 0;
 const STATUS_READY: i32 = 1;
 const STATUS_FAILED: i32 = 2;
 const REJECT: &str = "atlas_rt: rejected input: ";
+const ATLAS_MODE_UNIFORM: &str = "mode";
+const ATLAS_FRAME_UNIFORM: &str = "atlas_frame";
 
 #[derive(GodotClass)]
 #[class(base=Control)]
@@ -150,6 +152,8 @@ impl IControl for AtlasRtView {
                 self.status = STATUS_FAILED;
             }
         }
+
+        self.sync_composite_mode();
     }
 
     fn process(&mut self, delta: f64) {
@@ -197,9 +201,6 @@ impl IControl for AtlasRtView {
 
 #[godot_api]
 impl AtlasRtView {
-    /// The Wrap point per CONTEXT.md: the coordinator adopts the newest
-    /// published slot once Godot has finished drawing the frame, and the
-    /// rewrite gate counts its ticks from here.
     #[func]
     pub fn on_frame_post_draw(&mut self) {
         if self.status != STATUS_READY {
@@ -249,6 +250,19 @@ impl AtlasRtView {
         }
 
         self.render_mode = mode;
+        self.sync_composite_mode();
+    }
+
+    fn sync_composite_mode(&self) {
+        let Some(material) = self.base().get_material() else {
+            return;
+        };
+
+        let Ok(mut shader) = material.try_cast::<ShaderMaterial>() else {
+            return;
+        };
+
+        shader.set_shader_parameter(ATLAS_MODE_UNIFORM, &self.render_mode.to_variant());
     }
 
     #[func]
@@ -386,11 +400,6 @@ impl AtlasRtView {
         lock(pipeline).input().submit_batch(snapshots).is_ok()
     }
 
-    /// The Init probe per CONTEXT.md: the whole engine-build check. Export on
-    /// the delivery memory, then import + shadow-image creation on Godot's
-    /// device through the bridge (a fourth, non-delivery slot), retired
-    /// immediately. Any failure is loud: without the zero_copy backend the
-    /// session delivers nothing.
     fn probe_backend(
         gpu: &Arc<Mutex<RenderContext>>,
         pipeline: &Arc<Mutex<EmbeddedPipeline>>,
@@ -500,6 +509,22 @@ impl AtlasRtView {
         let wrapped = self.wrapped_texture.get_or_insert_with(Texture2Drd::new_gd);
 
         wrapped.set_texture_rd_rid(rid);
+
+        let frame = wrapped.clone();
+
+        self.sync_composite_frame(&frame);
+    }
+
+    fn sync_composite_frame(&self, frame: &Gd<Texture2Drd>) {
+        let Some(material) = self.base().get_material() else {
+            return;
+        };
+
+        let Ok(mut shader) = material.try_cast::<ShaderMaterial>() else {
+            return;
+        };
+
+        shader.set_shader_parameter(ATLAS_FRAME_UNIFORM, &frame.to_variant());
     }
 
     fn validate_edit(
@@ -560,10 +585,6 @@ impl AtlasRtView {
     }
 }
 
-/// The view matrix the ray camera consumes, from a godot camera transform.
-/// Godot bases store their local axes in the columns, and Godot cameras face
-/// -Z while the ray pass reads left-handed view space where forward is +Z, so
-/// the world matrix inverts into that flipped space.
 #[must_use]
 pub fn camera_view(origin: Vector3, basis: Basis) -> glam::Mat4 {
     let [basis_x, basis_y, basis_z] = basis.rows;

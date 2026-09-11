@@ -114,8 +114,6 @@ impl Worker {
                     Ok(Some(slot)) => Some(slot),
                     Ok(None) => None,
                     Err(error) => {
-                        // Not godot_error!: the worker thread must not call
-                        // into the engine; stderr shows in the console.
                         eprintln!("atlas_rt: frame failed: {error:#}");
 
                         None

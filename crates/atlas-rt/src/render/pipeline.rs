@@ -5,21 +5,19 @@ use std::sync::Arc;
 
 use vulkano::{
     VulkanError,
-    image::{ImageFormatInfo, ImageUsage},
+    image::{ImageFormatInfo, ImageLayout, ImageUsage, view::ImageView},
     swapchain::{PresentMode, Surface, SurfaceInfo, Swapchain, SwapchainCreateInfo},
 };
 use vulkano_taskgraph::{
     Id, QueueFamilyType,
-    descriptor_set::StorageImageId,
+    descriptor_set::{BindlessContext, StorageImageId},
     graph::{CompileInfo, ExecutableTaskGraph, ExecuteError, ResourceMap, TaskGraph},
-    resource::{AccessTypes, ImageLayoutType},
+    resource::{AccessTypes, ImageLayoutType, Resources},
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
 use crate::render::{
-    composite::{CompositeTask, create_composite_pipeline},
     context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
-    frame_images::FrameImages,
     region::{
         feed::RendererInput,
         residency::RegionStore,
@@ -47,12 +45,38 @@ pub struct FramePipeline {
     window: Arc<Window>,
     swapchain_id: Id<Swapchain>,
     virtual_swapchain_id: Id<Swapchain>,
+    swapchain_storage: Vec<StorageImageId>,
     recreate_swapchain: bool,
     task_graph: ExecutableTaskGraph<RegionRenderContext>,
-    frame_images: FrameImages,
     region: RegionRenderContext,
     input: RendererInput,
     store: RegionStore,
+}
+
+fn bindless_context(resources: &Resources) -> anyhow::Result<&BindlessContext> {
+    resources
+        .bindless_context()
+        .context("bindless context not found")
+}
+
+fn swapchain_storage_views(
+    resources: &Resources,
+    swapchain_id: Id<Swapchain>,
+) -> anyhow::Result<Vec<StorageImageId>> {
+    let bcx = bindless_context(resources)?;
+    let swapchain = resources.swapchain(swapchain_id);
+
+    swapchain
+        .images()
+        .iter()
+        .map(|image| {
+            let view = ImageView::new_default(image)?;
+
+            Ok(bcx
+                .global_set()
+                .add_storage_image(view, ImageLayout::General))
+        })
+        .collect()
 }
 
 fn create_swapchain(
@@ -114,11 +138,9 @@ impl FramePipeline {
     ///   - `RegionStore::new` failed
     ///   - `Surface::from_window` failed
     ///   - `create_swapchain` failed
-    ///   - Swapchain images is empty
-    ///   - Frame images `recreate` failed
+    ///   - Swapchain storage view creation failed
     ///   - Raygen shader loading failed
     ///   - `RegionRenderTask::new` failed
-    ///   - Taskgraph `add_edge` failed
     pub fn new(
         gpu: &RenderContext,
         window: Arc<Window>,
@@ -137,15 +159,7 @@ impl FramePipeline {
 
         let virtual_swapchain_id = task_graph.add_swapchain(&SwapchainCreateInfo::default());
 
-        let mut frame_images = FrameImages::declare(&mut task_graph);
-        let extent = gpu
-            .resources
-            .swapchain(swapchain_id)
-            .images()
-            .first()
-            .context("swapchain has no images")?
-            .extent();
-        frame_images.recreate(&gpu.resources, swapchain_id, extent)?;
+        let swapchain_storage = swapchain_storage_views(&gpu.resources, swapchain_id)?;
 
         let raygen = unsafe { production_raygen::load(&gpu.device)? }
             .entry_point("main")
@@ -164,25 +178,9 @@ impl FramePipeline {
             instance_buffer_id,
             AccessTypes::RAY_TRACING_SHADER_ACCELERATION_STRUCTURE_READ,
         );
-        frame_images.declare_trace_outputs(&mut rt_node);
-        let rt_node_id = rt_node.build();
+        rt_node.build();
 
-        let mut composite_node = task_graph.create_task_node(
-            "Composite",
-            QueueFamilyType::Graphics,
-            CompositeTask::new(virtual_swapchain_id),
-        );
-        composite_node.image_access(
-            virtual_swapchain_id.current_image_id(),
-            AccessTypes::COMPUTE_SHADER_STORAGE_WRITE,
-            ImageLayoutType::General,
-        );
-        frame_images.declare_composite_reads(&mut composite_node);
-        let composite_node_id = composite_node.build();
-
-        task_graph.add_edge(rt_node_id, composite_node_id)?;
-
-        let mut task_graph = unsafe {
+        let task_graph = unsafe {
             task_graph.compile(&CompileInfo {
                 queues: &[&gpu.graphics_queue],
                 present_queue: Some(&gpu.graphics_queue),
@@ -191,40 +189,26 @@ impl FramePipeline {
             })
         }?;
 
-        {
-            let composite_pipeline = create_composite_pipeline(gpu)?;
-
-            let task = task_graph
-                .task_node_mut(composite_node_id)?
-                .task_mut()
-                .downcast_mut::<CompositeTask>()
-                .context("composite node holds no CompositeTask")?;
-
-            task.pipeline = Some(composite_pipeline);
-        }
-
-        let mut region = RegionRenderContext {
+        let region = RegionRenderContext {
             camera: production_raygen::Camera {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
             scene: default_scene(),
-            swapchain_storage_image_ids: Vec::new(),
+            swapchain_storage_image_ids: swapchain_storage.clone(),
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,
             mode: RenderMode::default(),
             render_extent: [0, 0],
         };
 
-        frame_images.bind_into(&mut region);
-
         Ok(Self {
             window,
             swapchain_id,
             virtual_swapchain_id,
+            swapchain_storage,
             recreate_swapchain: false,
             task_graph,
-            frame_images,
             region,
             input,
             store,
@@ -245,17 +229,18 @@ impl FramePipeline {
                 ..create_info.clone()
             })?;
 
-        let extent = gpu
-            .resources
-            .swapchain(self.swapchain_id)
-            .images()
-            .first()
-            .context("swapchain has no images")?
-            .extent();
+        let mut batch = gpu.resources.create_deferred_batch();
 
-        self.frame_images
-            .recreate(&gpu.resources, self.swapchain_id, extent)?;
-        self.frame_images.bind_into(&mut self.region);
+        for storage_id in &self.swapchain_storage {
+            batch.destroy_storage_image(*storage_id);
+        }
+
+        batch.enqueue();
+
+        self.swapchain_storage = swapchain_storage_views(&gpu.resources, self.swapchain_id)?;
+        self.region
+            .swapchain_storage_image_ids
+            .clone_from(&self.swapchain_storage);
 
         self.recreate_swapchain = false;
 
@@ -303,10 +288,6 @@ impl FramePipeline {
     fn execute(&mut self) -> anyhow::Result<()> {
         let mut map = ResourceMap::new(&self.task_graph)?;
         map.insert(self.virtual_swapchain_id, self.swapchain_id)?;
-
-        for (virtual_id, physical_id) in self.frame_images.resource_pairs() {
-            map.insert(virtual_id, physical_id)?;
-        }
 
         let window = self.window.clone();
 

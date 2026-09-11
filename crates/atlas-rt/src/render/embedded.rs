@@ -29,11 +29,8 @@ use crate::render::{
 const PROJ_NEAR: f32 = 0.01;
 const PROJ_FAR: f32 = 10000.0;
 
-/// A delivery slot may be rewritten only this many coordinator ticks after
-/// its last wrap (CONTEXT.md: rewrite gate).
 pub const REWRITE_GATE_TICKS: u64 = 3;
 
-/// The coordinator's wrap record handed to the frame path.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WrapLedger {
     pub wraps: [Option<u64>; SLOT_COUNT],
@@ -143,10 +140,6 @@ mod tests {
     }
 }
 
-/// The delivery slot the frame writes: the ring slot if the rewrite gate lets
-/// it, else an eligible slot, preferring a never-wrapped slot and then the
-/// oldest wrap. `None` when every slot is still inside the gate; a rotating
-/// wrap schedule never reaches that (`SLOT_COUNT` == `REWRITE_GATE_TICKS` == 3).
 fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
     let eligible = |slot: usize| -> bool {
         ledger

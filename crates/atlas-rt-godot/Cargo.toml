@@ -1,0 +1,16 @@
+[package]
+name = "atlas-rt-godot"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+godot = "0.5.5"
+atlas-rt = { path = "../atlas-rt" }
+glam = "0.33"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true

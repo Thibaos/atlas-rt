@@ -21,8 +21,6 @@ void reset_payload() {
     shadow_payload.t = FLT_MAX;
     shadow_payload.color = vec4(0.0);
     shadow_payload.normal = vec3(0.0);
-
-    // shadow_payload.attenuation = 1.0;
 }
 
 #define VOXEL_SBT_INDEX 0u
@@ -51,16 +49,16 @@ void main() {
         return;
     }
 
-    if (mode == MODE_VOXEL && payload.t < 1024.0) {
+    if (payload.t < FLT_MAX) {
         vec3 sun_direction = normalize(vec3(-0.5, -0.8, 0.5));
         vec3 hit_position = origin + (payload.t - EPSILON) * direction;
 
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
 
-        if (shadow_payload.t < 1024.0) {
+        if (shadow_payload.t < FLT_MAX) {
             payload.color.rgb *= 0.25;
         }
     }
 
-    imageStore(vko_image2D_rgba16f(color_image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
+    imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
 }

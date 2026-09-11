@@ -389,7 +389,10 @@ mod contract {
 
     use super::*;
 
-    const CONSTS: &str = include_str!("../../../shaders/common/common.glsl");
+    const CONSTS: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/shaders/common/common.glsl"
+    ));
 
     const NAMES: &[&str] = &[
         "RAY_T_MIN",

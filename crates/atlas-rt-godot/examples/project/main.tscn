@@ -10,6 +10,7 @@ script = ExtResource("1_main")
 
 [node name="player" type="CharacterBody3D" parent="." unique_id=276233651]
 script = ExtResource("2_0xm2m")
+mouse_sensitivity = Vector2(0.5, 0.5)
 fly_speed = 200.0
 
 [node name="collider" type="CollisionShape3D" parent="player" unique_id=1681754065]

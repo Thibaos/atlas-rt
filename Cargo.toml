@@ -1,31 +1,13 @@
-[package]
-name = "atlas-rt"
+[workspace]
+members = ["crates/atlas-rt", "crates/atlas-rt-godot"]
+resolver = "3"
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
 publish = false
 
-[dependencies]
-vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
-vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }
-vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
-winit = "0.30"
-dot_vox = "*"
-glam = { version = "*", features = ["bytemuck"] }
-anyhow = "1.0.104"
-rayon = "1.12"
-rustc-hash = "2"
-
-[profile.release]
-codegen-units = 1
-
-[profile.dev]
-opt-level = 1
-debug = "line-tables-only"
-
-[profile.dev.package."*"]
-opt-level = 3
-
-[lints.clippy]
+[workspace.lints.clippy]
 pedantic = { level = "deny", priority = -1 }
 nursery = { level = "deny", priority = -1 }
 unwrap_used = "deny"
@@ -41,3 +23,13 @@ panic_in_result_fn = "deny"
 exit = "deny"
 as_conversions = "deny"
 too_many_arguments = "allow"
+
+[profile.release]
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 3
