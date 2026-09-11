@@ -334,7 +334,7 @@ intact. Edits stay any-time/any-thread; the cap is the only constraint.
 Split of ownership. This plan owns the kick/submission cost, the wrap
 cost, the three-slot ring effects, the CPU-fallback transport cost, and
 the edit-spike cap. The renderer's own workstream keeps ray-pass ms,
-the t pre-pass interplay, and per-edit rebuild strategy beyond the cap.
+the t pre-pass interplay, and the per-edit rebuild strategy beyond the cap.
 The sub-line items fixed by ADR 0007 (tick kick, one submission, the
 bounded own-fence wait, already signaled in steady state) are treated
 as below measurement.

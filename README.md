@@ -9,12 +9,12 @@ See [CONTEXT.md](CONTEXT.md) for the architecture and terminology.
 Two crates share one workspace, one lockfile, one `target/`, and one clippy
 lint table declared in the root `Cargo.toml`:
 
-- `crates/atlas-rt` — the renderer library and the standalone `atlas-rt` binary,
+- `crates/atlas-rt`: the renderer library and the standalone `atlas-rt` binary,
   with `shaders/` and `assets/` beside it.
-- `crates/atlas-rt-godot` — the GDExtension, with the Godot example project
+- `crates/atlas-rt-godot`: the GDExtension, with the Godot example project
   under `examples/project`.
 
-Both build together:
+One command builds both:
 
     cargo build --workspace
 

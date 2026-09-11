@@ -8,14 +8,14 @@ bumped; the transport decision keeps atlas-rt on its own device.
 
 ## Files
 
-- `config.py` — restricts `can_build` to `platform == "windows"`.
-- `SCsub` — clones `env_modules` and adds `*.cpp` to `env.modules_sources`.
-- `register_types.{h,cpp}` — at `MODULE_INITIALIZATION_LEVEL_SERVERS`, one
+- `config.py`: restricts `can_build` to `platform == "windows"`.
+- `SCsub`: clones `env_modules` and adds `*.cpp` to `env.modules_sources`.
+- `register_types.{h,cpp}`: at `MODULE_INITIALIZATION_LEVEL_SERVERS`, one
   `memnew(ExternalMemoryHooks())`. The `VulkanHooks` base constructor is the
   only singleton installer (first construction wins); the object is never
   freed, because the destructor clears the singleton and rendering teardown
   still consults it.
-- `external_memory_hooks.{h,cpp}` — the `VulkanHooks` subclass. The base class
+- `external_memory_hooks.{h,cpp}`: the `VulkanHooks` subclass. The base class
   interface was verified line-by-line against `drivers/vulkan/vulkan_hooks.h`
   of the pinned tag.
 

@@ -9,8 +9,8 @@ across threads, per model in 8192-voxel chunks: each chunk routes
 sequence-tagged records into per-shard mutex-guarded staged maps, and the
 maximum sequence (model order high, file order low) wins, reproducing the
 serial path's last-write-wins. A final per-shard strip rehash converts each
-staged map into the resident material-only map. SceneGraphTraverser borrows
-model voxels as slices instead of cloning them.
+staged map into the resident material-only map. The scene graph traverser
+borrows model voxels as slices instead of cloning them.
 
 ## Status
 

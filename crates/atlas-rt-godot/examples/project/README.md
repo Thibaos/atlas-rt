@@ -13,11 +13,12 @@
 
         <godot-cloned>\bin\godot.windows.template_release.x86_64.exe --path .
 
-   The stock editor binary runs cpu delivery per the plan; zero-copy is
+   The stock editor binary runs CPU delivery per the plan. Zero-copy is
    exercised through the export-run loop.
 
 3. The init log line names the backend. When zero-copy misses the probe the
-   log records the reason and delivery degrades per ADR 0005; no retry in v1.
+   log records the reason and delivery degrades per ADR 0005. There is no
+   retry in v1.
 
 Locating the library. `atlas_rt.gdextension` names `res://lib/atlas_rt_godot.dll`,
 and `lib/` is a directory junction into the workspace's `target/` directory, so a
@@ -27,13 +28,15 @@ Recreate the junction on a fresh checkout:
         cmd /c mklink /J crates\atlas-rt-godot\examples\project\lib target\debug
 
 The junction points at one profile. It is set to `debug`, so `cargo build` (not
-`--release`) is what updates it; point it at `target\release` instead if you work
+`--release`) is what updates it. Point it at `target\release` instead if you work
 in release. `lib/` is gitignored, so the junction is per-checkout setup and
 Windows-only. Without it, copy
 `target\<profile>\atlas_rt_godot.dll` into `lib/` after each build.
 
 Scene layout. main.tscn hosts a Camera3D; main.gd adds an AtlasRtView
 full-rect that reads the camera each tick and loads a .vox world.
+fly_camera.gd is the Godot demo camera, kept close to upstream; its doc
+block follows upstream's style, not this repo's.
 
 Display path. The extension publishes raw linear radiance and does no
 display encoding, so the host owns it: main.gd attaches

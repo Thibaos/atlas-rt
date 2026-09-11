@@ -45,5 +45,5 @@ validator's capture path was removed with the validation teardown
   a taskgraph edge, not an extra pipeline stage; no resolve/copy stages.
 - t_min = near means geometry closer than the near plane is never
   committed; a camera inside a solid voxel renders the enclosing voxel at
-  t_min (DDA commits from the clamped entry cell. See ticket 05 Q4, edge
-  case for ticket 06).
+  t_min, because the DDA commits from the clamped entry cell. See ticket 05
+  Q4, edge case for ticket 06.

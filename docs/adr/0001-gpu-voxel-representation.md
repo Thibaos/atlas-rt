@@ -8,7 +8,7 @@ accepted (rendering-core ticket 04, 2026-08-10)
 
 ## Considered Options
 
-- **Textures / bindless sampled images per micro-chunk**. Rejected: no filtering need for discrete palette indices; sparse micro-chunks demand indirection regardless.
+- **Textures / bindless sampled images per micro-chunk**. Rejected: no filtering need for discrete palette indices, and sparse micro-chunks need indirection anyway.
 - **Dense fixed 512B material slabs per micro-chunk**. Rejected: ~8x memory waste on sparse micro-chunks; the one popcount per committed hit is negligible (material sampling is not the bottleneck).
 - **Material via SBT record offset or payload**. Rejected: cannot vary per primitive within a region / wastes payload bandwidth closest-hit doesn't need.
 - **Full 8^3 hulls**. Rejected by owner: trimmed hulls (Teardown finding 3) avoid intersection-shader invocations for rays that miss a sparse

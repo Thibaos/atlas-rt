@@ -6,9 +6,9 @@ vulkano). Renders sparse voxel worlds loaded from .vox files.
 ## Language
 
 **World**:
-The scene loaded from a .vox file: a sparse set of occupied voxels — a flat
-map keyed by global coordinates, internally sharded 64 ways by hash route —
-plus a 256-color palette. Worlds are loaded once at startup today.
+The scene loaded from a .vox file: a sparse set of occupied voxels, held in a
+flat map keyed by global coordinates, internally sharded 64 ways by hash
+route, plus a 256-color palette. Worlds are loaded once at startup today.
 _Avoid_: Scene, level, map
 
 **Palette**:
@@ -20,7 +20,7 @@ _Avoid_: Color table, LUT
 
 **Material index**:
 The per-voxel u8 the voxel pool carries beside the Occupancy mask: the
-Palette entry the voxel paints with. There is no surface property table —
+Palette entry the voxel paints with. There is no surface property table, so
 the renderer shades from the Palette alone.
 _Avoid_: material id, MATL, material system
 

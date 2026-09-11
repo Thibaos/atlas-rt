@@ -88,7 +88,7 @@ pub fn build_flags(ty: AccelerationStructureType) -> BuildAccelerationStructureF
 
 /// # Errors
 ///
-/// Returns an erros if buffer creation, taskgraph execution, or flight waiting failed
+/// Returns an error if buffer creation, taskgraph execution, or flight waiting failed
 pub fn build_acceleration_structure_in_place(
     geometries: &BuildGeometries,
     primitive_count: u32,

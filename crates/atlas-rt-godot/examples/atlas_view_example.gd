@@ -1,5 +1,5 @@
 # Full-viewport atlas-rt view: the view node draws under a CanvasLayer UI.
-# UI keeps layer >= 1 above the view per the gameplay surface contract.
+# UI keeps layer >= 1 above the view per the gameplay API contract.
 extends Node
 
 func _ready() -> void:

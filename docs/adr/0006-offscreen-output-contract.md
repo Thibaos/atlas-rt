@@ -3,7 +3,7 @@
 Standalone has no Composite: the ray pass writes the linear HDR color image
 (R16G16B16A16_SFLOAT, bindless storage write), and every Render mode stores raw
 radiance straight to the swapchain storage image. Standalone therefore carries
-no display encoding at all — no ACES, no gamma, no dither — and its output is
+no display encoding at all: no ACES, no gamma, no dither. Its output is
 clipped by the 8-bit UNORM swapchain store. The renderer publishes linear
 radiance; the host decides how it looks.
 
@@ -115,7 +115,7 @@ extension's.
   SHADER_READ_ONLY_OPTIMAL on the zero-copy path); the graph's own tracker
   must not be relied on for the shared allocation's layout.
 - HDR 2D stays off: with it on, draws convert to linear and the present
-  blit re-encodes sRGB, a second pipeline on top of the shader's — which is
+  blit re-encodes sRGB, a second pipeline on top of the shader's. That is
   exactly why the shader now gates its own gamma behind `target_linear`
   instead of assuming SDR, and why enabling hdr_2d is a project setting plus
   a uniform rather than a shader rewrite. The RT viewport's Environment must

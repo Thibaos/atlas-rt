@@ -2,7 +2,7 @@ extends Node2D
 
 # The host owns display encoding: AtlasRtView publishes linear radiance and this
 # material turns it into displayable color. The extension drives the `mode`
-# uniform from the render mode it is actually rendering.
+# uniform from the view's current render mode.
 #
 # `target_linear` must match the project's 2D color space, and getting it wrong
 # double-encodes or skips the sRGB encode outright. Leave it false for the

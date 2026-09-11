@@ -27,7 +27,7 @@ void main() {
         float f = hit_point[a] - floor(hit_point[a]);
         // The reported t is the division-form crossing of the entered face
         // (intersect.rint snaps it), so p = o + d*t sits on the boundary to
-        // within the residual of that division plus the mul/add here — up to
+        // within the residual of that division plus the mul/add here, up to
         // a dozen ULP of the coordinate scale. Object space caps |p| at the
         // region edge, so even 32 ULP keeps the false-positive window on
         // non-crossed axes a fraction of a percent of a cell.
