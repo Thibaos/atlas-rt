@@ -17,16 +17,12 @@ use atlas_rt::render::{
 use atlas_rt::world::{
     batch::{self, TrackedCoords},
     grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
-    job::{Refusal, Residency, Status, Upgrade, WorldJob, WorldSource},
+    job::{Finished, Refusal, Residency, Status, WorldJob, WorldSource},
     snapshot::MicroChunkSnapshot,
 };
 
 use crate::worker::{FrameRequest, Worker, lock};
 
-const STATUS_EMPTY: i32 = 0;
-const STATUS_LOADING: i32 = 1;
-const STATUS_READY: i32 = 2;
-const STATUS_FAILED: i32 = 3;
 const REJECT: &str = "atlas_rt: rejected input: ";
 const ATLAS_MODE_UNIFORM: &str = "mode";
 const ATLAS_FRAME_UNIFORM: &str = "atlas_frame";
@@ -34,7 +30,6 @@ const ATLAS_FRAME_UNIFORM: &str = "atlas_frame";
 #[derive(GodotClass)]
 #[class(base=Control)]
 pub struct AtlasRtView {
-    status: i32,
     fov: f32,
     origin: Vector3,
     basis: Basis,
@@ -62,7 +57,6 @@ pub struct AtlasRtView {
 impl IControl for AtlasRtView {
     fn init(base: Base<Control>) -> Self {
         Self {
-            status: STATUS_LOADING,
             fov: DEFAULT_FOV,
             origin: Vector3::ZERO,
             basis: Basis::IDENTITY,
@@ -121,16 +115,14 @@ impl IControl for AtlasRtView {
                         ));
 
                         let mut job = WorldJob::new();
-                        job.enter_ready();
+                        job.world_resident();
 
                         self.pipeline = Some(shared_pipeline.clone());
                         self.worker_publish_in = Some(published_rx);
                         self.job = Some(job);
-                        self.status = STATUS_READY;
 
                         if let Err(probe) = Self::probe_backend(&gpu, &shared_pipeline) {
                             godot_error!("atlas_rt: init probe failed: {}", probe);
-                            self.status = STATUS_FAILED;
                         } else {
                             Signal::from_object_signal(
                                 &RenderingServer::singleton(),
@@ -144,7 +136,6 @@ impl IControl for AtlasRtView {
                     }
                     Err(err) => {
                         godot_error!("atlas_rt: pipeline init failed: {}", err);
-                        self.status = STATUS_FAILED;
                     }
                 }
 
@@ -152,7 +143,6 @@ impl IControl for AtlasRtView {
             }
             Err(err) => {
                 godot_error!("atlas_rt: initialization failed: {}", err);
-                self.status = STATUS_FAILED;
             }
         }
 
@@ -161,10 +151,6 @@ impl IControl for AtlasRtView {
 
     fn process(&mut self, delta: f64) {
         self.poll_job();
-
-        if self.status != STATUS_READY {
-            return;
-        }
 
         self.match_viewport_size();
         self.sync_camera();
@@ -213,10 +199,6 @@ impl AtlasRtView {
     pub fn on_frame_post_draw(&mut self) {
         self.poll_job();
 
-        if self.status != STATUS_READY {
-            return;
-        }
-
         self.tick += 1;
 
         let Some(published_in) = &self.worker_publish_in else {
@@ -253,34 +235,29 @@ impl AtlasRtView {
         self.to_gd().queue_redraw();
     }
 
-    /// Whether the view is drawing a world rather than the placeholder. False
-    /// from the call that takes the outgoing world away until a frame the
-    /// renderer built after the change reaches the screen.
-    #[func]
-    #[allow(dead_code)]
-    pub fn displaying(&self) -> bool {
-        self.wrapped_texture.is_some()
-    }
-
     /// The status the loading overlay and the load buttons read: no world and
     /// nothing in flight, a job in flight, a world resident, or a failure. A
-    /// pipeline that never came up is a failure, not a world.
+    /// view whose pipeline never came up has no world and no job, which is a
+    /// failure.
     #[func]
     pub fn job_status(&self) -> i32 {
-        if self.status != STATUS_READY {
-            return self.status;
-        }
+        self.job
+            .as_ref()
+            .map_or(Status::Failed, WorldJob::status)
+            .code()
+            .into()
+    }
 
-        let Some(job) = &self.job else {
-            return STATUS_FAILED;
-        };
-
-        match job.status() {
-            Status::Empty => STATUS_EMPTY,
-            Status::Loading => STATUS_LOADING,
-            Status::Ready => STATUS_READY,
-            Status::Failed => STATUS_FAILED,
-        }
+    /// The status spelled out, so a host reads the state by name rather than by
+    /// code.
+    #[func]
+    pub fn job_status_name(&self) -> GString {
+        GString::from(
+            self.job
+                .as_ref()
+                .map_or(Status::Failed, WorldJob::status)
+                .name(),
+        )
     }
 
     /// Why the last job failed, for display. Empty while the last job did not
@@ -335,7 +312,7 @@ impl AtlasRtView {
     /// being displayed on this call.
     #[func]
     pub fn load_world(&mut self, path: GString) -> bool {
-        if self.status != STATUS_READY {
+        if self.job.is_none() {
             return false;
         }
 
@@ -359,7 +336,7 @@ impl AtlasRtView {
 
     #[func]
     pub fn clear_world(&mut self) -> bool {
-        if self.status != STATUS_READY {
+        if self.job.is_none() {
             return false;
         }
 
@@ -505,22 +482,22 @@ impl AtlasRtView {
         };
 
         match job.poll() {
-            Some(Upgrade::Load) => self.plan_load(),
-            Some(Upgrade::Cleared) => self.plan_clear(),
-            Some(Upgrade::Failed) | None => {}
+            Some(Finished::Loaded) => self.plan_load(),
+            Some(Finished::Cleared) => self.plan_clear(),
+            Some(Finished::Failed) | None => {}
         }
     }
 
     /// Clears for the outgoing world ahead of the incoming snapshots, uploads
     /// the palette, and submits the whole thing as one batch.
     fn plan_load(&mut self) {
-        let Some(upgrade) = self.job.as_ref().and_then(WorldJob::take_upgrade) else {
+        let Some(loaded) = self.job.as_ref().and_then(WorldJob::take_loaded) else {
             return;
         };
 
-        let planned = batch::plan_load(upgrade.snapshots, &self.world_chunks);
+        let planned = batch::plan_load(loaded.snapshots, &self.world_chunks);
 
-        if let Err(err) = self.upload_palette(upgrade.palette) {
+        if let Err(err) = self.upload_palette(loaded.palette) {
             self.fail_job(format!("palette upload failed: {err}"));
 
             return;
@@ -528,20 +505,15 @@ impl AtlasRtView {
 
         if !self.submit_world_change(planned) {
             self.fail_job(String::from("the edit queue rejected the world"));
-
-            return;
-        }
-
-        if let Some(job) = self.job.as_mut() {
-            job.enter_ready();
         }
     }
 
-    /// A clear of a world that is already gone leaves the job complete.
+    /// A clear of a world that is already gone leaves the job complete and the
+    /// view with nothing to show.
     fn plan_clear(&mut self) {
         if self.world_chunks.is_empty() {
             if let Some(job) = self.job.as_mut() {
-                job.enter_ready();
+                job.no_world();
             }
 
             return;
@@ -606,17 +578,17 @@ impl AtlasRtView {
         true
     }
 
-    /// Disarms the job's display gate on the frame that carries the batch, so
-    /// the world the host asked for is resident before the next frame is
-    /// admitted. The version is re-recorded because an edit may have turned it
-    /// over between the request and the batch landing.
+    /// Completes the job on the frame the renderer built after taking its
+    /// batch, which is the frame the world it asked for is resident in. Only
+    /// then does the status say a world is resident.
     fn settle_job(&mut self, version: u64, generation: u64) {
-        let Some(job) = &self.job else {
-            return;
-        };
+        let settled = self
+            .job
+            .as_ref()
+            .is_some_and(|job| job.resident(generation) && job.admitted(version));
 
-        if job.resident(generation) && job.admitted(version) {
-            self.display.suppress(version);
+        if settled && let Some(job) = self.job.as_mut() {
+            job.world_resident();
         }
     }
 

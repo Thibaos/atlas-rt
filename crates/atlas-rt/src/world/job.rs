@@ -25,24 +25,63 @@ const STATUS_READY: u8 = 2;
 const STATUS_FAILED: u8 = 3;
 
 /// Whether the host has a world to show and whether it is still working on one.
+///
+/// The codes are the host-facing contract: empty and idle, a job in flight, a
+/// world resident, or the failure of the last job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum Status {
-    Empty,
-    Loading,
-    Ready,
-    Failed,
+    Empty = STATUS_EMPTY,
+    Loading = STATUS_LOADING,
+    Ready = STATUS_READY,
+    Failed = STATUS_FAILED,
 }
 
+impl Status {
+    const fn from_code(code: u8) -> Self {
+        match code {
+            STATUS_LOADING => Self::Loading,
+            STATUS_READY => Self::Ready,
+            STATUS_FAILED => Self::Failed,
+            _ => Self::Empty,
+        }
+    }
+
+    /// The code the host reads. Empty and idle, a job in flight, a world
+    /// resident, or the last job's failure.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Empty => STATUS_EMPTY,
+            Self::Loading => STATUS_LOADING,
+            Self::Ready => STATUS_READY,
+            Self::Failed => STATUS_FAILED,
+        }
+    }
+
+    /// The status spelled out, for a host that reads it by name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Loading => "loading",
+            Self::Ready => "ready",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A finished load's snapshots and palette, ready for the main thread.
 #[derive(Debug)]
-pub struct LoadUpgrade {
+pub struct LoadedWorld {
     pub snapshots: Vec<MicroChunkSnapshot>,
     pub palette: [Vec3; 256],
 }
 
-/// The work a load or a clear finished with, ready for the main thread.
-#[derive(Debug)]
-pub enum Upgrade {
-    Load,
+/// What a job left behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Finished {
+    Loaded,
     Cleared,
     Failed,
 }
@@ -57,20 +96,7 @@ pub trait WorldSource: Send {
     fn read(&self) -> Result<Vec<u8>, String>;
 }
 
-impl WorldSource for Vec<u8> {
-    fn name(&self) -> String {
-        String::from("in-memory world")
-    }
-
-    fn read(&self) -> Result<Vec<u8>, String> {
-        Ok(self.clone())
-    }
-}
-
 /// How far the renderer has to have got for a frame to carry a submitted batch.
-///
-/// A frame whose generation reaches this one was built after the renderer took
-/// the batch, so the world it drew is the world the host asked for.
 #[derive(Clone, Copy, Debug)]
 pub struct Residency {
     generation: u64,
@@ -82,19 +108,21 @@ impl Residency {
         Self { generation }
     }
 
+    /// A frame at or past this generation was built after the renderer took the
+    /// batch, so the world it drew is the world the host asked for.
     #[must_use]
-    pub const fn is_resident(&self, frame_generation: u64) -> bool {
+    pub const fn reached(&self, frame_generation: u64) -> bool {
         frame_generation >= self.generation
     }
 }
 
 enum JobState {
     Idle,
-    Loading { upgrade: Option<Box<LoadUpgrade>> },
+    Loading { loaded: Option<Box<LoadedWorld>> },
 }
 
-enum Finished {
-    Load(Box<LoadUpgrade>),
+enum RunResult {
+    Loaded(Box<LoadedWorld>),
     Cleared,
 }
 
@@ -116,7 +144,7 @@ pub struct WorldJob {
     status: AtomicU8,
     error: Mutex<Option<String>>,
     running: Option<JoinHandle<()>>,
-    finished: Option<mpsc::Receiver<Result<Finished, String>>>,
+    finished: Option<mpsc::Receiver<Result<RunResult, String>>>,
     job: Mutex<Job>,
 }
 
@@ -138,12 +166,7 @@ impl WorldJob {
 
     #[must_use]
     pub fn status(&self) -> Status {
-        match self.status.load(Ordering::Acquire) {
-            STATUS_LOADING => Status::Loading,
-            STATUS_READY => Status::Ready,
-            STATUS_FAILED => Status::Failed,
-            _ => Status::Empty,
-        }
+        Status::from_code(self.status.load(Ordering::Acquire))
     }
 
     #[must_use]
@@ -153,8 +176,14 @@ impl WorldJob {
 
     /// Declares a world resident. The pipeline is up without one before the
     /// first load lands.
-    pub fn enter_ready(&mut self) {
+    pub fn world_resident(&mut self) {
         self.status.store(STATUS_READY, Ordering::Release);
+    }
+
+    /// Declares the view to hold no world, for a clear that had nothing left to
+    /// take away.
+    pub fn no_world(&mut self) {
+        self.status.store(STATUS_EMPTY, Ordering::Release);
     }
 
     /// # Errors
@@ -187,7 +216,7 @@ impl WorldJob {
         let (sender, receiver) = mpsc::channel();
 
         let thread = spawn(move || {
-            let _ = sender.send(Ok(Finished::Cleared));
+            let _ = sender.send(Ok(RunResult::Cleared));
         });
 
         self.running = Some(thread);
@@ -215,17 +244,17 @@ impl WorldJob {
         Ok(())
     }
 
-    /// Takes the background result once it is there. A load's snapshots are held
-    /// until the frame they are resident in asks for them.
-    pub fn poll(&mut self) -> Option<Upgrade> {
+    /// Takes the background result once it is there. A load's work is held until
+    /// the frame it is resident in asks for it.
+    pub fn poll(&mut self) -> Option<Finished> {
         if self.status() != Status::Loading {
             return None;
         }
 
         let result = {
-            let upgrades = self.finished.as_ref()?;
+            let results = self.finished.as_ref()?;
 
-            let result = match upgrades.try_recv() {
+            let result = match results.try_recv() {
                 Ok(result) => result,
                 Err(mpsc::TryRecvError::Empty) => return None,
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -240,72 +269,63 @@ impl WorldJob {
         };
 
         match result {
-            Ok(Finished::Load(upgrade)) => {
+            Ok(RunResult::Loaded(loaded)) => {
                 lock(&self.job).state = JobState::Loading {
-                    upgrade: Some(upgrade),
+                    loaded: Some(loaded),
                 };
 
-                Some(Upgrade::Load)
+                Some(Finished::Loaded)
             }
-            Ok(Finished::Cleared) => {
+            Ok(RunResult::Cleared) => {
                 lock(&self.job).state = JobState::Idle;
                 self.status.store(STATUS_EMPTY, Ordering::Release);
 
-                Some(Upgrade::Cleared)
+                Some(Finished::Cleared)
             }
             Err(reason) => {
                 lock(&self.job).state = JobState::Idle;
                 *lock(&self.error) = Some(reason);
                 self.status.store(STATUS_FAILED, Ordering::Release);
 
-                Some(Upgrade::Failed)
+                Some(Finished::Failed)
             }
         }
     }
 
-    /// Whether a frame of `generation` carries the batch the host submitted. The
-    /// renderer only reaches this generation after it has taken that batch, so a
-    /// frame at or past it draws the world the host asked for.
     #[must_use]
     pub fn resident(&self, generation: u64) -> bool {
         lock(&self.job)
             .residency
             .as_ref()
-            .is_some_and(|residency| residency.is_resident(generation))
+            .is_some_and(|residency| residency.reached(generation))
     }
 
-    /// Whether a frame of `version` is the one the armed display gate opens on.
-    /// Reports a frame once, so a load completes once.
+    /// Whether a frame of `version` is the one the armed gate opens on. Reports
+    /// a frame once, so a load completes once.
     #[must_use]
     pub fn admitted(&self, version: u64) -> bool {
         lock(&self.job).display.admitted(version)
     }
 
-    /// The pending load's snapshots and palette, once the frame they are
-    /// resident in has been admitted.
-    pub fn take_upgrade(&self) -> Option<LoadUpgrade> {
+    /// The pending load's work, handed over once.
+    pub fn take_loaded(&self) -> Option<LoadedWorld> {
         let mut job = lock(&self.job);
 
-        let JobState::Loading { upgrade } = &mut job.state else {
+        let JobState::Loading { loaded } = &mut job.state else {
             return None;
         };
 
-        let upgrade = upgrade.take()?;
+        let loaded = loaded.take()?;
 
         job.state = JobState::Idle;
         drop(job);
 
-        Some(*upgrade)
+        Some(*loaded)
     }
 
     /// Records how far the renderer has to have got for the job to be complete.
     pub fn record(&self, residency: Residency) {
         lock(&self.job).residency = Some(residency);
-    }
-
-    /// Refuses the frames the world on screen was built from.
-    pub fn suppress(&self, version: u64) {
-        lock(&self.job).display.suppress(version);
     }
 
     /// Gives up on the job in flight, for a failure the background thread could
@@ -319,12 +339,6 @@ impl WorldJob {
         self.status.store(STATUS_FAILED, Ordering::Release);
     }
 
-    /// Waits out the job in flight, leaving its result for `poll`. Only for
-    /// teardown and for tests.
-    pub fn settle(&mut self) {
-        self.join();
-    }
-
     fn join(&mut self) {
         if let Some(thread) = self.running.take()
             && thread.join().is_err()
@@ -332,6 +346,11 @@ impl WorldJob {
             *lock(&self.error) = Some(String::from("the loading thread panicked"));
             self.status.store(STATUS_FAILED, Ordering::Release);
         }
+    }
+
+    #[cfg(test)]
+    fn settle(&mut self) {
+        self.join();
     }
 }
 
@@ -347,9 +366,7 @@ impl Drop for WorldJob {
     }
 }
 
-/// The load pipeline off the main thread: read, parse, world build, snapshot
-/// emission. Nothing here touches the renderer.
-fn run_load(source: &dyn WorldSource) -> Result<Finished, String> {
+fn run_load(source: &dyn WorldSource) -> Result<RunResult, String> {
     let name = source.name();
     let bytes = source
         .read()
@@ -367,7 +384,7 @@ fn run_load(source: &dyn WorldSource) -> Result<Finished, String> {
     let snapshots =
         emit_snapshots(&world).map_err(|error| format!("could not emit {name}: {error:#}"))?;
 
-    Ok(Finished::Load(Box::new(LoadUpgrade {
+    Ok(RunResult::Loaded(Box::new(LoadedWorld {
         snapshots,
         palette: get_palette(&voxel_data),
     })))
@@ -392,14 +409,31 @@ mod tests {
 
     use super::*;
 
-    /// Drives the frame loop until the background thread has something to hand
+    /// A world's bytes, standing in for a file on disk.
+    struct Bytes(Vec<u8>);
+
+    impl WorldSource for Bytes {
+        fn name(&self) -> String {
+            String::from("in-memory world")
+        }
+
+        fn read(&self) -> Result<Vec<u8>, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn source(bytes: Vec<u8>) -> Bytes {
+        Bytes(bytes)
+    }
+
+    /// Runs the frame loop until the background thread has handed something
     /// over. The host's own loop is the only other thing that calls `poll`.
-    fn poll_until(job: &mut WorldJob) -> Upgrade {
+    fn poll_until(job: &mut WorldJob) -> Finished {
         let deadline = Instant::now() + Duration::from_secs(5);
 
         loop {
-            if let Some(upgrade) = job.poll() {
-                return upgrade;
+            if let Some(finished) = job.poll() {
+                return finished;
             }
 
             assert!(
@@ -436,10 +470,6 @@ mod tests {
         bytes
     }
 
-    fn source(bytes: Vec<u8>) -> impl WorldSource {
-        bytes
-    }
-
     #[test]
     fn a_job_starts_with_no_world_and_nothing_in_flight() {
         let job = WorldJob::new();
@@ -451,7 +481,7 @@ mod tests {
     #[test]
     fn an_accepted_load_reports_loading_before_it_finishes() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         assert!(job.load(Box::new(source(one_voxel_world())), 0).is_ok());
         assert_eq!(job.status(), Status::Loading);
@@ -460,7 +490,7 @@ mod tests {
     #[test]
     fn a_second_request_while_one_is_in_flight_is_refused() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
@@ -477,28 +507,29 @@ mod tests {
     }
 
     #[test]
-    fn a_clear_while_a_load_is_in_flight_is_refused() {
+    fn a_load_while_a_clear_is_in_flight_is_refused() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         job.clear(0).unwrap();
 
         assert!(matches!(
-            job.load(Box::new(source(Vec::new())), 0),
+            job.load(Box::new(source(one_voxel_world())), 0),
             Err(Refusal::Busy)
         ));
     }
 
     #[test]
-    fn a_finished_load_hands_its_snapshots_over_once() {
+    fn a_finished_load_hands_its_work_over_once() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         job.load(Box::new(source(one_voxel_world())), 4).unwrap();
         job.settle();
 
-        assert!(
-            matches!(job.poll(), Some(Upgrade::Load)),
+        assert_eq!(
+            job.poll(),
+            Some(Finished::Loaded),
             "the background work is done"
         );
         assert_eq!(
@@ -507,37 +538,40 @@ mod tests {
             "still loading until a frame carries it"
         );
 
-        let Some(upgrade) = job.take_upgrade() else {
+        let Some(loaded) = job.take_loaded() else {
             panic!("the finished load must yield its snapshots");
         };
 
         assert!(
-            !upgrade.snapshots.is_empty(),
+            !loaded.snapshots.is_empty(),
             "the one voxel world emits one micro chunk"
         );
-        assert!(
-            job.take_upgrade().is_none(),
-            "the snapshots are handed over once"
+        assert!(job.take_loaded().is_none(), "the work is handed over once");
+        assert_eq!(
+            job.status(),
+            Status::Loading,
+            "handing the work over is not the world being resident"
         );
     }
 
     #[test]
     fn a_malformed_world_fails_without_killing_the_thread() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         job.load(Box::new(source(vec![0xde, 0xad, 0xbe, 0xef])), 0)
             .unwrap();
 
-        assert!(matches!(poll_until(&mut job), Upgrade::Failed));
+        assert_eq!(poll_until(&mut job), Finished::Failed);
         assert_eq!(job.status(), Status::Failed);
         assert!(job.error().is_some(), "the failure carries a reason");
-        assert!(job.take_upgrade().is_none(), "no world came out of it");
+        assert!(job.take_loaded().is_none(), "no world came out of it");
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
-        assert!(
-            matches!(poll_until(&mut job), Upgrade::Load),
+        assert_eq!(
+            poll_until(&mut job),
+            Finished::Loaded,
             "the next job runs on a live thread"
         );
     }
@@ -545,11 +579,11 @@ mod tests {
     #[test]
     fn a_clear_reaches_the_empty_state() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
 
         job.clear(0).unwrap();
 
-        assert!(matches!(poll_until(&mut job), Upgrade::Cleared));
+        assert_eq!(poll_until(&mut job), Finished::Cleared);
         assert_eq!(job.status(), Status::Empty);
     }
 
@@ -567,7 +601,7 @@ mod tests {
     #[test]
     fn only_the_first_admissible_frame_reports_a_completion() {
         let mut job = WorldJob::new();
-        job.enter_ready();
+        job.world_resident();
         job.load(Box::new(source(one_voxel_world())), 7).unwrap();
         job.settle();
         job.poll();

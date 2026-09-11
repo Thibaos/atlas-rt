@@ -1,4 +1,4 @@
-use godot::init::{gdextension, ExtensionLibrary};
+use godot::init::{ExtensionLibrary, gdextension};
 
 pub mod view;
 pub mod worker;

@@ -32,6 +32,15 @@ full-rect that reads the camera each tick and loads a .vox world.
 fly_camera.gd is the Godot demo camera, kept close to upstream; its doc
 block follows upstream's style, not this repo's.
 
+World loading. The view reads a world file on a background thread so the
+game keeps drawing while it is read, parsed, built, and queued. That
+thread can make no Godot call, so the view resolves the path with
+`ProjectSettings.globalize_path` on the main thread and the loader reads
+it with `std::fs`. `res://` therefore resolves to a real file, which an
+exported project does not have: worlds shipped inside a `.pck` are out of
+reach until the load moves to a res:// source that reads on the main
+thread.
+
 Display path. The extension publishes raw linear radiance and does no
 display encoding, so the host owns it: main.gd attaches
 `atlas_composite.gdshader` as a ShaderMaterial on the view, which applies

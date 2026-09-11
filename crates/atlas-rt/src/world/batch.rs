@@ -46,7 +46,10 @@ fn clears(tracked: &TrackedCoords) -> Vec<MicroChunkSnapshot> {
     let mut coords: Vec<IVec3> = tracked.iter().copied().collect();
     coords.sort_unstable_by_key(IVec3::to_array);
 
-    coords.into_iter().map(MicroChunkSnapshot::cleared).collect()
+    coords
+        .into_iter()
+        .map(MicroChunkSnapshot::cleared)
+        .collect()
 }
 
 fn assemble(tracked: &TrackedCoords, snapshots: Vec<MicroChunkSnapshot>) -> Batch {
@@ -221,10 +224,7 @@ mod tests {
         let shared = IVec3::new(0, 0, 0);
         let exclusive = IVec3::new(8, 0, 0);
 
-        let batch = plan_load(
-            vec![snapshot(shared, 7)],
-            &coords_set(&[shared, exclusive]),
-        );
+        let batch = plan_load(vec![snapshot(shared, 7)], &coords_set(&[shared, exclusive]));
 
         let cleared = batch
             .snapshots

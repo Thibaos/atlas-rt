@@ -1,9 +1,9 @@
 class_name LoadWorldButton
 extends Button
 
-# The status the view reports: 0 empty and idle, 1 a job in flight,
-# 2 a world resident, 3 failed.
-const IDLE := [0, 2]
+# The view reports "empty", "loading", "ready", or "failed". A job starts only
+# when nothing is in flight.
+const IDLE := ["empty", "ready"]
 
 @export var atlas: Atlas
 
@@ -19,4 +19,4 @@ func load_world() -> void:
 	atlas.load_world("res://worlds/" + text + ".vox")
 
 func _idle() -> bool:
-	return atlas.view.job_status() in IDLE
+	return atlas.view.job_status_name() in IDLE
