@@ -25,11 +25,11 @@ Cargo.lock
 .zed/
 imgui.ini
 docs/vulkan
+docs/agents
 .pi
 .pi-subagents
 .scratch
 nul
-docs/agents
 *.svg
 .tmp*
 .cargo-home/
@@ -37,4 +37,4 @@ crates/atlas-rt-godot/examples/project/.godot
 crates/atlas-rt-godot/examples/project/lib/
 crates/atlas-rt-godot/examples/project/worlds/
 crates/atlas-rt-godot/examples/project/*.uid
-scripts
+ps-scripts

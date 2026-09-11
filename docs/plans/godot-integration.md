@@ -237,14 +237,20 @@ panic semantics; internal asserts stay for internal misuse.
 - load_world(path) -> bool: FileAccess read (res:// and user:// survive
   exported pck builds), dot_vox::load_bytes (5.2.0), World::new_clipped
   (always clipped; the flag is removed and the clipped count lands in
-  the warning log), emit_snapshots, submit_batch, palette upload (moved
-  from construction to load; default_scene() stays construction-time),
-  ready. Runs on the worker serialized with frames.
-- clear_world() -> bool: a zero-mask snapshot per coordinate of the
-  previous world's micro-chunk set; existing coalescing and residency
-  rules empty the regions and return memory through the free lists.
-- Level flow is clear_world() then load_world(); reload is legal
-  (menus, levels). A store-level wholesale clear is the streaming-era
+  the warning log), clear_world, emit_snapshots, submit_batch, palette
+  upload (moved from construction to load; default_scene() stays
+  construction-time), ready. Runs on the worker serialized with frames.
+  The clear is inside the call, so a load never leaves the previous
+  world's chunks resident. Parsing happens before the clear: a missing
+  or malformed file leaves the current world standing.
+- clear_world() -> bool: a zero-mask snapshot per coordinate of every
+  micro-chunk the view has submitted, loaded or edited; existing
+  coalescing and residency rules empty the regions and return memory
+  through the free lists. Blocks on the worker until the feed reports
+  idle, so the world is empty when it returns.
+- Level flow is load_world() alone, which clears internally; calling
+  clear_world() first is still legal and reload is legal (menus,
+  levels). A store-level wholesale clear is the streaming-era
   replacement, named here, not built.
 - Status: loading | ready | failed (+ error string, read-only). While
   loading, and until the first ready, the canvas draws a placeholder

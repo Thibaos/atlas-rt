@@ -566,6 +566,46 @@ mod tests {
     }
 
     #[test]
+    fn a_full_clear_empties_every_region() {
+        let input = RendererInput::new().unwrap();
+        let coords = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(256, 0, 0),
+            IVec3::new(-256, 0, 0),
+            IVec3::new(0, 512, 0),
+        ];
+
+        input
+            .submit_batch(coords.map(|coords| snapshot(coords, &[(0, 1)])))
+            .unwrap();
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(input.take_dirty_regions().len(), 4);
+
+        input.submit_batch(coords.map(zero)).unwrap();
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(
+            input.take_dirty_regions().len(),
+            4,
+            "residency must see every exited region"
+        );
+        assert!(input.region_count() == 0, "every mirror must be dropped");
+        assert!(input.packed_regions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clearing_an_empty_world_submits_nothing() {
+        let input = RendererInput::new().unwrap();
+
+        input.submit_batch([]).unwrap();
+        input.wait_until_idle().unwrap();
+
+        assert!(input.packed_regions().unwrap().is_empty());
+        assert!(input.take_dirty_regions().is_empty());
+    }
+
+    #[test]
     fn region_ids_derived_from_global_coords() {
         let mut mirrors = HashMap::default();
         apply_snapshots(

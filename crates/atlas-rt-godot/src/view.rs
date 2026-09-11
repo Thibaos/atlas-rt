@@ -1,4 +1,7 @@
-use std::sync::{Arc, Mutex, mpsc};
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex, mpsc},
+};
 
 use godot::classes::{
     Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, ShaderMaterial, Texture2Drd,
@@ -43,6 +46,7 @@ pub struct AtlasRtView {
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
     wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
+    world_chunks: HashSet<glam::IVec3>,
     tick: u64,
     camera: Option<Gd<Camera3D>>,
 
@@ -64,6 +68,7 @@ impl IControl for AtlasRtView {
             worker_publish_in: None,
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
+            world_chunks: HashSet::new(),
             tick: 0,
             camera: None,
             base,
@@ -259,12 +264,6 @@ impl AtlasRtView {
             return false;
         }
 
-        let Some(pipeline) = &self.pipeline else {
-            return false;
-        };
-
-        let pipeline = lock(pipeline);
-
         let vox_bytes = FileAccess::get_file_as_bytes(&path);
 
         if vox_bytes.is_empty() {
@@ -281,14 +280,24 @@ impl AtlasRtView {
 
         let (world, clipped) = atlas_rt::world::World::new_clipped(&voxel_data);
 
+        if !self.clear_world() {
+            return false;
+        }
+
+        let Some(pipeline) = self.pipeline.clone() else {
+            return false;
+        };
+
+        let pipeline = lock(&pipeline);
+
         if clipped > 0 {
             godot_print!("atlas_rt: clipped {clipped} voxels outside the lattice",);
         }
 
         match emit_snapshots(&world) {
             Ok(snapshots) => {
-                if let Err(err) = pipeline.input().submit_batch(snapshots) {
-                    godot_error!("atlas_rt: load_world failed: {}", err);
+                if !self.push_edit(snapshots) {
+                    godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
 
                     return false;
                 }
@@ -318,7 +327,39 @@ impl AtlasRtView {
 
     #[func]
     pub fn clear_world(&mut self) -> bool {
-        self.status == STATUS_READY
+        if self.status != STATUS_READY {
+            return false;
+        }
+
+        let Some(pipeline) = self.pipeline.clone() else {
+            return false;
+        };
+
+        let cleared: Vec<MicroChunkSnapshot> = self
+            .world_chunks
+            .iter()
+            .map(|&global_coords| MicroChunkSnapshot {
+                global_coords,
+                mask: [0u8; 64],
+                materials: Vec::new(),
+            })
+            .collect();
+
+        if !self.push_edit(cleared) {
+            godot_error!("atlas_rt: clear_world failed: edit queue rejected the clear");
+
+            return false;
+        }
+
+        if let Err(err) = lock(&pipeline).input().wait_until_idle() {
+            godot_error!("atlas_rt: clear_world failed: {}", err);
+
+            return false;
+        }
+
+        self.world_chunks.clear();
+
+        true
     }
 
     #[func]
@@ -380,10 +421,15 @@ impl AtlasRtView {
         })
     }
 
-    fn push_edit(&self, snapshots: impl IntoIterator<Item = MicroChunkSnapshot>) -> bool {
+    fn push_edit(&mut self, snapshots: impl IntoIterator<Item = MicroChunkSnapshot>) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
         };
+
+        let snapshots: Vec<MicroChunkSnapshot> = snapshots.into_iter().collect();
+
+        self.world_chunks
+            .extend(snapshots.iter().map(|snapshot| snapshot.global_coords));
 
         lock(pipeline).input().submit_batch(snapshots).is_ok()
     }

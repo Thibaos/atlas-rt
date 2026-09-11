@@ -1,3 +1,4 @@
+class_name Atlas
 extends Node2D
 
 # The host owns display encoding: AtlasRtView publishes linear radiance and this
@@ -27,4 +28,13 @@ func _ready() -> void:
 	self.view = node
 
 	node.set_camera($player/pivot/camera)
-	node.load_world("res://worlds/example.vox")
+	node.load_world("res://worlds/castle.vox")
+
+func clear_world() -> bool:
+	return view.clear_world()
+
+func load_world(path: String) -> bool:
+	if view.clear_world():
+		return view.load_world(path)
+	
+	return false

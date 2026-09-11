@@ -1,10 +1,21 @@
 [gd_scene format=3 uid="uid://b1idham0c2n4d"]
 
-[ext_resource type="Script" uid="uid://b6i2vx0jqn3q7" path="res://main.gd" id="1_main"]
-[ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://fly_camera.gd" id="2_0xm2m"]
-[ext_resource type="Script" uid="uid://bxghcol37e5is" path="res://ui.gd" id="3_h2yge"]
+[ext_resource type="Script" uid="uid://b6i2vx0jqn3q7" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
+[ext_resource type="Script" uid="uid://bxghcol37e5is" path="res://scripts/ui.gd" id="3_h2yge"]
+[ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
+
+[sub_resource type="GDScript" id="GDScript_1bvp3"]
+script/source = "extends Button
+
+@export var atlas: Atlas
+
+func _ready() -> void:
+	if !atlas: return
+	pressed.connect(atlas.clear_world)
+"
 
 [node name="main" type="Node" unique_id=1982182210]
 
@@ -55,3 +66,41 @@ offset_bottom = 11.5
 grow_horizontal = 2
 grow_vertical = 2
 text = "Pause!"
+
+[node name="HBoxContainer" type="HBoxContainer" parent="UI" unique_id=1369496680]
+layout_mode = 1
+anchors_preset = 7
+anchor_left = 0.5
+anchor_top = 1.0
+anchor_right = 0.5
+anchor_bottom = 1.0
+offset_left = -89.5
+offset_top = -303.0
+offset_right = 89.5
+offset_bottom = -272.0
+grow_horizontal = 2
+grow_vertical = 0
+
+[node name="castle" type="Button" parent="UI/HBoxContainer" unique_id=457740108 node_paths=PackedStringArray("atlas")]
+layout_mode = 2
+text = "castle"
+script = ExtResource("4_1bvp3")
+atlas = NodePath("../../../atlas")
+
+[node name="bistro" type="Button" parent="UI/HBoxContainer" unique_id=1453636886 node_paths=PackedStringArray("atlas")]
+layout_mode = 2
+text = "bistro_sm"
+script = ExtResource("4_1bvp3")
+atlas = NodePath("../../../atlas")
+
+[node name="sponza" type="Button" parent="UI/HBoxContainer" unique_id=1178860499 node_paths=PackedStringArray("atlas")]
+layout_mode = 2
+text = "sponza"
+script = ExtResource("4_1bvp3")
+atlas = NodePath("../../../atlas")
+
+[node name="clear" type="Button" parent="UI/HBoxContainer" unique_id=714620207 node_paths=PackedStringArray("atlas")]
+layout_mode = 2
+text = "clear"
+script = SubResource("GDScript_1bvp3")
+atlas = NodePath("../../../atlas")
