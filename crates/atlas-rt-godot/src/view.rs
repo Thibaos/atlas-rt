@@ -10,7 +10,7 @@ use atlas_rt::render::{
     context::RenderContext,
     delivery::{DeviceMemory, SLOT_COUNT},
     embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
-    frame_version::DisplayGate,
+    display_gate::DisplayGate,
     pipeline::{DEFAULT_FOV, FrameInput},
     region::task::RenderMode,
 };
@@ -308,12 +308,6 @@ impl AtlasRtView {
 
         let planned = batch::plan_load(snapshots, &self.world_chunks);
 
-        if !self.submit_plan(planned) {
-            godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
-
-            return false;
-        }
-
         if let Some(gpu_shared) = self.gpu.as_ref() {
             let gpu = lock(gpu_shared);
             let pipeline = lock(&pipeline);
@@ -328,6 +322,12 @@ impl AtlasRtView {
             }
         }
 
+        if !self.submit_world_change(planned) {
+            godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
+
+            return false;
+        }
+
         true
     }
 
@@ -338,14 +338,14 @@ impl AtlasRtView {
         }
 
         if self.world_chunks.is_empty() {
-            self.suppress_display();
+            self.close_display();
 
             return true;
         }
 
         let planned = batch::plan_clear(&self.world_chunks);
 
-        if !self.submit_plan(planned) {
+        if !self.submit_world_change(planned) {
             godot_error!("atlas_rt: clear_world failed: edit queue rejected the clear");
 
             return false;
@@ -424,10 +424,9 @@ impl AtlasRtView {
         })
     }
 
-    /// Drops the world from the screen at once: the material that samples the
-    /// delivery image comes off, so the placeholder rect is what draws, and the
-    /// gate closes on every frame the renderer produced for the outgoing world,
-    /// including the one it is producing now.
+    /// Blanks the viewport on this turn. The control's material samples the
+    /// delivery image, so it has to come off for the placeholder rect to stand
+    /// in for the world.
     fn suppress_display(&mut self) {
         if self.composite_material.is_some() {
             self.to_gd().set_material(None::<&Gd<Material>>);
@@ -439,37 +438,31 @@ impl AtlasRtView {
         self.to_gd().queue_redraw();
     }
 
-    /// Submits a planned batch and suppresses delivery under one hold of the
-    /// pipeline lock, so the version this raises cannot stamp a frame the
-    /// renderer starts from the outgoing world's snapshots. Raising after the
-    /// lock is released would leave exactly that window open.
-    fn submit_plan(&mut self, planned: batch::Batch) -> bool {
-        let Some(pipeline) = &self.pipeline else {
+    /// Submits a planned batch and closes the gate on the content it replaces,
+    /// so the only frames admitted afterwards are ones the renderer built from
+    /// the new content. Callers must hold no pipeline lock: this takes it, and
+    /// taking it twice on one thread wedges the client.
+    fn submit_world_change(&mut self, planned: batch::Batch) -> bool {
+        if !self.apply_batch(planned) {
             return false;
-        };
-
-        let outcome = {
-            let mut pipeline = lock(pipeline);
-            let submitted = pipeline.input().submit_batch(planned.snapshots).is_ok();
-
-            submitted.then(|| pipeline.raise_frame_version())
-        };
-
-        match outcome {
-            Some(version) => {
-                self.world_chunks = planned.tracked;
-
-                match version {
-                    Ok(version) => self.display.suppress(version),
-                    Err(err) => godot_error!("atlas_rt: could not suppress display: {}", err),
-                }
-
-                self.suppress_display();
-
-                true
-            }
-            None => false,
         }
+
+        self.close_display();
+
+        true
+    }
+
+    /// Records the version the renderer is stamping on the frames it has
+    /// produced so far and blanks the viewport. Callers must hold no pipeline
+    /// lock.
+    fn close_display(&mut self) {
+        let Some(pipeline) = &self.pipeline else {
+            return;
+        };
+
+        self.display.suppress(lock(pipeline).content_version());
+
+        self.suppress_display();
     }
 
     fn probe_backend(

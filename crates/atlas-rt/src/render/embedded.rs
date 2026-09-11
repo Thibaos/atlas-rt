@@ -16,11 +16,10 @@ use vulkano::{Handle, VulkanObject};
 use crate::render::{
     context::RenderContext,
     delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, bind_slot, delivery_memory},
-    frame_version::FrameVersion,
     pipeline::FrameInput,
     region::{
         feed::RendererInput,
-        residency::RegionStore,
+        residency::{ApplyReport, RegionStore},
         task::{
             RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
         },
@@ -53,10 +52,16 @@ pub struct EmbeddedPipeline {
     region: RegionRenderContext,
     store: RegionStore,
     input: RendererInput,
-    version: FrameVersion,
+    content_version: u64,
     frame: usize,
 }
 
+/// Whether a store apply left the content a frame draws different: a region
+/// entered, left, or took new Snapshots. The report's rebuild log and TLAS flags
+/// describe the build, not the content, so they cannot answer this.
+const fn content_changed(report: &ApplyReport) -> bool {
+    !report.became_resident.is_empty() || !report.left_resident.is_empty() || !report.dirty.is_empty()
+}
 #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
 fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Camera {
     let [width, height] = extent;
@@ -107,8 +112,9 @@ fn slot_storage_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::{REWRITE_GATE_TICKS, WrapTimes, gated_slot};
+    use super::{REWRITE_GATE_TICKS, WrapTimes, content_changed, gated_slot};
     use crate::render::delivery::SLOT_COUNT;
+    use crate::render::region::residency::ApplyReport;
 
     fn wrap_times(wrapped_at: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapTimes {
         WrapTimes { wrapped_at, tick }
@@ -139,6 +145,49 @@ mod tests {
         let wrap_times = wrap_times([Some(9), Some(9), Some(9)], 10);
 
         assert_eq!(gated_slot(1, &wrap_times), None);
+    }
+
+    #[test]
+    fn an_empty_apply_report_leaves_the_content_alone() {
+        assert!(!content_changed(&ApplyReport::default()));
+    }
+
+    #[test]
+    fn a_region_that_entered_left_or_took_snapshots_counts_as_a_content_change() {
+        let coords = glam::IVec3::new(0, 0, 0);
+        let cases = [
+            ApplyReport {
+                became_resident: vec![coords],
+                ..ApplyReport::default()
+            },
+            ApplyReport {
+                left_resident: vec![coords],
+                ..ApplyReport::default()
+            },
+            ApplyReport {
+                dirty: vec![coords],
+                ..ApplyReport::default()
+            },
+        ];
+
+        for report in cases {
+            assert!(content_changed(&report), "{report:?}");
+        }
+    }
+
+    #[test]
+    fn a_rebuild_without_a_region_moving_is_not_a_content_change() {
+        let report = ApplyReport {
+            tlas_rebuilt: true,
+            instance_count_before: 3,
+            instance_count: 3,
+            ..ApplyReport::default()
+        };
+
+        assert!(
+            !content_changed(&report),
+            "a TLAS rebuild for content that did not move is not a new world to show"
+        );
     }
 }
 
@@ -263,7 +312,7 @@ impl EmbeddedPipeline {
             region,
             store,
             input,
-            version: FrameVersion::default(),
+            content_version: 0,
             frame: 0,
         })
     }
@@ -287,15 +336,10 @@ impl EmbeddedPipeline {
         self.delivery.extent()
     }
 
-    /// Raises the frame version, invalidating every frame produced before the
-    /// call, and returns the version the next frame carries. The raise happens
-    /// under the pipeline lock, so the boundary is the call itself.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on version exhaustion
-    pub fn raise_frame_version(&mut self) -> anyhow::Result<u64> {
-        self.version.bump()
+    /// The version the frames produced from now on carry until content changes
+    /// again. The host records it to gate delivery while a world goes away.
+    pub const fn content_version(&self) -> u64 {
+        self.content_version
     }
 
     /// # Errors
@@ -365,7 +409,9 @@ impl EmbeddedPipeline {
 
         gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
 
-        self.store.apply(gpu, &self.input)?;
+        if content_changed(&self.store.apply(gpu, &self.input)?) {
+            self.content_version = self.content_version.wrapping_add(1);
+        }
 
         self.region.mode = input.render_mode;
         self.region.delta_time = input.delta_time;
@@ -397,7 +443,7 @@ impl EmbeddedPipeline {
         let published = PublishedSlot {
             slot,
             extent,
-            version: self.version.get(),
+            version: self.content_version,
         };
 
         self.frame = self.frame.wrapping_add(1);
