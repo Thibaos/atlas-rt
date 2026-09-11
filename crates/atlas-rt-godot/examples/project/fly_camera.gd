@@ -188,10 +188,7 @@ func _input(event: InputEvent) -> void:
 	if _is_cam_action_pressed(_ACTION_FASTER):   fly_speed *= speed_factor
 	if _is_cam_action_pressed(_ACTION_SLOWER):   fly_speed /= speed_factor
 	
-	_check_mouse_capture(event)
-
-	if not _mouse_hidden:
-		return
+	#_check_mouse_capture(event)
 
 	## Camera motion
 	if event is InputEventMouseMotion:
