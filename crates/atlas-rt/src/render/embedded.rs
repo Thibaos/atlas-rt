@@ -52,8 +52,7 @@ pub struct EmbeddedPipeline {
     region: RegionRenderContext,
     store: RegionStore,
     input: RendererInput,
-    batch_version: u64,
-    applied_generation: u64,
+    batch: BatchDelivery,
     frame: usize,
 }
 
@@ -63,6 +62,35 @@ pub struct EmbeddedPipeline {
 const fn content_changed(report: &ApplyReport) -> bool {
     !report.became_resident.is_empty() || !report.left_resident.is_empty() || !report.dirty.is_empty()
 }
+
+/// The version stamped on published frames, and the change-queue generation it
+/// has accounted for.
+///
+/// The version turns over when a frame takes delivery of a batch, which is not
+/// the same as the batch changing something: a load whose content already
+/// matches the store still has to reopen a gate the host closed on it.
+#[derive(Clone, Copy, Debug, Default)]
+struct BatchDelivery {
+    version: u64,
+    generation: u64,
+}
+
+impl BatchDelivery {
+    /// Accounts for a frame that applied `report` after the queue had taken
+    /// `generation` batches.
+    const fn took(&mut self, generation: u64, report: &ApplyReport) {
+        if content_changed(report) || generation > self.generation {
+            self.version = self.version.wrapping_add(1);
+        }
+
+        self.generation = generation;
+    }
+
+    const fn version(&self) -> u64 {
+        self.version
+    }
+}
+
 #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
 fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Camera {
     let [width, height] = extent;
@@ -113,9 +141,10 @@ fn slot_storage_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::{REWRITE_GATE_TICKS, WrapTimes, content_changed, gated_slot};
+    use super::{BatchDelivery, REWRITE_GATE_TICKS, WrapTimes, gated_slot};
     use crate::render::delivery::SLOT_COUNT;
     use crate::render::region::residency::ApplyReport;
+    use glam::IVec3;
 
     fn wrap_times(wrapped_at: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapTimes {
         WrapTimes { wrapped_at, tick }
@@ -149,31 +178,48 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_apply_report_leaves_the_content_alone() {
-        assert!(!content_changed(&ApplyReport::default()));
+    fn a_frame_that_changes_nothing_keeps_the_version() {
+        let mut batch = BatchDelivery::default();
+
+        batch.took(0, &ApplyReport::default());
+
+        assert_eq!(batch.version(), 0);
     }
 
     #[test]
-    fn a_region_that_entered_left_or_took_snapshots_counts_as_a_content_change() {
-        let coords = glam::IVec3::new(0, 0, 0);
-        let cases = [
-            ApplyReport {
-                became_resident: vec![coords],
-                ..ApplyReport::default()
-            },
-            ApplyReport {
-                left_resident: vec![coords],
-                ..ApplyReport::default()
-            },
-            ApplyReport {
-                dirty: vec![coords],
-                ..ApplyReport::default()
-            },
-        ];
+    fn a_frame_whose_apply_moved_a_region_turns_the_version_over() {
+        let report = ApplyReport {
+            dirty: vec![IVec3::new(0, 0, 0)],
+            ..ApplyReport::default()
+        };
+        let mut batch = BatchDelivery::default();
 
-        for report in cases {
-            assert!(content_changed(&report), "{report:?}");
-        }
+        batch.took(1, &report);
+
+        assert_eq!(batch.version(), 1);
+    }
+
+    #[test]
+    fn a_frame_that_takes_a_batch_turns_the_version_over_even_when_it_changed_nothing() {
+        let mut batch = BatchDelivery::default();
+
+        batch.took(1, &ApplyReport::default());
+
+        assert_eq!(
+            batch.version(),
+            1,
+            "a batch the store took is what reopens a gate, not what it contained"
+        );
+    }
+
+    #[test]
+    fn the_version_turns_over_once_per_batch_taken() {
+        let mut batch = BatchDelivery::default();
+
+        batch.took(1, &ApplyReport::default());
+        batch.took(1, &ApplyReport::default());
+
+        assert_eq!(batch.version(), 1);
     }
 
     #[test]
@@ -184,9 +230,13 @@ mod tests {
             instance_count: 3,
             ..ApplyReport::default()
         };
+        let mut batch = BatchDelivery::default();
 
-        assert!(
-            !content_changed(&report),
+        batch.took(0, &report);
+
+        assert_eq!(
+            batch.version(),
+            0,
             "a TLAS rebuild for content that did not move is not a new world to show"
         );
     }
@@ -313,8 +363,7 @@ impl EmbeddedPipeline {
             region,
             store,
             input,
-            batch_version: 0,
-            applied_generation: 0,
+            batch: BatchDelivery::default(),
             frame: 0,
         })
     }
@@ -343,7 +392,7 @@ impl EmbeddedPipeline {
     /// until the content it asked for has reached the store. Recorded by the
     /// host as it asks for a world to go away.
     pub const fn batch_version(&self) -> u64 {
-        self.batch_version
+        self.batch.version()
     }
 
     /// # Errors
@@ -415,13 +464,8 @@ impl EmbeddedPipeline {
 
         let store_report = self.store.apply(gpu, &self.input)?;
 
-        let took_batch = self.input.take_applied_generation();
-
-        if content_changed(&store_report) || took_batch > self.applied_generation {
-            self.batch_version = self.batch_version.wrapping_add(1);
-        }
-
-        self.applied_generation = took_batch;
+        self.batch
+            .took(self.input.take_applied_generation(), &store_report);
 
         self.region.mode = input.render_mode;
         self.region.delta_time = input.delta_time;
@@ -453,7 +497,7 @@ impl EmbeddedPipeline {
         let published = PublishedSlot {
             slot,
             extent,
-            version: self.batch_version,
+            version: self.batch.version(),
         };
 
         self.frame = self.frame.wrapping_add(1);
