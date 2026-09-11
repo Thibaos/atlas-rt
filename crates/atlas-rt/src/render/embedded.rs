@@ -52,7 +52,8 @@ pub struct EmbeddedPipeline {
     region: RegionRenderContext,
     store: RegionStore,
     input: RendererInput,
-    content_version: u64,
+    batch_version: u64,
+    applied_generation: u64,
     frame: usize,
 }
 
@@ -312,7 +313,8 @@ impl EmbeddedPipeline {
             region,
             store,
             input,
-            content_version: 0,
+            batch_version: 0,
+            applied_generation: 0,
             frame: 0,
         })
     }
@@ -336,10 +338,12 @@ impl EmbeddedPipeline {
         self.delivery.extent()
     }
 
-    /// The version the frames produced from now on carry until content changes
-    /// again. The host records it to gate delivery while a world goes away.
-    pub const fn content_version(&self) -> u64 {
-        self.content_version
+    /// The version the frames produced from now on carry. It turns over in the
+    /// frame that takes delivery of a batch, so the host can hold delivery back
+    /// until the content it asked for has reached the store. Recorded by the
+    /// host as it asks for a world to go away.
+    pub const fn batch_version(&self) -> u64 {
+        self.batch_version
     }
 
     /// # Errors
@@ -409,9 +413,15 @@ impl EmbeddedPipeline {
 
         gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
 
-        if content_changed(&self.store.apply(gpu, &self.input)?) {
-            self.content_version = self.content_version.wrapping_add(1);
+        let store_report = self.store.apply(gpu, &self.input)?;
+
+        let took_batch = self.input.take_applied_generation();
+
+        if content_changed(&store_report) || took_batch > self.applied_generation {
+            self.batch_version = self.batch_version.wrapping_add(1);
         }
+
+        self.applied_generation = took_batch;
 
         self.region.mode = input.render_mode;
         self.region.delta_time = input.delta_time;
@@ -443,7 +453,7 @@ impl EmbeddedPipeline {
         let published = PublishedSlot {
             slot,
             extent,
-            version: self.content_version,
+            version: self.batch_version,
         };
 
         self.frame = self.frame.wrapping_add(1);

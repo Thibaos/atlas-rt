@@ -85,8 +85,6 @@ impl IControl for AtlasRtView {
         self.to_gd()
             .set_anchors_and_offsets_preset(godot::classes::control::LayoutPreset::FULL_RECT);
 
-        self.composite_material = self.to_gd().get_material();
-
         self.match_viewport_size();
 
         match RenderContext::new_headless() {
@@ -338,7 +336,7 @@ impl AtlasRtView {
         }
 
         if self.world_chunks.is_empty() {
-            self.close_display();
+            self.blank_viewport();
 
             return true;
         }
@@ -424,43 +422,61 @@ impl AtlasRtView {
         })
     }
 
-    /// Blanks the viewport on this turn. The control's material samples the
-    /// delivery image, so it has to come off for the placeholder rect to stand
-    /// in for the world.
+    /// Blanks the viewport on this turn. The view's material samples the
+    /// delivery image, so it has to come off for the placeholder to stand in for
+    /// the world.
     fn suppress_display(&mut self) {
+        if self.material_detached {
+            return;
+        }
+
+        self.composite_material = self.base().get_material();
+        self.material_detached = true;
+
         if self.composite_material.is_some() {
             self.to_gd().set_material(None::<&Gd<Material>>);
-
-            self.material_detached = true;
         }
 
         self.wrapped_texture = None;
         self.to_gd().queue_redraw();
     }
 
-    /// Submits a planned batch and closes the gate on the content it replaces,
-    /// so the only frames admitted afterwards are ones the renderer built from
-    /// the new content. Callers must hold no pipeline lock: this takes it, and
-    /// taking it twice on one thread wedges the client.
+    /// Submits a planned batch and records the version of the content it
+    /// replaces, under one hold of the pipeline lock. The version rises in the
+    /// frame that takes delivery of a batch, so the gate opens on that frame
+    /// whether or not the batch turns out to change anything. Callers must hold
+    /// no pipeline lock: this takes it, and taking it twice on one thread wedges
+    /// the client.
     fn submit_world_change(&mut self, planned: batch::Batch) -> bool {
-        if !self.apply_batch(planned) {
+        let Some(pipeline) = &self.pipeline else {
             return false;
-        }
+        };
 
-        self.close_display();
+        let replaced = {
+            let pipeline = lock(pipeline);
+
+            if pipeline.input().submit_batch(planned.snapshots).is_err() {
+                return false;
+            }
+
+            pipeline.batch_version()
+        };
+
+        self.world_chunks = planned.tracked;
+
+        self.display.suppress(replaced);
+        self.suppress_display();
 
         true
     }
 
-    /// Records the version the renderer is stamping on the frames it has
-    /// produced so far and blanks the viewport. Callers must hold no pipeline
-    /// lock.
-    fn close_display(&mut self) {
-        let Some(pipeline) = &self.pipeline else {
-            return;
-        };
-
-        self.display.suppress(lock(pipeline).content_version());
+    /// Records the version of the content on screen and blanks the viewport,
+    /// for the case where the outgoing world has no content left to clear.
+    /// Callers must hold no pipeline lock.
+    fn blank_viewport(&mut self) {
+        if let Some(pipeline) = &self.pipeline {
+            self.display.suppress(lock(pipeline).batch_version());
+        }
 
         self.suppress_display();
     }

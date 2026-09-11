@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread::JoinHandle,
 };
@@ -76,6 +76,7 @@ struct ChangeQueueInner {
     mirrors: Mutex<HashMap<IVec3, RegionMirror, FxBuildHasher>>,
     packed: Mutex<HashMap<IVec3, RegionData, FxBuildHasher>>,
     applied_regions: Mutex<Vec<IVec3>>,
+    applied_batches: AtomicU64,
     idle: AtomicBool,
     busy: AtomicBool,
     shutdown: AtomicBool,
@@ -90,6 +91,7 @@ impl ChangeQueueInner {
             mirrors: Mutex::new(HashMap::default()),
             packed: Mutex::new(HashMap::default()),
             applied_regions: Mutex::new(Vec::new()),
+            applied_batches: AtomicU64::new(0),
             idle: AtomicBool::new(false),
             busy: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
@@ -236,6 +238,13 @@ impl RendererInput {
         dirty
     }
 
+    /// How many batches the renderer has taken delivery of. A frame takes the
+    /// regions the worker applied for a batch, so this lags the submit that
+    /// produced them and turns over once per batch taken.
+    pub(in crate::render) fn take_applied_generation(&self) -> u64 {
+        self.queue.inner.applied_batches.load(Ordering::SeqCst)
+    }
+
     /// # Errors
     ///
     /// Returns an error if packed lock poisoned or region has no ready pack
@@ -341,6 +350,8 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) -> anyhow::Result<()> {
 
             apply_snapshots(&mut mirrors, taken)
         };
+
+        inner.applied_batches.fetch_add(1, Ordering::SeqCst);
 
         let packs = pack_dirty_regions(&inner.mirrors, &dirty)?;
 

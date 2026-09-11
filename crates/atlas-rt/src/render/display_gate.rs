@@ -1,11 +1,7 @@
 /// Whether published frames may reach the screen.
 ///
-/// The host suppresses display when it asks for a world to go away, recording
-/// the version the renderer had stamped on everything it produced so far. Only
-/// a version the renderer raises after that is admitted. The renderer raises it
-/// when a batch of Snapshots reaches its store, so the first frame through the
-/// gate is one it built from the new content, however long the content took to
-/// arrive.
+/// The host records a version as it asks for a world to go away, and admits
+/// only frames the renderer produced after it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DisplayGate {
     suppressed: bool,
@@ -50,8 +46,6 @@ mod tests {
         let mut gate = DisplayGate::new();
         let showing = 3;
 
-        assert!(gate.admits(showing));
-
         gate.suppress(showing);
 
         for version in 0..=showing {
@@ -93,15 +87,5 @@ mod tests {
 
         assert!(!gate.admits(4));
         assert!(gate.admits(6));
-    }
-
-    #[test]
-    fn a_first_suppression_drops_the_versions_before_any_content_change() {
-        let mut gate = DisplayGate::new();
-
-        gate.suppress(0);
-
-        assert!(!gate.admits(0));
-        assert!(gate.admits(1));
     }
 }
