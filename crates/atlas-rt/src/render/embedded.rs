@@ -32,8 +32,8 @@ const PROJ_FAR: f32 = 10000.0;
 pub const REWRITE_GATE_TICKS: u64 = 3;
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct WrapLedger {
-    pub wraps: [Option<u64>; SLOT_COUNT],
+pub struct WrapTimes {
+    pub wrapped_at: [Option<u64>; SLOT_COUNT],
     pub tick: u64,
 }
 
@@ -105,51 +105,51 @@ fn slot_storage_ids(
 
 #[cfg(test)]
 mod tests {
-    use super::{REWRITE_GATE_TICKS, WrapLedger, gated_slot};
+    use super::{REWRITE_GATE_TICKS, WrapTimes, gated_slot};
     use crate::render::delivery::SLOT_COUNT;
 
-    fn ledger(wraps: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapLedger {
-        WrapLedger { wraps, tick }
+    fn wrap_times(wrapped_at: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapTimes {
+        WrapTimes { wrapped_at, tick }
     }
 
     #[test]
     fn never_wrapped_slots_start_eligible() {
-        assert_eq!(gated_slot(0, &ledger([None; SLOT_COUNT], 0)), Some(0));
+        assert_eq!(gated_slot(0, &wrap_times([None; SLOT_COUNT], 0)), Some(0));
     }
 
     #[test]
     fn the_ring_slot_waits_full_gate_even_fresh() {
-        let ledger = ledger([Some(0), None, None], REWRITE_GATE_TICKS - 1);
+        let wrap_times = wrap_times([Some(0), None, None], REWRITE_GATE_TICKS - 1);
 
-        assert_eq!(gated_slot(0, &ledger), Some(1));
-        assert_eq!(gated_slot(1, &ledger), Some(1));
+        assert_eq!(gated_slot(0, &wrap_times), Some(1));
+        assert_eq!(gated_slot(1, &wrap_times), Some(1));
     }
 
     #[test]
     fn the_gate_opens_on_the_third_tick() {
-        let wrap_ledger = ledger([Some(0), None, None], REWRITE_GATE_TICKS);
+        let wrap_times = wrap_times([Some(0), None, None], REWRITE_GATE_TICKS);
 
-        assert_eq!(gated_slot(0, &wrap_ledger), Some(0));
+        assert_eq!(gated_slot(0, &wrap_times), Some(0));
     }
 
     #[test]
     fn every_recently_wrapped_slot_skips_the_frame() {
-        let wrap_ledger = ledger([Some(9), Some(9), Some(9)], 10);
+        let wrap_times = wrap_times([Some(9), Some(9), Some(9)], 10);
 
-        assert_eq!(gated_slot(1, &wrap_ledger), None);
+        assert_eq!(gated_slot(1, &wrap_times), None);
     }
 }
 
-fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
+fn gated_slot(bind: usize, wrap_times: &WrapTimes) -> Option<usize> {
     let eligible = |slot: usize| -> bool {
-        ledger
-            .wraps
+        wrap_times
+            .wrapped_at
             .get(slot)
             .copied()
             .flatten()
             .is_none_or(|wrap| {
                 wrap.checked_add(REWRITE_GATE_TICKS)
-                    .is_some_and(|res| ledger.tick >= res)
+                    .is_some_and(|res| wrap_times.tick >= res)
             })
     };
 
@@ -160,7 +160,7 @@ fn gated_slot(bind: usize, ledger: &WrapLedger) -> Option<usize> {
     let mut fallback_slot = None;
     let mut oldest_wrap = None;
 
-    for (slot, wrap) in ledger.wraps.iter().enumerate() {
+    for (slot, wrap) in wrap_times.wrapped_at.iter().enumerate() {
         if !eligible(slot) {
             continue;
         }
@@ -326,7 +326,7 @@ impl EmbeddedPipeline {
         &mut self,
         gpu: &RenderContext,
         input: &FrameInput,
-        ledger: &WrapLedger,
+        wrap_times: &WrapTimes,
     ) -> anyhow::Result<Option<PublishedSlot>> {
         let extent = [input.extent[0], input.extent[1]];
 
@@ -360,7 +360,7 @@ impl EmbeddedPipeline {
 
         let bind = bind_slot(self.frame);
 
-        let Some(slot) = gated_slot(bind, ledger) else {
+        let Some(slot) = gated_slot(bind, wrap_times) else {
             return Ok(None);
         };
 

@@ -147,13 +147,13 @@ frame m+1, one iteration after the wrap. The rewrite happens at worker frame m+R
 changes the soundness rule from R >= 2 to R >= Q+1. The finding lines above are unaffected; only
 this section's conclusions changed.
 
-Model, from the verified mechanics. In iteration i the coordinator kicks worker frame i at
+Model, from the verified mechanics. In iteration i the coordinator submits worker frame i at
 _process(i). draw(i) records the canvas sampling of the texture wrapped at post_draw(i-1),
 submits Godot frame i, and then swap_buffers advances the slot and _begin_frame stalls on the
 reused slot's fence, which is frame i+1-Q's (rendering_device.cpp L7877-7881, L8048-8051). So by
 the time iteration i's draw returns, Godot frames up to i+1-Q are complete, and the guarantee for
 the sampling frame m+1 lands at the end of draw(m+Q). The worker rewrites the sampled slot at its
-frame m+R, kicked at _process(m+R), which runs after draw(m+R-1) and before draw(m+R). Sound
+frame m+R, submitted at _process(m+R), which runs after draw(m+R-1) and before draw(m+R). Sound
 rewrite requires _process(m+R) to follow the end of draw(m+Q), that is R >= Q+1 (inference from
 the cited lines; the worst case is the fast worker, where the slot wraps at post_draw(m) with m
 equal to the producing tick).
@@ -178,9 +178,9 @@ swapchain caps display lag only, and the bound holds the same with vsync off.
 - Break conditions (inference): frame_queue_size 3 (would need R >= 4, out of range); draw()
 being skipped while the worker keeps rewriting. The skip is excluded structurally while
 producing: every wrap queue_redraws, RenderingServer::has_changed stays true, and the
-low-processor branch at main/main.cpp L5087-5091 draws whenever anything changed; the no-kick
-pause and hidden cases stop rewrites outright, so their skips are harmless. Threaded RS is a
-third exclusion: it defers frame_post_draw to the render thread
+low-processor branch at main/main.cpp L5087-5091 draws whenever anything changed; the pause and
+hidden cases, which submit nothing, stop rewrites outright, so their skips are harmless.
+Threaded RS is a third exclusion: it defers frame_post_draw to the render thread
 (rendering_server_default.cpp L130-131), breaking the main-thread handoff contract.
 
 ## Sources note

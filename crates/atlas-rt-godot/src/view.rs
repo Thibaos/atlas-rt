@@ -1,18 +1,3 @@
-//! The view node: main-thread coordinator for the embedded pipeline.
-#![allow(
-    clippy::doc_markdown,
-    clippy::as_conversions,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::uninlined_format_args,
-    clippy::map_unwrap_or,
-    clippy::arithmetic_side_effects,
-    clippy::needless_pass_by_value,
-    clippy::missing_const_for_fn,
-    clippy::option_if_let_else
-)]
-
 use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
@@ -23,8 +8,8 @@ use godot::prelude::*;
 use atlas_rt::render::{
     context::RenderContext,
     delivery::{DeviceMemory, SLOT_COUNT},
-    embedded::{EmbeddedPipeline, PublishedSlot, WrapLedger},
-    pipeline::DEFAULT_FOV,
+    embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
+    pipeline::{DEFAULT_FOV, FrameInput},
     region::task::RenderMode,
 };
 use atlas_rt::world::{
@@ -33,7 +18,7 @@ use atlas_rt::world::{
     snapshot::{MicroChunkSnapshot, emit_snapshots},
 };
 
-use crate::worker::{Kick, Worker, lock};
+use crate::worker::{FrameRequest, Worker, lock};
 
 const STATUS_LOADING: i32 = 0;
 const STATUS_READY: i32 = 1;
@@ -49,7 +34,7 @@ pub struct AtlasRtView {
     fov: f32,
     origin: Vector3,
     basis: Basis,
-    render_mode: i32,
+    render_mode_index: i32,
 
     gpu: Option<Arc<Mutex<RenderContext>>>,
     pipeline: Option<Arc<Mutex<EmbeddedPipeline>>>,
@@ -72,7 +57,7 @@ impl IControl for AtlasRtView {
             fov: DEFAULT_FOV,
             origin: Vector3::ZERO,
             basis: Basis::IDENTITY,
-            render_mode: 0,
+            render_mode_index: 0,
             gpu: None,
             pipeline: None,
             worker: None,
@@ -168,14 +153,17 @@ impl IControl for AtlasRtView {
             return;
         };
 
-        worker.kick(Kick {
-            view_mat: self.view_matrix().to_cols_array(),
-            fov: self.fov,
-            extent: self.viewport_extent(),
-            mode: self.kick_mode(),
-            delta_time: delta as f32,
-            ledger: WrapLedger {
-                wraps: self.wrapped_at,
+        worker.submit(FrameRequest {
+            input: FrameInput {
+                view: self.view_matrix(),
+                extent: self.viewport_extent(),
+                fov: self.fov,
+                resized: false,
+                render_mode: self.render_mode(),
+                delta_time: delta as f32,
+            },
+            wrap_times: WrapTimes {
+                wrapped_at: self.wrapped_at,
                 tick: self.tick,
             },
         });
@@ -249,7 +237,7 @@ impl AtlasRtView {
             return;
         }
 
-        self.render_mode = mode;
+        self.render_mode_index = mode;
         self.sync_composite_mode();
     }
 
@@ -262,7 +250,7 @@ impl AtlasRtView {
             return;
         };
 
-        shader.set_shader_parameter(ATLAS_MODE_UNIFORM, &self.render_mode.to_variant());
+        shader.set_shader_parameter(ATLAS_MODE_UNIFORM, &self.render_mode_index.to_variant());
     }
 
     #[func]
@@ -372,8 +360,8 @@ impl AtlasRtView {
         self.to_gd().set_size(self.to_gd().get_viewport_rect().size);
     }
 
-    fn kick_mode(&self) -> RenderMode {
-        match self.render_mode {
+    const fn render_mode(&self) -> RenderMode {
+        match self.render_mode_index {
             1 => RenderMode::Hull,
             2 => RenderMode::Normal,
             _ => RenderMode::Voxel,

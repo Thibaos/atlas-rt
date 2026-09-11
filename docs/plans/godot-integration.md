@@ -142,13 +142,13 @@ Frame-boundary contract: a Delivery slot is safe to sample from the
 moment the coordinator wraps it until the worker's frame N+3 begins;
 the closing side is Godot's own machinery. At frame_queue_size 2 the
 end-of-draw stall fences the sampling draw complete before the next
-kick, with a full iteration of margin. Invariant: at any instant one
+submission, with a full iteration of margin. Invariant: at any instant one
 slot is being written, two hold the most recent finished frames and are
 free to sample.
 
 Pacing is Godot's: async latest-value, no present mode, no internal fps
-cap, no lockstep. _process marshals FrameInput into a latest-value cell
-and kicks without blocking; the worker produces at most one frame per
+cap, no lockstep. _process marshals a FrameRequest into a latest-value cell
+and submits without blocking; the worker produces at most one frame per
 tick and never free-runs; frame_post_draw wraps the newest finished
 slot, or nothing when nothing new finished. Godot's knobs apply: vsync
 on, engine.max_fps, low-processor mode.
@@ -159,7 +159,7 @@ need a fourth slot, so zero-copy degrades to CPU delivery for the
 session), threaded RenderingServer off (it defers frame_post_draw to
 the render thread and breaks the main-thread handoff), low-processor
 mode unsupported on the zero-copy path (structurally safe while
-producing: every wrap queue_redraws; pause and hidden stop kicks
+producing: every wrap queue_redraws; pause and hidden stop submissions
 entirely). Input marshaled at _process(N) is visible at the end of
 iteration N+1 when the worker keeps pace.
 
@@ -178,8 +178,8 @@ material.
 
 Main thread. _process marshals the Camera3D transform and fov, the
 viewport extent, the render mode, and delta time into the latest-value
-cell, then kicks the worker. RS.frame_post_draw is the handoff: wrap the
-newest published slot (texture_create_from_extension,
+cell, then submits the frame request to the worker. RS.frame_post_draw
+is the handoff: wrap the newest published slot (texture_create_from_extension,
 RS.texture_rd_create, Texture2Drd RID rotation), queue_redraw. Every
 Godot API call lives on the main thread; cross-thread Godot calls panic
 under gdext.
@@ -189,14 +189,14 @@ Worker thread, one per coordinator tick. Drain edits, apply and rebuild
 writes the Delivery slot, exit transition, publish the finished slot.
 Zero Godot calls from the worker.
 
-Shared state: the FrameInput latest-value cell, the Change edit queue
+Shared state: the FrameRequest latest-value cell, the Change edit queue
 (any-thread enqueue), a resize request flag, the load job
 (worker-serialized), and the ring index.
 
 Lifetimes. The pipeline (device, Delivery ring, region store) is
 created once at extension init alongside the transport probe and lives
 for the session; the world lives for the level, touched only by
-clear_world and load_world. Pause or hidden means freeze: kicks stop,
+clear_world and load_world. Pause or hidden means freeze: submissions stop,
 the canvas keeps the last wrapped texture, the handoff finds nothing
 new. Shutdown joins the worker after wait_until_idle.
 
@@ -219,7 +219,7 @@ Host API sketch (from ticket 06, unchanged):
       submit_batch(edits: Array) -> bool # one Dictionary per edit:
                                          # coords, mask, materials
 
-Per-frame flow: _process marshals and kicks; the worker runs one
+Per-frame flow: _process marshals and submits; the worker runs one
 atlas-rt frame (drain edits, apply and rebuild, ray pass, exit
 transition, publish); frame_post_draw wraps the newest slot and rotates
 the Texture2Drd; the host's composite canvas shader draws it, its mode
@@ -331,13 +331,13 @@ such that a worst tick stays inside the standalone frame-time headroom.
 Beyond the cap, edits queue and drain over later ticks, coalescing
 intact. Edits stay any-time/any-thread; the cap is the only constraint.
 
-Split of ownership. This plan owns the kick/submission cost, the wrap
+Split of ownership. This plan owns the submission cost, the wrap
 cost, the three-slot ring effects, the CPU-fallback transport cost, and
 the edit-spike cap. The renderer's own workstream keeps ray-pass ms,
 the t pre-pass interplay, and the per-edit rebuild strategy beyond the cap.
-The sub-line items fixed by ADR 0007 (tick kick, one submission, the
-bounded own-fence wait, already signaled in steady state) are treated
-as below measurement.
+The sub-line items fixed by ADR 0007 (the per-tick submission, the single
+queue submission, the bounded own-fence wait, already signaled in steady
+state) are treated as below measurement.
 
 ## Upstream watch and gates (ticket 09)
 

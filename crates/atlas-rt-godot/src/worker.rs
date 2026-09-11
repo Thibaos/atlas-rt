@@ -7,63 +7,56 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-use glam::Mat4;
-
 use atlas_rt::render::{
     context::RenderContext,
-    embedded::{EmbeddedPipeline, PublishedSlot, WrapLedger},
+    embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
     pipeline::FrameInput,
-    region::task::RenderMode,
 };
 
-pub struct Kick {
-    pub view_mat: [f32; 16],
-    pub fov: f32,
-    pub extent: [u32; 2],
-    pub mode: RenderMode,
-    pub delta_time: f32,
-    pub ledger: WrapLedger,
+pub struct FrameRequest {
+    pub input: FrameInput,
+    pub wrap_times: WrapTimes,
 }
 
-struct Mailbox {
-    cell: Mutex<Option<Kick>>,
+struct FrameChannel {
+    pending: Mutex<Option<FrameRequest>>,
     signal: Condvar,
     shutdown: AtomicBool,
 }
 
-impl Mailbox {
+impl FrameChannel {
     const fn new() -> Self {
         Self {
-            cell: Mutex::new(None),
+            pending: Mutex::new(None),
             signal: Condvar::new(),
             shutdown: AtomicBool::new(false),
         }
     }
 
-    fn kick(&self, kick: Kick) {
+    fn submit(&self, request: FrameRequest) {
         if self.shutdown.load(Ordering::Acquire) {
             return;
         }
 
-        lock(&self.cell).replace(kick);
+        lock(&self.pending).replace(request);
         self.signal.notify_one();
     }
 
-    fn take(&self) -> Option<Kick> {
-        let mut cell = lock(&self.cell);
+    fn recv(&self) -> Option<FrameRequest> {
+        let mut pending = lock(&self.pending);
 
         loop {
-            if let Some(kick) = cell.take() {
-                return Some(kick);
+            if let Some(request) = pending.take() {
+                return Some(request);
             }
 
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
 
-            cell = self
+            pending = self
                 .signal
-                .wait(cell)
+                .wait(pending)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
@@ -81,7 +74,7 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 pub struct Worker {
-    mailbox: Arc<Mailbox>,
+    channel: Arc<FrameChannel>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -91,24 +84,16 @@ impl Worker {
         pipeline: Arc<Mutex<EmbeddedPipeline>>,
         published_tx: mpsc::Sender<PublishedSlot>,
     ) -> Self {
-        let mailbox = Arc::new(Mailbox::new());
-        let mailbox_handle = Arc::clone(&mailbox);
+        let channel = Arc::new(FrameChannel::new());
+        let channel_handle = Arc::clone(&channel);
 
         let handle = spawn(move || {
-            while let Some(kick) = mailbox_handle.take() {
-                let input = FrameInput {
-                    view: Mat4::from_cols_array(&kick.view_mat),
-                    extent: kick.extent,
-                    fov: kick.fov,
-                    resized: false,
-                    render_mode: kick.mode,
-                    delta_time: kick.delta_time,
-                };
-
+            while let Some(request) = channel_handle.recv() {
                 let gpu_guard = lock(&gpu);
                 let mut pipeline_guard = lock(&pipeline);
 
-                let result = pipeline_guard.run_frame(&gpu_guard, &input, &kick.ledger);
+                let result =
+                    pipeline_guard.run_frame(&gpu_guard, &request.input, &request.wrap_times);
 
                 let result = match result {
                     Ok(Some(slot)) => Some(slot),
@@ -132,19 +117,19 @@ impl Worker {
         });
 
         Self {
-            mailbox,
+            channel,
             handle: Some(handle),
         }
     }
 
-    pub fn kick(&self, kick: Kick) {
-        self.mailbox.kick(kick);
+    pub fn submit(&self, request: FrameRequest) {
+        self.channel.submit(request);
     }
 }
 
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.mailbox.shutdown();
+        self.channel.shutdown();
 
         if let Some(handle) = self.handle.take() {
             let joined = handle.join();

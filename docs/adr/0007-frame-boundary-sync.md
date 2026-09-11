@@ -18,8 +18,8 @@ N writes Delivery slot N mod 3 and may not touch that slot again before
 frame N+3. Soundness rests on Godot's own frame-slot fences, not on vsync
 and not on observation: with frame_queue_size = 2 (the default), the stall
 at the end of Godot's draw(m+2) waits the fence covering draw(m+1), the draw
-that sampled the slot, and that stall completes before _process(m+3) fires
-the rewrite kick. The general rule is R >= Q+1 (ring slots R,
+that sampled the slot, and that stall completes before _process(m+3)
+submits the rewrite. The general rule is R >= Q+1 (ring slots R,
 frame_queue_size Q); facts and derivation in
 docs/research/godot-frame-loop-pacing.md (its soundness section was
 corrected once, from a two-tick margin to R >= Q+1, when the handoff's
@@ -34,7 +34,7 @@ session); threaded RS off (experimental; it defers frame_post_draw to the
 render thread and breaks the main-thread handoff); low-processor mode
 unsupported on the zero-copy path (structurally safe while producing, since
 every wrap requests a redraw and the low-processor branch draws whenever
-anything changed; the pause and hidden cases stop kicks per ticket 06, so
+anything changed; the pause and hidden cases stop submissions per ticket 06, so
 their skipped draws are harmless).
 
 Pacing stays Godot's: the embedded path has no present mode (standalone keeps
@@ -59,7 +59,7 @@ already corrected by ticket 05 to cite 0006.
   guarantee by one full iteration, and the window is widest when atlas-rt is
   fast, the acceptance target itself. Sampling an image mid-rewrite is
   undefined behavior (corruption or a driver fault), not a visible glitch.
-- **Two-slot ring with post_draw-gated kicks.** Rejected: sound, but the
+- **Two-slot ring with post_draw-gated submissions.** Rejected: sound, but the
   worker starts after Godot's draw, so input-to-photon grows to about two
   game frames in the fast case, and frame_queue_size must still be pinned to
   2, so the change buys no independence from the engine setting.
@@ -81,7 +81,7 @@ already corrected by ticket 05 to cite 0006.
   setting of 3 degrades the session to CPU delivery.
 - Latency: input marshaled at _process(N) is visible at the end of iteration
   N+1 when the worker keeps pace (one game frame plus the overlapped worker
-  frame time); the async kick keeps the game's rate independent of the
+  frame time); the async submission keeps the game's rate independent of the
   renderer's worst frame.
 - Vsync, present-queue depth, and the 3-image swapchain play no part in
   soundness: the binding stall is Godot's per-slot fence on every draw, and
