@@ -16,6 +16,7 @@ use vulkano::{Handle, VulkanObject};
 use crate::render::{
     context::RenderContext,
     delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, bind_slot, delivery_memory},
+    frame_version::FrameVersion,
     pipeline::FrameInput,
     region::{
         feed::RendererInput,
@@ -41,7 +42,7 @@ pub struct WrapTimes {
 pub struct PublishedSlot {
     pub slot: usize,
     pub extent: [u32; 2],
-    pub frame: usize,
+    pub version: u64,
 }
 
 pub struct EmbeddedPipeline {
@@ -52,6 +53,7 @@ pub struct EmbeddedPipeline {
     region: RegionRenderContext,
     store: RegionStore,
     input: RendererInput,
+    version: FrameVersion,
     frame: usize,
 }
 
@@ -261,6 +263,7 @@ impl EmbeddedPipeline {
             region,
             store,
             input,
+            version: FrameVersion::default(),
             frame: 0,
         })
     }
@@ -282,6 +285,17 @@ impl EmbeddedPipeline {
 
     pub const fn extent(&self) -> [u32; 2] {
         self.delivery.extent()
+    }
+
+    /// Raises the frame version, invalidating every frame produced before the
+    /// call, and returns the version the next frame carries. The raise happens
+    /// under the pipeline lock, so the boundary is the call itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on version exhaustion
+    pub fn raise_frame_version(&mut self) -> anyhow::Result<u64> {
+        self.version.bump()
     }
 
     /// # Errors
@@ -383,7 +397,7 @@ impl EmbeddedPipeline {
         let published = PublishedSlot {
             slot,
             extent,
-            frame: self.frame,
+            version: self.version.get(),
         };
 
         self.frame = self.frame.wrapping_add(1);

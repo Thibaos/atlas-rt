@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
-    Camera3D, Control, Engine, FileAccess, IControl, RenderingServer, ShaderMaterial, Texture2Drd,
+    Camera3D, Control, Engine, FileAccess, IControl, Material, RenderingServer, ShaderMaterial,
+    Texture2Drd,
 };
 use godot::prelude::*;
 
@@ -9,6 +10,7 @@ use atlas_rt::render::{
     context::RenderContext,
     delivery::{DeviceMemory, SLOT_COUNT},
     embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
+    frame_version::DisplayGate,
     pipeline::{DEFAULT_FOV, FrameInput},
     region::task::RenderMode,
 };
@@ -42,6 +44,9 @@ pub struct AtlasRtView {
     worker: Option<Worker>,
 
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
+    display: DisplayGate,
+    composite_material: Option<Gd<Material>>,
+    material_detached: bool,
     wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
     world_chunks: TrackedCoords,
@@ -64,6 +69,9 @@ impl IControl for AtlasRtView {
             pipeline: None,
             worker: None,
             worker_publish_in: None,
+            display: DisplayGate::new(),
+            composite_material: None,
+            material_detached: false,
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
             world_chunks: TrackedCoords::default(),
@@ -76,6 +84,8 @@ impl IControl for AtlasRtView {
     fn ready(&mut self) {
         self.to_gd()
             .set_anchors_and_offsets_preset(godot::classes::control::LayoutPreset::FULL_RECT);
+
+        self.composite_material = self.to_gd().get_material();
 
         self.match_viewport_size();
 
@@ -210,7 +220,8 @@ impl AtlasRtView {
             newest = Some(slot);
         }
 
-        if let Some(PublishedSlot { slot, .. }) = newest
+        if let Some(PublishedSlot { slot, version, .. }) = newest
+            && self.display.admits(version)
             && let Some(entry) = self.wrapped_at.get_mut(slot)
             && entry.is_none_or(|prev| prev < self.tick)
         {
@@ -297,7 +308,7 @@ impl AtlasRtView {
 
         let planned = batch::plan_load(snapshots, &self.world_chunks);
 
-        if !self.apply_batch(planned) {
+        if !self.submit_plan(planned) {
             godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
 
             return false;
@@ -327,12 +338,14 @@ impl AtlasRtView {
         }
 
         if self.world_chunks.is_empty() {
+            self.suppress_display();
+
             return true;
         }
 
         let planned = batch::plan_clear(&self.world_chunks);
 
-        if !self.apply_batch(planned) {
+        if !self.submit_plan(planned) {
             godot_error!("atlas_rt: clear_world failed: edit queue rejected the clear");
 
             return false;
@@ -411,24 +424,52 @@ impl AtlasRtView {
         })
     }
 
-    /// Submits a planned batch and adopts the tracked set it leaves. Callers
-    /// must hold no pipeline lock: this takes it, and taking it twice on one
-    /// thread wedges the client.
-    fn apply_batch(&mut self, planned: batch::Batch) -> bool {
+    /// Drops the world from the screen at once: the material that samples the
+    /// delivery image comes off, so the placeholder rect is what draws, and the
+    /// gate closes on every frame the renderer produced for the outgoing world,
+    /// including the one it is producing now.
+    fn suppress_display(&mut self) {
+        if self.composite_material.is_some() {
+            self.to_gd().set_material(None::<&Gd<Material>>);
+
+            self.material_detached = true;
+        }
+
+        self.wrapped_texture = None;
+        self.to_gd().queue_redraw();
+    }
+
+    /// Submits a planned batch and suppresses delivery under one hold of the
+    /// pipeline lock, so the version this raises cannot stamp a frame the
+    /// renderer starts from the outgoing world's snapshots. Raising after the
+    /// lock is released would leave exactly that window open.
+    fn submit_plan(&mut self, planned: batch::Batch) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
         };
 
-        let submitted = lock(pipeline)
-            .input()
-            .submit_batch(planned.snapshots)
-            .is_ok();
+        let outcome = {
+            let mut pipeline = lock(pipeline);
+            let submitted = pipeline.input().submit_batch(planned.snapshots).is_ok();
 
-        if submitted {
-            self.world_chunks = planned.tracked;
+            submitted.then(|| pipeline.raise_frame_version())
+        };
+
+        match outcome {
+            Some(version) => {
+                self.world_chunks = planned.tracked;
+
+                match version {
+                    Ok(version) => self.display.suppress(version),
+                    Err(err) => godot_error!("atlas_rt: could not suppress display: {}", err),
+                }
+
+                self.suppress_display();
+
+                true
+            }
+            None => false,
         }
-
-        submitted
     }
 
     fn probe_backend(
@@ -543,7 +584,20 @@ impl AtlasRtView {
 
         let frame = wrapped.clone();
 
+        self.restore_control_material();
         self.sync_composite_frame(&frame);
+    }
+
+    fn restore_control_material(&mut self) {
+        if !self.material_detached {
+            return;
+        }
+
+        self.material_detached = false;
+
+        if let Some(material) = self.composite_material.clone() {
+            self.to_gd().set_material(Some(&material));
+        }
     }
 
     fn sync_composite_frame(&self, frame: &Gd<Texture2Drd>) {
@@ -568,6 +622,25 @@ impl AtlasRtView {
                 false
             }
         }
+    }
+
+    /// Callers must hold no pipeline lock: this takes it, and taking it twice on
+    /// one thread wedges the client.
+    fn apply_batch(&mut self, planned: batch::Batch) -> bool {
+        let Some(pipeline) = &self.pipeline else {
+            return false;
+        };
+
+        let submitted = lock(pipeline)
+            .input()
+            .submit_batch(planned.snapshots)
+            .is_ok();
+
+        if submitted {
+            self.world_chunks = planned.tracked;
+        }
+
+        submitted
     }
 
     fn validate_edits(edits: &Array<Variant>) -> Result<Vec<MicroChunkSnapshot>, String> {
