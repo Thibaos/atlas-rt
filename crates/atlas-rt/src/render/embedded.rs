@@ -42,6 +42,7 @@ pub struct PublishedSlot {
     pub slot: usize,
     pub extent: [u32; 2],
     pub version: u64,
+    pub generation: u64,
 }
 
 pub struct EmbeddedPipeline {
@@ -60,7 +61,9 @@ pub struct EmbeddedPipeline {
 /// entered, left, or took new Snapshots. The report's rebuild log and TLAS flags
 /// describe the build, not the content, so they cannot answer this.
 const fn content_changed(report: &ApplyReport) -> bool {
-    !report.became_resident.is_empty() || !report.left_resident.is_empty() || !report.dirty.is_empty()
+    !report.became_resident.is_empty()
+        || !report.left_resident.is_empty()
+        || !report.dirty.is_empty()
 }
 
 /// The version stamped on published frames, and the change-queue generation it
@@ -395,6 +398,14 @@ impl EmbeddedPipeline {
         self.batch.version()
     }
 
+    /// How many batches the renderer has taken delivery of. The frame that
+    /// applies a pending batch reports one more than the count read before it
+    /// was submitted, so the host can tell a frame that carries its batch from
+    /// one built earlier.
+    pub fn applied_generation(&self) -> u64 {
+        self.input.take_applied_generation()
+    }
+
     /// # Errors
     ///
     /// Returns an error if delivery image fetch failed
@@ -463,9 +474,9 @@ impl EmbeddedPipeline {
         gpu.resources.flight(gpu.graphics_flight_id).wait_idle()?;
 
         let store_report = self.store.apply(gpu, &self.input)?;
+        let generation = self.input.take_applied_generation();
 
-        self.batch
-            .took(self.input.take_applied_generation(), &store_report);
+        self.batch.took(generation, &store_report);
 
         self.region.mode = input.render_mode;
         self.region.delta_time = input.delta_time;
@@ -498,6 +509,7 @@ impl EmbeddedPipeline {
             slot,
             extent,
             version: self.batch.version(),
+            generation,
         };
 
         self.frame = self.frame.wrapping_add(1);

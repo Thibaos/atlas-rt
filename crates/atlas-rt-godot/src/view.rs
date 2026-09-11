@@ -1,31 +1,32 @@
 use std::sync::{Arc, Mutex, mpsc};
 
 use godot::classes::{
-    Camera3D, Control, Engine, FileAccess, IControl, Material, RenderingServer, ShaderMaterial,
-    Texture2Drd,
+    Camera3D, Control, Engine, IControl, Material, ProjectSettings, RenderingServer,
+    ShaderMaterial, Texture2Drd,
 };
 use godot::prelude::*;
 
 use atlas_rt::render::{
     context::RenderContext,
     delivery::{DeviceMemory, SLOT_COUNT},
-    embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
     display_gate::DisplayGate,
+    embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
     pipeline::{DEFAULT_FOV, FrameInput},
     region::task::RenderMode,
 };
 use atlas_rt::world::{
     batch::{self, TrackedCoords},
-    format::{get_palette, open_bytes},
     grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
-    snapshot::{MicroChunkSnapshot, emit_snapshots},
+    job::{Refusal, Residency, Status, Upgrade, WorldJob, WorldSource},
+    snapshot::MicroChunkSnapshot,
 };
 
 use crate::worker::{FrameRequest, Worker, lock};
 
-const STATUS_LOADING: i32 = 0;
-const STATUS_READY: i32 = 1;
-const STATUS_FAILED: i32 = 2;
+const STATUS_EMPTY: i32 = 0;
+const STATUS_LOADING: i32 = 1;
+const STATUS_READY: i32 = 2;
+const STATUS_FAILED: i32 = 3;
 const REJECT: &str = "atlas_rt: rejected input: ";
 const ATLAS_MODE_UNIFORM: &str = "mode";
 const ATLAS_FRAME_UNIFORM: &str = "atlas_frame";
@@ -42,6 +43,7 @@ pub struct AtlasRtView {
     gpu: Option<Arc<Mutex<RenderContext>>>,
     pipeline: Option<Arc<Mutex<EmbeddedPipeline>>>,
     worker: Option<Worker>,
+    job: Option<WorldJob>,
 
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
     display: DisplayGate,
@@ -68,6 +70,7 @@ impl IControl for AtlasRtView {
             gpu: None,
             pipeline: None,
             worker: None,
+            job: None,
             worker_publish_in: None,
             display: DisplayGate::new(),
             composite_material: None,
@@ -117,8 +120,12 @@ impl IControl for AtlasRtView {
                             published_tx,
                         ));
 
+                        let mut job = WorldJob::new();
+                        job.enter_ready();
+
                         self.pipeline = Some(shared_pipeline.clone());
                         self.worker_publish_in = Some(published_rx);
+                        self.job = Some(job);
                         self.status = STATUS_READY;
 
                         if let Err(probe) = Self::probe_backend(&gpu, &shared_pipeline) {
@@ -153,6 +160,8 @@ impl IControl for AtlasRtView {
     }
 
     fn process(&mut self, delta: f64) {
+        self.poll_job();
+
         if self.status != STATUS_READY {
             return;
         }
@@ -202,6 +211,8 @@ impl IControl for AtlasRtView {
 impl AtlasRtView {
     #[func]
     pub fn on_frame_post_draw(&mut self) {
+        self.poll_job();
+
         if self.status != STATUS_READY {
             return;
         }
@@ -218,15 +229,68 @@ impl AtlasRtView {
             newest = Some(slot);
         }
 
-        if let Some(PublishedSlot { slot, version, .. }) = newest
-            && self.display.admits(version)
-            && let Some(entry) = self.wrapped_at.get_mut(slot)
-            && entry.is_none_or(|prev| prev < self.tick)
-        {
-            *entry = Some(self.tick);
-            self.hand_off_zero_copy(slot);
-            self.to_gd().queue_redraw();
+        let Some(PublishedSlot {
+            slot,
+            version,
+            generation,
+            ..
+        }) = newest
+        else {
+            return;
+        };
+
+        let Some(entry) = self.wrapped_at.get_mut(slot) else {
+            return;
+        };
+
+        if !self.display.admits(version) || !entry.is_none_or(|prev| prev < self.tick) {
+            return;
         }
+
+        *entry = Some(self.tick);
+        self.hand_off_zero_copy(slot);
+        self.settle_job(version, generation);
+        self.to_gd().queue_redraw();
+    }
+
+    /// Whether the view is drawing a world rather than the placeholder. False
+    /// from the call that takes the outgoing world away until a frame the
+    /// renderer built after the change reaches the screen.
+    #[func]
+    #[allow(dead_code)]
+    pub fn displaying(&self) -> bool {
+        self.wrapped_texture.is_some()
+    }
+
+    /// The status the loading overlay and the load buttons read: no world and
+    /// nothing in flight, a job in flight, a world resident, or a failure. A
+    /// pipeline that never came up is a failure, not a world.
+    #[func]
+    pub fn job_status(&self) -> i32 {
+        if self.status != STATUS_READY {
+            return self.status;
+        }
+
+        let Some(job) = &self.job else {
+            return STATUS_FAILED;
+        };
+
+        match job.status() {
+            Status::Empty => STATUS_EMPTY,
+            Status::Loading => STATUS_LOADING,
+            Status::Ready => STATUS_READY,
+            Status::Failed => STATUS_FAILED,
+        }
+    }
+
+    /// Why the last job failed, for display. Empty while the last job did not
+    /// fail.
+    #[func]
+    pub fn job_error(&self) -> GString {
+        self.job
+            .as_ref()
+            .and_then(WorldJob::error)
+            .map_or_else(GString::new, |reason| GString::from(reason.as_str()))
     }
 
     #[func]
@@ -265,66 +329,30 @@ impl AtlasRtView {
         shader.set_shader_parameter(ATLAS_MODE_UNIFORM, &self.render_mode_index.to_variant());
     }
 
+    /// Returns at once. The read, the parse, the world build, and snapshot
+    /// emission run on a thread with no renderer access, and the finished
+    /// snapshots reach the renderer a few frames later. The old world stops
+    /// being displayed on this call.
     #[func]
     pub fn load_world(&mut self, path: GString) -> bool {
         if self.status != STATUS_READY {
             return false;
         }
 
-        let vox_bytes = FileAccess::get_file_as_bytes(&path);
-
-        if vox_bytes.is_empty() {
-            godot_error!("atlas_rt: could not open {path}");
-
-            return false;
-        }
-
-        let Ok(voxel_data) = open_bytes(vox_bytes.as_slice()) else {
-            godot_error!("atlas_rt: could not parse {path}");
-
+        let Some(job) = self.job.as_mut() else {
             return false;
         };
 
-        let (world, clipped) = atlas_rt::world::World::new_clipped(&voxel_data);
+        let version = Self::batch_version(&self.pipeline);
 
-        let Some(pipeline) = self.pipeline.clone() else {
-            return false;
-        };
-
-        if clipped > 0 {
-            godot_print!("atlas_rt: clipped {clipped} voxels outside the lattice",);
-        }
-
-        let snapshots = match emit_snapshots(&world) {
-            Ok(snapshots) => snapshots,
-            Err(err) => {
-                godot_error!("atlas_rt: snapshot emit failed: {}", err);
-
-                return false;
-            }
-        };
-
-        let planned = batch::plan_load(snapshots, &self.world_chunks);
-
-        if let Some(gpu_shared) = self.gpu.as_ref() {
-            let gpu = lock(gpu_shared);
-            let pipeline = lock(&pipeline);
-
-            if let Err(err) = pipeline.upload_palette(
-                &gpu,
-                get_palette(&voxel_data).map(|color| [color.x, color.y, color.z, 1.0]),
-            ) {
-                godot_error!("atlas_rt: palette upload failed: {}", err);
-
-                return false;
-            }
-        }
-
-        if !self.submit_world_change(planned) {
-            godot_error!("atlas_rt: load_world failed: edit queue rejected the world");
+        if let Err(refusal) = job.load(Self::source(&path), version) {
+            Self::report_refusal("load_world", refusal);
 
             return false;
         }
+
+        self.display.suppress(version);
+        self.suppress_display();
 
         true
     }
@@ -335,31 +363,25 @@ impl AtlasRtView {
             return false;
         }
 
-        if self.world_chunks.is_empty() {
-            self.blank_viewport();
+        let version = Self::batch_version(&self.pipeline);
 
-            return true;
-        }
-
-        let planned = batch::plan_clear(&self.world_chunks);
-
-        if !self.submit_world_change(planned) {
-            godot_error!("atlas_rt: clear_world failed: edit queue rejected the clear");
-
-            return false;
-        }
-
-        let Some(pipeline) = self.pipeline.clone() else {
-            return false;
+        let accepted = match self.job.as_mut() {
+            Some(job) => match job.clear(version) {
+                Ok(()) => true,
+                Err(refusal) => {
+                    Self::report_refusal("clear_world", refusal);
+                    false
+                }
+            },
+            None => false,
         };
 
-        if let Err(err) = lock(&pipeline).input().wait_until_idle() {
-            godot_error!("atlas_rt: clear_world failed: {}", err);
-
-            return false;
+        if accepted {
+            self.display.suppress(version);
+            self.suppress_display();
         }
 
-        true
+        accepted
     }
 
     #[func]
@@ -441,44 +463,161 @@ impl AtlasRtView {
         self.to_gd().queue_redraw();
     }
 
-    /// Submits a planned batch and records the version of the content it
-    /// replaces, under one hold of the pipeline lock. The version rises in the
-    /// frame that takes delivery of a batch, so the gate opens on that frame
-    /// whether or not the batch turns out to change anything. Callers must hold
-    /// no pipeline lock: this takes it, and taking it twice on one thread wedges
-    /// the client.
+    /// Reads a world file off the Godot path scheme. The background thread
+    /// cannot reach Godot, so `res://` and `user://` are resolved to a real
+    /// filesystem path here, on the main thread, before the job starts.
+    fn source(path: &GString) -> Box<dyn WorldSource> {
+        Box::new(VoxFile {
+            path: ProjectSettings::singleton()
+                .globalize_path(path)
+                .to_string(),
+            name: path.to_string(),
+        })
+    }
+
+    /// The version the frames produced from now on carry. Recorded as the host
+    /// asks for a world to go away. Callers must hold no pipeline lock.
+    fn batch_version(pipeline: &Option<Arc<Mutex<EmbeddedPipeline>>>) -> u64 {
+        pipeline
+            .as_ref()
+            .map_or(0, |pipeline| lock(pipeline).batch_version())
+    }
+
+    /// A refusal is the in-flight guard doing its job against a direct call or
+    /// a stale press, so it is reported and changes nothing.
+    fn report_refusal(entry: &str, refusal: Refusal) {
+        match refusal {
+            Refusal::Busy => {
+                godot_error!("atlas_rt: {entry} refused: a job is already in flight");
+            }
+            Refusal::Failed(reason) => {
+                godot_error!("atlas_rt: {entry} refused: {reason}");
+            }
+        }
+    }
+
+    /// Takes a finished job's work on the main thread: plans the ordered batch,
+    /// uploads the palette, submits it, and holds the display back until the
+    /// renderer has taken it.
+    fn poll_job(&mut self) {
+        let Some(job) = self.job.as_mut() else {
+            return;
+        };
+
+        match job.poll() {
+            Some(Upgrade::Load) => self.plan_load(),
+            Some(Upgrade::Cleared) => self.plan_clear(),
+            Some(Upgrade::Failed) | None => {}
+        }
+    }
+
+    /// Clears for the outgoing world ahead of the incoming snapshots, uploads
+    /// the palette, and submits the whole thing as one batch.
+    fn plan_load(&mut self) {
+        let Some(upgrade) = self.job.as_ref().and_then(WorldJob::take_upgrade) else {
+            return;
+        };
+
+        let planned = batch::plan_load(upgrade.snapshots, &self.world_chunks);
+
+        if let Err(err) = self.upload_palette(upgrade.palette) {
+            self.fail_job(format!("palette upload failed: {err}"));
+
+            return;
+        }
+
+        if !self.submit_world_change(planned) {
+            self.fail_job(String::from("the edit queue rejected the world"));
+
+            return;
+        }
+
+        if let Some(job) = self.job.as_mut() {
+            job.enter_ready();
+        }
+    }
+
+    /// A clear of a world that is already gone leaves the job complete.
+    fn plan_clear(&mut self) {
+        if self.world_chunks.is_empty() {
+            if let Some(job) = self.job.as_mut() {
+                job.enter_ready();
+            }
+
+            return;
+        }
+
+        let planned = batch::plan_clear(&self.world_chunks);
+
+        if !self.submit_world_change(planned) {
+            self.fail_job(String::from("the edit queue rejected the clear"));
+        }
+    }
+
+    /// Gives up on the load in flight, for a failure the background thread
+    /// cannot see.
+    fn fail_job(&mut self, reason: String) {
+        godot_error!("atlas_rt: load failed: {reason}");
+
+        if let Some(job) = self.job.as_mut() {
+            job.fail(reason);
+        }
+    }
+
+    fn upload_palette(&self, palette: [glam::Vec3; 256]) -> Result<(), String> {
+        let (Some(gpu), Some(pipeline)) = (&self.gpu, &self.pipeline) else {
+            return Ok(());
+        };
+
+        let gpu = lock(gpu);
+
+        lock(pipeline)
+            .upload_palette(&gpu, palette.map(|color| [color.x, color.y, color.z, 1.0]))
+            .map_err(|error| format!("{error:#}"))
+    }
+
+    /// Submits a planned batch and records where the renderer has to get to for
+    /// a frame to carry it. Callers must hold no pipeline lock: this takes it,
+    /// and taking it twice on one thread wedges the client.
     fn submit_world_change(&mut self, planned: batch::Batch) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
         };
 
-        let replaced = {
+        let (residency, version) = {
             let pipeline = lock(pipeline);
 
             if pipeline.input().submit_batch(planned.snapshots).is_err() {
                 return false;
             }
 
-            pipeline.batch_version()
+            let generation = pipeline.applied_generation();
+
+            (Residency::new(generation), pipeline.batch_version())
         };
 
         self.world_chunks = planned.tracked;
+        self.display.suppress(version);
 
-        self.display.suppress(replaced);
-        self.suppress_display();
+        if let Some(job) = &self.job {
+            job.record(residency);
+        }
 
         true
     }
 
-    /// Records the version of the content on screen and blanks the viewport,
-    /// for the case where the outgoing world has no content left to clear.
-    /// Callers must hold no pipeline lock.
-    fn blank_viewport(&mut self) {
-        if let Some(pipeline) = &self.pipeline {
-            self.display.suppress(lock(pipeline).batch_version());
-        }
+    /// Disarms the job's display gate on the frame that carries the batch, so
+    /// the world the host asked for is resident before the next frame is
+    /// admitted. The version is re-recorded because an edit may have turned it
+    /// over between the request and the batch landing.
+    fn settle_job(&mut self, version: u64, generation: u64) {
+        let Some(job) = &self.job else {
+            return;
+        };
 
-        self.suppress_display();
+        if job.resident(generation) && job.admitted(version) {
+            self.display.suppress(version);
+        }
     }
 
     fn probe_backend(
@@ -737,6 +876,22 @@ impl AtlasRtView {
             mask: mask_bytes,
             materials: materials.to_vec(),
         })
+    }
+}
+
+/// A world file on the real filesystem, read by the loader thread.
+struct VoxFile {
+    path: String,
+    name: String,
+}
+
+impl WorldSource for VoxFile {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn read(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.path).map_err(|error| error.to_string())
     }
 }
 

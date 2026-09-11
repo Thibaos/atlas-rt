@@ -20,6 +20,7 @@ pub enum BoundsPolicy {
 pub mod batch;
 pub mod format;
 pub mod grid;
+pub mod job;
 pub mod scene_graph;
 pub mod snapshot;
 

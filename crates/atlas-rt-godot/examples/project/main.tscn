@@ -4,18 +4,9 @@
 [ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://bxghcol37e5is" path="res://scripts/ui.gd" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
+[ext_resource type="Script" path="res://scripts/clear_world_button.gd" id="5_clear"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
-
-[sub_resource type="GDScript" id="GDScript_1bvp3"]
-script/source = "extends Button
-
-@export var atlas: Atlas
-
-func _ready() -> void:
-	if !atlas: return
-	pressed.connect(atlas.clear_world)
-"
 
 [node name="main" type="Node" unique_id=1982182210]
 
@@ -102,5 +93,5 @@ atlas = NodePath("../../../atlas")
 [node name="clear" type="Button" parent="UI/HBoxContainer" unique_id=714620207 node_paths=PackedStringArray("atlas")]
 layout_mode = 2
 text = "clear"
-script = SubResource("GDScript_1bvp3")
+script = ExtResource("5_clear")
 atlas = NodePath("../../../atlas")

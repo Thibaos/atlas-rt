@@ -93,6 +93,23 @@ outlives loads.
 _Avoid_: world streaming (the later incremental form), level (a game-side
 concept)
 
+**World job**:
+The one load or clear in flight, run off the main thread: read, parse, world
+build, and snapshot emission, whose output is plain data. A job is refused
+rather than queued while another is in flight, and it completes when the
+renderer has taken the batch carrying it, not when the background work
+finishes. The tracked coordinate set stays on the main thread, which is what
+assembles the ordered batch.
+_Avoid_: task, async load, request
+
+**Status**:
+What the host reads to drive the loading overlay and the load buttons: no
+world and no job in flight, a job in flight, a world resident, or the failure
+of the last job with its error string. `Empty` is distinct from `Ready`
+because the menu has to tell an unloaded view from a loaded one, and only the
+buttons start jobs.
+_Avoid_: state, phase, progress
+
 **Resident region**:
 A Region holding at least one non-empty Micro-chunk: it owns a BLAS, a
 voxel pool, and a TLAS instance. It becomes resident on its first non-empty
@@ -205,6 +222,13 @@ The worker marking a Delivery slot finished: the frame's submission completed
 under the bounded fence wait, covering the exit transition (zero-copy) or the
 readback copy (CPU fallback). The coordinator wraps only published slots.
 _Avoid_: commit, flush, signal
+
+**Applied generation**:
+How many batches the renderer has taken delivery of, carried on every
+published slot. The frame that applies a pending batch reports one more than
+the count read before it was submitted, so the host can tell a frame that
+carries its batch from one built earlier, which is what a job completes on.
+_Avoid_: content version (that is the delivery gate's), frame counter
 
 **Wrap**:
 The coordinator adopting the newest published Delivery slot as the sampled

@@ -25,15 +25,14 @@ pub fn open_bytes(bytes: &[u8]) -> anyhow::Result<dot_vox::DotVoxData> {
 }
 
 #[must_use]
-pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {
-    let mut array = [glam::Vec4::ZERO; 256];
+pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec3; 256] {
+    let mut array = [glam::Vec3::ZERO; 256];
 
     for (slot, color) in array.iter_mut().zip(data.palette.iter()) {
-        *slot = glam::Vec4::new(
+        *slot = glam::Vec3::new(
             f32::from(color.r) / 255.0,
             f32::from(color.g) / 255.0,
             f32::from(color.b) / 255.0,
-            f32::from(color.a) / 255.0,
         );
     }
 

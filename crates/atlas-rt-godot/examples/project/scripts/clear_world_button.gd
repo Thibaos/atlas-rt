@@ -1,4 +1,4 @@
-class_name LoadWorldButton
+class_name ClearWorldButton
 extends Button
 
 # The status the view reports: 0 empty and idle, 1 a job in flight,
@@ -9,14 +9,14 @@ const IDLE := [0, 2]
 
 func _ready() -> void:
 	if !atlas: return
-	pressed.connect(load_world)
+	pressed.connect(clear_world)
 
 func _process(_delta: float) -> void:
 	disabled = !_idle()
 
-func load_world() -> void:
+func clear_world() -> void:
 	if !_idle(): return
-	atlas.load_world("res://worlds/" + text + ".vox")
+	atlas.clear_world()
 
 func _idle() -> bool:
 	return atlas.view.job_status() in IDLE
