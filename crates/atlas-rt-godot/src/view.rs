@@ -200,6 +200,7 @@ impl AtlasRtView {
         self.poll_job();
 
         self.tick += 1;
+
         let Some(published_in) = &self.worker_publish_in else {
             return;
         };
@@ -327,6 +328,7 @@ impl AtlasRtView {
         };
 
         let version = Self::batch_version(&self.pipeline);
+
         if let Err(refusal) = job.load(Self::source(&path), version) {
             Self::report_refusal("load_world", refusal);
 

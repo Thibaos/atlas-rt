@@ -121,6 +121,7 @@ enum JobState {
     Idle,
     Loading { loaded: Option<Box<LoadedWorld>> },
     Clearing,
+    Submitted,
     Done,
 }
 
@@ -349,7 +350,7 @@ impl WorldJob {
     pub fn holding(&self) -> bool {
         matches!(
             lock(&self.job).state,
-            JobState::Loading { loaded: Some(_) } | JobState::Clearing
+            JobState::Loading { loaded: Some(_) } | JobState::Clearing | JobState::Submitted
         )
     }
 
@@ -374,10 +375,10 @@ impl WorldJob {
     }
 
     /// The submitted batch is the renderer's now, so the job is no longer
-    /// holding work. It is in flight until the frame that carries the batch is
-    /// admitted.
+    /// holding work. It is still in flight, and still refuses, until the frame
+    /// that carries the batch is admitted.
     pub fn taken(&self) {
-        lock(&self.job).state = JobState::Idle;
+        lock(&self.job).state = JobState::Submitted;
     }
 
     /// The pending load's work, handed over once.
@@ -428,6 +429,12 @@ impl WorldJob {
     #[cfg(test)]
     fn settle(&mut self) {
         self.join();
+    }
+
+    /// Stands in for the view handing the planned batch to the renderer.
+    #[cfg(test)]
+    fn submitted(&self) {
+        self.taken();
     }
 }
 
@@ -748,6 +755,33 @@ mod tests {
         assert!(!job.admitted(7), "the outgoing content stays out");
         assert!(job.admitted(8));
         assert!(!job.admitted(9), "a later frame is not a second completion");
+    }
+
+    #[test]
+    fn a_load_whose_batch_was_submitted_is_still_in_flight() {
+        let mut job = WorldJob::new();
+        job.arrive();
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        job.take_loaded();
+        job.submitted();
+
+        assert_eq!(
+            job.status(),
+            Status::Loading,
+            "the carrying frame has not been admitted"
+        );
+        assert!(
+            matches!(
+                job.load(Box::new(source(one_voxel_world())), 0),
+                Err(Refusal::Busy)
+            ),
+            "a job between submitting its batch and having it carried is in flight"
+        );
+        assert_eq!(job.status(), Status::Loading, "the refusal changed nothing");
     }
 
     #[test]

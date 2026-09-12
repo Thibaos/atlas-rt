@@ -29,7 +29,6 @@ func _ready() -> void:
 	add_child(node)
 	self.view = node
 
-	# Above the pause UI, which the scene places after this node.
 	var screen: OVERLAY = OVERLAY.new()
 	add_child(screen)
 	self.overlay = screen

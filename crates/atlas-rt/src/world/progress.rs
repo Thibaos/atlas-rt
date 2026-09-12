@@ -8,15 +8,14 @@ const SCALE: u32 = 1_000_000;
 /// progress write no frame can observe.
 pub(crate) const VOXEL_STEP: usize = 65_536;
 
-/// The cumulative end of each stage except emit, in millionths, from the means
+/// The cumulative end of each bounded stage, in millionths, from the means
 /// `cargo test --release -p atlas-rt --lib load_stage_weights -- --ignored
-/// --nocapture` measured over the four worlds in the example project. Emit
-/// walks the rest. Revisit them when the loader changes.
-const STAGES: [(u32, u8, &str); 4] = [
+/// --nocapture` measured over the four worlds in the example project. The walk
+/// covers everything past build. Revisit this when the loader changes.
+const STAGES: [(u32, u8, &str); 3] = [
     (62_000, 1, "read"),
     (226_000, 2, "parse"),
     (489_000, 3, "build"),
-    (999_000, 4, "emit"),
 ];
 
 /// Where the walk stops: the top belongs to the frame that carries the batch.
@@ -50,15 +49,24 @@ impl Stage {
     }
 
     const fn share(self) -> u32 {
-        stage_table(self).0
+        match self {
+            Self::Emit => EMIT_END,
+            _ => stage_table(self).0,
+        }
     }
 
     const fn code(self) -> u8 {
-        stage_table(self).1
+        match self {
+            Self::Emit => EMIT,
+            _ => stage_table(self).1,
+        }
     }
 
     const fn name(self) -> &'static str {
-        stage_table(self).2
+        match self {
+            Self::Emit => "emit",
+            _ => stage_table(self).2,
+        }
     }
 }
 
@@ -98,11 +106,11 @@ impl Progress {
     }
 
     /// Reports the emit stage's walk: `done` voxels of `total` are emitted. The
-    /// caller asks at every `VOXEL_STEP` voxels and once at the end; the step is
-    /// checked here too, so a report that no frame could see does nothing.
+    /// caller asks at every `VOXEL_STEP` voxels, and the step is checked here
+    /// too, so a call in between accounts for nothing.
     #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn count_voxel(&self, total: usize, done: usize) {
-        if done < total && !done.is_multiple_of(VOXEL_STEP) {
+        if !done.is_multiple_of(VOXEL_STEP) {
             return;
         }
 

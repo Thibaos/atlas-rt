@@ -6,9 +6,10 @@ extends Control
 # tell when a load starts, and the atlas passthroughs stay the only thing that
 # calls the view.
 
+var _body: Control
 var _title: Label
 var _bar: ProgressBar
-var _error: Label
+var _failure: Label
 
 # Whether a job this overlay was told about is still in flight. Without it the
 # overlay would report the startup world's load, which no button started.
@@ -35,9 +36,11 @@ func _process(_delta: float) -> void:
 
 	var view: AtlasRtView = atlas.view
 	var status := view.job_status_name()
+	var reason := view.job_error()
 
 	_bar.value = view.job_progress() * 100.0
-	_error.text = view.job_error()
+	_failure.text = reason
+	_failure.visible = !reason.is_empty()
 
 	if !_active:
 		return
@@ -46,16 +49,17 @@ func _process(_delta: float) -> void:
 		visible = true
 		return
 
-	# Settled. The overlay goes away, but a failure keeps its reason on screen
-	# until the next job takes it away.
-	_active = status == "failed"
-	visible = _active
+	# The job settled, so the load is over whether or not it worked. A failure
+	# leaves its reason behind, on a label that outlives this overlay.
+	_active = false
+	visible = false
 
 # Tells the overlay a job is on its way: the world's name, or none for a clear.
 func watch(name: String = "") -> void:
 	_title.text = "Loading " + name if name else "Returning to the menu"
 	_bar.value = 0.0
-	_error.text = ""
+	_failure.text = ""
+	_failure.visible = false
 
 	_active = true
 	visible = true
@@ -68,32 +72,34 @@ func dismiss() -> void:
 
 func _build() -> void:
 	var backdrop := ColorRect.new()
-	backdrop.size = size
+	backdrop.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	backdrop.color = Color(0.02, 0.02, 0.03, 0.92)
 	add_child(backdrop)
 
-	var stack := VBoxContainer.new()
-	stack.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	stack.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	stack.grow_vertical = Control.GROW_DIRECTION_BOTH
-	stack.alignment = BoxContainer.ALIGNMENT_CENTER
-	stack.add_theme_constant_override("separation", 12)
-	add_child(stack)
+	_body = VBoxContainer.new()
+	_body.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	_body.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_body.grow_vertical = Control.GROW_DIRECTION_BOTH
+	_body.alignment = BoxContainer.ALIGNMENT_CENTER
+	_body.add_theme_constant_override("separation", 12)
+	add_child(_body)
 
 	_title = Label.new()
 	_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	stack.add_child(_title)
+	_body.add_child(_title)
 
 	_bar = ProgressBar.new()
 	_bar.custom_minimum_size = Vector2(320, 16)
 	_bar.show_percentage = false
-	stack.add_child(_bar)
+	_body.add_child(_bar)
 
-	_error = Label.new()
-	_error.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_error.custom_minimum_size = Vector2(320, 0)
-	_error.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	stack.add_child(_error)
+	_failure = Label.new()
+	_failure.set_anchors_and_offsets_preset(Control.PRESET_BOTTOM_WIDE)
+	_failure.offset_top = -40.0
+	_failure.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_failure.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	add_child(_failure)
 
 	visible = false
+	_failure.visible = false
