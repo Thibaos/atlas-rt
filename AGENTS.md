@@ -17,3 +17,21 @@ a line here when the unslop pass removes a tell that keeps coming back.
 - Documentation should be as semantically dense and clear as possible, use the unslop skill preferably
 - Separate blocks with a new line, before and after a "for", "if", "match", etc.
 - You may separate some lines with a new line, to group related code together
+
+## When running the Godot example
+
+Do not launch it windowed to verify something unless you have asked first and been
+told yes. Each run opens a window, brings it to the front, and takes input focus for as
+long as it runs, so a loop of runs takes the desktop repeatedly. The user said so after
+five in a row. If what you need to check is node state or appearance, ask for a
+screenshot instead: it answers that without a window, and the user supplies them
+readily.
+
+`--headless` cannot run the example past the API. With no window there is no Vulkan
+device, so `VulkanHooksBridge` logs `no Vulkan device captured during engine device
+creation`, the init probe fails, no frame is delivered, and every load stalls at 0.999.
+Headless is still the right way to parse-check a script:
+
+    <godot-fork>\bin\godot.windows.editor.x86_64.exe --headless --path <project> \
+        --check-only --script res://<script>
+
