@@ -1,11 +1,18 @@
 extends Control
 
+
+@export var atlas: Atlas
+
 func _ready() -> void:
 	set_active(true)
 	pass
 
 func _input(event: InputEvent) -> void:
 	if !(event is InputEventKey and event.is_pressed()):
+		return
+	
+	print(atlas.view.job_status())
+	if atlas.view.job_status() != 2:
 		return
 	
 	if event.is_action("pause"):

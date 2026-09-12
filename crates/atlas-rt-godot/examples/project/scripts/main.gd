@@ -55,4 +55,3 @@ func clear_world() -> bool:
 
 	overlay.watch()
 	return true
-

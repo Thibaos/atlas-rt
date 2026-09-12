@@ -5,18 +5,22 @@ extends Button
 # when nothing is in flight, so a settled failure is idle too.
 const IDLE := ["empty", "ready", "failed"]
 
-@export var atlas: Atlas
+var UI: Control
 
 func _ready() -> void:
-	if !atlas: return
+	UI = get_parent().get_parent()
+	
+	if !UI.atlas: return
 	pressed.connect(load_world)
+	
 
 func _process(_delta: float) -> void:
 	disabled = !_is_idle()
 
 func load_world() -> void:
 	if !_is_idle(): return
-	atlas.load_world(text)
+	if UI.atlas.load_world(text):
+		UI.visible = false
 
 func _is_idle() -> bool:
-	return atlas.view.job_status_name() in IDLE
+	return UI.atlas.view.job_status_name() in IDLE
