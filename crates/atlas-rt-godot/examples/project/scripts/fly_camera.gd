@@ -192,7 +192,11 @@ func _input(event: InputEvent) -> void:
 
 	## Camera motion
 	if event is InputEventMouseMotion:
-		_yaw = fmod(_yaw - event.relative.x * mouse_sensitivity.x/10, 360)
+		# The atlas view mirrors the camera basis on world x, because the world it
+		# holds is mirrored there. That puts this camera's local right on world
+		# left, so yaw and strafe are both taken the other way to keep the
+		# controls pointing where the player sees them point.
+		_yaw = fmod(_yaw + event.relative.x * mouse_sensitivity.x/10, 360)
 
 		if not invert_y: _pitch = max(min(_pitch - event.relative.y * mouse_sensitivity.y/10.0, _PITCH_LIMIT), -_PITCH_LIMIT)
 		else:            _pitch = max(min(_pitch + event.relative.y * mouse_sensitivity.y/10.0, _PITCH_LIMIT), -_PITCH_LIMIT)
@@ -209,8 +213,8 @@ func _physics_process(delta: float) -> void:
 	if _mouse_hidden or keep_key_controls:
 		if _is_cam_action_pressed(_ACTION_FORWARD):  dir -= aim[2]
 		if _is_cam_action_pressed(_ACTION_BACKWARD): dir += aim[2]
-		if _is_cam_action_pressed(_ACTION_LEFT):     dir -= aim[0]
-		if _is_cam_action_pressed(_ACTION_RIGHT):    dir += aim[0]
+		if _is_cam_action_pressed(_ACTION_LEFT):     dir += aim[0]
+		if _is_cam_action_pressed(_ACTION_RIGHT):    dir -= aim[0]
 
 	dir = dir.normalized()
 

@@ -23,7 +23,7 @@ pub struct PlayerController {
 
 impl Default for PlayerController {
     fn default() -> Self {
-        let translation = Vec3::new(124.0, 110.0, 320.0);
+        let translation = Vec3::new(0.0, 300.0, 500.0);
 
         Self {
             speed: 64.0,

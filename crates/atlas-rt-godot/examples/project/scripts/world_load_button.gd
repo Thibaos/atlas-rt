@@ -12,11 +12,11 @@ func _ready() -> void:
 	pressed.connect(load_world)
 
 func _process(_delta: float) -> void:
-	disabled = !_idle()
+	disabled = !_is_idle()
 
 func load_world() -> void:
-	if !_idle(): return
+	if !_is_idle(): return
 	atlas.load_world("res://worlds/" + text + ".vox")
 
-func _idle() -> bool:
+func _is_idle() -> bool:
 	return atlas.view.job_status_name() in IDLE

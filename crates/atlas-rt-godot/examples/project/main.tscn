@@ -4,16 +4,19 @@
 [ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://bxghcol37e5is" path="res://scripts/ui.gd" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
-[ext_resource type="Script" path="res://scripts/clear_world_button.gd" id="5_clear"]
+[ext_resource type="Script" uid="uid://dbj02fahjui86" path="res://scripts/clear_world_button.gd" id="5_clear"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
 
 [node name="main" type="Node" unique_id=1982182210]
 
 [node name="atlas" type="Node2D" parent="." unique_id=756664440]
+process_mode = 3
 script = ExtResource("1_main")
 
 [node name="player" type="CharacterBody3D" parent="atlas" unique_id=276233651]
+process_mode = 1
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 300, 500)
 script = ExtResource("2_0xm2m")
 mouse_sensitivity = Vector2(0.5, 0.5)
 fly_speed = 200.0
@@ -80,13 +83,19 @@ atlas = NodePath("../../../atlas")
 
 [node name="bistro" type="Button" parent="UI/HBoxContainer" unique_id=1453636886 node_paths=PackedStringArray("atlas")]
 layout_mode = 2
-text = "bistro_sm"
+text = "bistro"
 script = ExtResource("4_1bvp3")
 atlas = NodePath("../../../atlas")
 
 [node name="sponza" type="Button" parent="UI/HBoxContainer" unique_id=1178860499 node_paths=PackedStringArray("atlas")]
 layout_mode = 2
 text = "sponza"
+script = ExtResource("4_1bvp3")
+atlas = NodePath("../../../atlas")
+
+[node name="nuke" type="Button" parent="UI/HBoxContainer" unique_id=2104730712 node_paths=PackedStringArray("atlas")]
+layout_mode = 2
+text = "nuke"
 script = ExtResource("4_1bvp3")
 atlas = NodePath("../../../atlas")
 

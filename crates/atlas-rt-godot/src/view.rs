@@ -867,20 +867,31 @@ impl WorldSource for VoxFile {
     }
 }
 
+/// Godot's camera pose as the view matrix the renderer's Vulkan projection
+/// expects.
+///
+/// A `Basis` stores matrix rows, so the camera's axes are one component from
+/// each row: row 0 holds the x of all three axes, and so on. Godot's camera
+/// looks along its local -Z, so its forward is the negated third axis.
+///
+/// Godot's basis is right handed and the world the renderer holds is left
+/// handed, so the basis is mirrored on world x. Without that mirror the scene
+/// reads flipped left to right against the standalone app, which is the
+/// reference for how a world is meant to look.
 #[must_use]
 pub fn camera_view(origin: Vector3, basis: Basis) -> glam::Mat4 {
-    let [basis_x, basis_y, basis_z] = basis.rows;
+    let [row_0, row_1, row_2] = basis.rows;
 
-    let world = glam::Mat4::from_cols_array_2d(&[
-        [basis_x.x, basis_y.x, basis_z.x, 0.0],
-        [basis_x.y, basis_y.y, basis_z.y, 0.0],
-        [basis_x.z, basis_y.z, basis_z.z, 0.0],
-        [origin.x, origin.y, origin.z, 1.0],
-    ]);
+    let axes = [
+        glam::Vec3::new(row_0.x, row_1.x, row_2.x),
+        glam::Vec3::new(row_0.y, row_1.y, row_2.y),
+        -glam::Vec3::new(row_0.z, row_1.z, row_2.z),
+    ];
 
-    let forward_flip = glam::Mat4::from_scale(glam::Vec3::new(1.0, 1.0, -1.0));
-
-    forward_flip * world.inverse()
+    atlas_rt::render::camera::camera_view(
+        glam::Vec3::new(origin.x, origin.y, origin.z),
+        atlas_rt::render::camera::mirror_right(axes),
+    )
 }
 
 #[cfg(test)]
@@ -892,14 +903,8 @@ mod tests {
         (actual - expected).abs() < 1.0e-4
     }
 
-    fn basis_axes(basis: Basis) -> [glam::Vec3; 3] {
-        let [x, y, z] = basis.rows;
-
-        [
-            glam::Vec3::new(x.x, y.x, z.x),
-            glam::Vec3::new(x.y, y.y, z.y),
-            glam::Vec3::new(x.z, y.z, z.z),
-        ]
+    fn screen_x(view: glam::Mat4, point: glam::Vec3) -> f32 {
+        view.transform_point3(point).x
     }
 
     #[test]
@@ -911,6 +916,13 @@ mod tests {
     }
 
     #[test]
+    fn the_identity_camera_rays_run_right_to_left_along_world_x() {
+        let view = camera_view(Vector3::new(0.0, 300.0, 500.0), Basis::IDENTITY);
+
+        assert!(screen_x(view, glam::Vec3::new(100.0, 300.0, 400.0)) < 0.0);
+    }
+
+    #[test]
     fn the_camera_rays_follow_the_godot_facing() {
         let origin = Vector3::new(-2.0, 5.0, 7.0);
         let basis = Basis::IDENTITY
@@ -918,16 +930,23 @@ mod tests {
             .rotated(Vector3::RIGHT, -0.4);
 
         let view_inverse = camera_view(origin, basis).inverse();
-        let [axis_x, axis_y, axis_z] = basis_axes(basis);
-
         let forward = view_inverse.transform_vector3(glam::Vec3::Z);
-        assert!(near(forward.x, -axis_z.x) && near(forward.z, -axis_z.z));
+        let godot_forward = -glam::Vec3::new(
+            basis.col_c().x.into(),
+            basis.col_c().y.into(),
+            basis.col_c().z.into(),
+        );
 
-        let right = view_inverse.transform_vector3(glam::Vec3::X);
-        assert!(near(right.x, axis_x.x) && near(right.z, axis_x.z));
+        assert!(near(forward.x, godot_forward.x) && near(forward.z, godot_forward.z));
 
+        let godot_up = glam::Vec3::new(
+            basis.col_b().x.into(),
+            basis.col_b().y.into(),
+            basis.col_b().z.into(),
+        );
         let up = view_inverse.transform_vector3(glam::Vec3::Y);
-        assert!(near(up.y, axis_y.y));
+
+        assert!(near(up.y, godot_up.y));
     }
 
     #[test]

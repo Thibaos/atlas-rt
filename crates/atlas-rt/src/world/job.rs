@@ -402,6 +402,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     clippy::arithmetic_side_effects,
     clippy::cast_possible_truncation,
     clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
     clippy::as_conversions
 )]
 mod tests {
@@ -447,6 +448,12 @@ mod tests {
 
     /// One voxel at the origin, in the engine's `.vox` dialect.
     fn one_voxel_world() -> Vec<u8> {
+        paletted_world(&[0u8; 1024])
+    }
+
+    /// The same world with the given `RGBA` chunk body: 256 RGB entries, four
+    /// bytes each.
+    fn paletted_world(palette: &[u8]) -> Vec<u8> {
         fn chunk(id: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {
             let mut bytes = Vec::new();
             bytes.extend_from_slice(&id);
@@ -460,7 +467,7 @@ mod tests {
 
         let size = chunk(*b"SIZE", &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], &[]);
         let voxel = chunk(*b"XYZI", &[1, 0, 0, 0, 0, 0, 0, 7], &[]);
-        let palette = chunk(*b"RGBA", &[0u8; 1024], &[]);
+        let palette = chunk(*b"RGBA", palette, &[]);
         let main = chunk(*b"MAIN", &[], &[size, voxel, palette].concat());
 
         let mut bytes = b"VOX ".to_vec();
@@ -552,6 +559,43 @@ mod tests {
             Status::Loading,
             "handing the work over is not the world being resident"
         );
+    }
+
+    #[test]
+    fn a_finished_load_hands_over_the_palette_that_colours_its_snapshots() {
+        let mut job = WorldJob::new();
+        job.world_resident();
+
+        let mut rgba = [0u8; 1024];
+        let (entries, _) = rgba.as_chunks_mut::<4>();
+
+        for (entry, slot) in entries.iter_mut().enumerate() {
+            slot.copy_from_slice(&[(entry & 0xFF) as u8, 1, 2, 3]);
+        }
+
+        job.load(Box::new(source(paletted_world(&rgba))), 0)
+            .unwrap();
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        let Some(loaded) = job.take_loaded() else {
+            panic!("the finished load must yield its snapshots");
+        };
+
+        assert!(
+            !loaded.snapshots.is_empty(),
+            "the palette has to arrive with the content it colours"
+        );
+
+        for (entry, color) in loaded.palette.iter().enumerate().skip(1) {
+            let expected = (entry & 0xFF) as f32 / 255.0;
+
+            assert!(
+                (color.x - expected).abs() < 1.0e-6 && color.y > 0.0,
+                "entry {entry} does not carry its own colour"
+            );
+        }
     }
 
     #[test]
