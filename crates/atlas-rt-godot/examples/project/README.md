@@ -11,12 +11,32 @@
 
         <godot-cloned>\bin\godot.windows.template_release.x86_64.exe --path .
 
-   The stock editor binary runs CPU delivery per the plan. Zero-copy is
-   exercised through the export-run loop.
-
 3. The init log line names the backend. When zero-copy misses the probe the
    log records the reason and delivery degrades per ADR 0005. There is no
    retry in v1.
+
+The engine build. The custom fork used for the runs behind the loading
+work is:
+
+    C:\Users\Thiba\Desktop\dev\godot-fork\godot\bin\godot.windows.editor.x86_64.exe
+
+It reports `4.7.2.stable.custom_build` and carries the `VulkanHooksBridge`
+module, which is what the zero-copy probe needs. The stock binary at
+`C:\Users\Thiba\Desktop\Godot\stable\godot4.exe` does not have that module:
+the probe logs `init probe failed: VulkanHooksBridge singleton missing` and
+delivery is CPU. A failed probe is not fatal, since the probe picks the
+backend and not whether the view coordinates at all, but a run on the stock
+binary is not a run of the delivery path the fork exists for.
+
+Driving the example without a hand on the keyboard. Add a small `Node` to
+`main.tscn` and drive it from `_process`: find `atlas`, emit `pressed` on a
+button in `UI/HBoxContainer`, and read `atlas.view.job_status_name()`,
+`job_progress()`, and `job_error()`. A node in the scene sees the real
+startup path, the real init probe, and the real `frame_post_draw`
+connection, which a `SceneTree` script run with `--script` does not: it
+opens its own tree, so the startup world is the one it loads itself. Emit
+`pressed` rather than synthesizing input, and have the node quit the tree
+when its sequence is done, since nothing else will end the run.
 
 Locating the library. `atlas_rt.gdextension` names `res://lib/atlas_rt_godot.dll`,
 so the build's output has to land in `lib/` before Godot sees it:
