@@ -1,14 +1,29 @@
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::arithmetic_side_effects,
+    clippy::items_after_statements
+)]
 mod load_bench {
     use std::time::{Duration, Instant};
 
     use crate::{
         render::region::pack::pack_regions,
-        world::{World, snapshot::emit_snapshots},
+        world::{
+            World,
+            progress::{Progress, Stage},
+            snapshot::{emit_snapshots, emit_snapshots_reporting},
+        },
     };
 
     const DEFAULT_ASSETS: &[&str] = &["assets/church.vox", "assets/bistro.vox"];
+
+    const EXAMPLE_WORLDS: &[&str] = &[
+        "../atlas-rt-godot/examples/project/worlds/castle.vox",
+        "../atlas-rt-godot/examples/project/worlds/sponza.vox",
+        "../atlas-rt-godot/examples/project/worlds/nuke.vox",
+        "../atlas-rt-godot/examples/project/worlds/bistro.vox",
+    ];
 
     struct StageModel {
         floor: Duration,
@@ -89,6 +104,69 @@ mod load_bench {
                 }
             }
         }
+    }
+
+    /// The loader's stages as the job itself runs them, including the report the
+    /// emit stage makes. The numbers here are what the progress weights in
+    /// `world::progress` are derived from.
+    #[test]
+    #[ignore = "bench: cargo test --release load_stage_weights -- --ignored --nocapture (ATLAS_BENCH_VOX pins one asset, otherwise the example project's worlds)"]
+    fn load_stage_weights() {
+        let assets: Vec<String> = match std::env::var("ATLAS_BENCH_VOX") {
+            Ok(path) => vec![path],
+            Err(_) => EXAMPLE_WORLDS
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+        };
+
+        for asset in &assets {
+            run_stage_weights(asset);
+        }
+    }
+
+    fn run_stage_weights(path: &str) {
+        let start = Instant::now();
+        let bytes = std::fs::read(path).unwrap();
+        let read = start.elapsed();
+
+        let start = Instant::now();
+        let data = dot_vox::load_bytes(&bytes).unwrap();
+        let parse = start.elapsed();
+
+        let start = Instant::now();
+        let (world, clipped) = World::new_clipped(&data);
+        let build = start.elapsed();
+
+        let progress = Progress::new();
+        progress.end_stage(Stage::Read);
+        progress.end_stage(Stage::Parse);
+        progress.end_stage(Stage::Build);
+
+        let start = Instant::now();
+        let snapshots = emit_snapshots_reporting(&world, Some(&progress)).unwrap();
+        let emit = start.elapsed();
+
+        let total = read
+            .saturating_add(parse)
+            .saturating_add(build)
+            .saturating_add(emit);
+        let share = |stage: Duration| {
+            let millionths = stage.as_nanos().saturating_mul(1_000_000) / total.as_nanos().max(1);
+
+            u32::try_from(millionths).unwrap_or(0)
+        };
+
+        println!("asset           {path}");
+        println!("voxels          {}", world.voxel_count());
+        println!("clipped         {clipped}");
+        println!("micro chunks    {}", snapshots.len());
+        println!("file bytes      {}", bytes.len());
+        println!("read            {read:10.3?}  {}", share(read));
+        println!("parse           {parse:10.3?}  {}", share(parse));
+        println!("build           {build:10.3?}  {}", share(build));
+        println!("emit            {emit:10.3?}  {}", share(emit));
+        println!("total           {total:10.3?}");
     }
 
     fn run_asset(path: &str) {

@@ -1,7 +1,7 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU8, Ordering},
         mpsc,
     },
@@ -15,7 +15,8 @@ use crate::{
     world::{
         World,
         format::{get_palette, open_bytes},
-        snapshot::{MicroChunkSnapshot, emit_snapshots},
+        progress::{Progress, Stage},
+        snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
     },
 };
 
@@ -119,6 +120,16 @@ impl Residency {
 enum JobState {
     Idle,
     Loading { loaded: Option<Box<LoadedWorld>> },
+    Clearing,
+    Done,
+}
+
+/// What a job asks the view to hold when its batch has been carried: the world
+/// it loaded, or no world at all.
+#[derive(Clone, Copy)]
+enum Outcome {
+    Load,
+    Clear,
 }
 
 enum RunResult {
@@ -128,6 +139,7 @@ enum RunResult {
 
 struct Job {
     state: JobState,
+    outcome: Outcome,
     display: DisplayGate,
     residency: Option<Residency>,
 }
@@ -143,6 +155,7 @@ pub enum Refusal {
 pub struct WorldJob {
     status: AtomicU8,
     error: Mutex<Option<String>>,
+    progress: Arc<Progress>,
     running: Option<JoinHandle<()>>,
     finished: Option<mpsc::Receiver<Result<RunResult, String>>>,
     job: Mutex<Job>,
@@ -150,14 +163,16 @@ pub struct WorldJob {
 
 impl WorldJob {
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             status: AtomicU8::new(STATUS_EMPTY),
             error: Mutex::new(None),
+            progress: Arc::new(Progress::new()),
             running: None,
             finished: None,
             job: Mutex::new(Job {
                 state: JobState::Idle,
+                outcome: Outcome::Load,
                 display: DisplayGate::new(),
                 residency: None,
             }),
@@ -169,33 +184,44 @@ impl WorldJob {
         Status::from_code(self.status.load(Ordering::Acquire))
     }
 
+    /// How far the job in flight has got, 0 to 1. A job that is not in flight
+    /// reads 1, so a host that polls until the status settles holds the maximum.
+    #[must_use]
+    pub fn progress(&self) -> f64 {
+        if self.status() == Status::Loading {
+            self.progress.load()
+        } else {
+            1.0
+        }
+    }
+
     #[must_use]
     pub fn error(&self) -> Option<String> {
         lock(&self.error).clone()
     }
 
-    /// Declares a world resident. The pipeline is up without one before the
-    /// first load lands.
-    pub fn world_resident(&mut self) {
-        self.status.store(STATUS_READY, Ordering::Release);
-    }
-
     /// Declares the view to hold no world, for a clear that had nothing left to
-    /// take away.
+    /// take away: no batch is submitted, so the job is done on this call and
+    /// stops holding.
     pub fn no_world(&mut self) {
+        lock(&self.job).state = JobState::Done;
         self.status.store(STATUS_EMPTY, Ordering::Release);
     }
 
     /// # Errors
     ///
     /// Returns `Refusal::Busy` while another job is in flight.
+    ///
+    /// `version` is the renderer's content version before this job's batch, so
+    /// the frame that carries the batch is the first one past it.
     pub fn load(&mut self, source: Box<dyn WorldSource>, version: u64) -> Result<(), Refusal> {
-        self.begin(version)?;
+        self.begin(version, Outcome::Load)?;
 
         let (sender, receiver) = mpsc::channel();
+        let progress = Arc::clone(&self.progress);
 
         let thread = spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run_load(&*source)))
+            let result = catch_unwind(AssertUnwindSafe(|| run_pipeline(&progress, &*source)))
                 .unwrap_or_else(|_| Err(String::from("the loader panicked")));
 
             let _ = sender.send(result);
@@ -210,8 +236,10 @@ impl WorldJob {
     /// # Errors
     ///
     /// Returns `Refusal::Busy` while another job is in flight.
+    ///
+    /// `version` is the renderer's content version before this job's batch.
     pub fn clear(&mut self, version: u64) -> Result<(), Refusal> {
-        self.begin(version)?;
+        self.begin(version, Outcome::Clear)?;
 
         let (sender, receiver) = mpsc::channel();
 
@@ -225,7 +253,11 @@ impl WorldJob {
         Ok(())
     }
 
-    fn begin(&mut self, version: u64) -> Result<(), Refusal> {
+    fn begin(&mut self, version: u64, outcome: Outcome) -> Result<(), Refusal> {
+        if self.holding() {
+            return Err(Refusal::Busy);
+        }
+
         if self.running.is_some() {
             return Err(Refusal::Busy);
         }
@@ -234,10 +266,12 @@ impl WorldJob {
 
         let mut job = lock(&self.job);
 
+        job.outcome = outcome;
         job.display.arm(version);
         job.residency = None;
         drop(job);
 
+        self.progress = Arc::new(Progress::new());
         *lock(&self.error) = None;
         self.status.store(STATUS_LOADING, Ordering::Release);
 
@@ -277,13 +311,13 @@ impl WorldJob {
                 Some(Finished::Loaded)
             }
             Ok(RunResult::Cleared) => {
-                lock(&self.job).state = JobState::Idle;
-                self.status.store(STATUS_EMPTY, Ordering::Release);
+                lock(&self.job).state = JobState::Clearing;
 
                 Some(Finished::Cleared)
             }
             Err(reason) => {
                 lock(&self.job).state = JobState::Idle;
+                self.progress.finish();
                 *lock(&self.error) = Some(reason);
                 self.status.store(STATUS_FAILED, Ordering::Release);
 
@@ -307,20 +341,62 @@ impl WorldJob {
         lock(&self.job).display.admitted(version)
     }
 
-    /// The pending load's work, handed over once.
-    pub fn take_loaded(&self) -> Option<LoadedWorld> {
-        let mut job = lock(&self.job);
+    /// Whether a job that finished its background work is waiting for the frame
+    /// that carries it. The job is past its work but not done, so it is still in
+    /// flight. A job whose carrying frame was admitted is `Done`, so it stops
+    /// holding in the same turn its status settles.
+    #[must_use]
+    pub fn holding(&self) -> bool {
+        matches!(
+            lock(&self.job).state,
+            JobState::Loading { loaded: Some(_) } | JobState::Clearing
+        )
+    }
 
-        let JobState::Loading { loaded } = &mut job.state else {
-            return None;
+    /// Records that the frame carrying the submitted batch was admitted, which
+    /// is when the view holds what the job asked for. A load leaves a world
+    /// resident and a clear leaves none, and the counter reaches the top either
+    /// way, so the host's bar ends when the view does.
+    pub fn arrive(&self) {
+        let status = {
+            let mut job = lock(&self.job);
+
+            job.state = JobState::Done;
+
+            match job.outcome {
+                Outcome::Load => STATUS_READY,
+                Outcome::Clear => STATUS_EMPTY,
+            }
         };
 
-        let loaded = loaded.take()?;
+        self.progress.finish();
+        self.status.store(status, Ordering::Release);
+    }
 
-        job.state = JobState::Idle;
-        drop(job);
+    /// The submitted batch is the renderer's now, so the job is no longer
+    /// holding work. It is in flight until the frame that carries the batch is
+    /// admitted.
+    pub fn taken(&self) {
+        lock(&self.job).state = JobState::Idle;
+    }
 
-        Some(*loaded)
+    /// The pending load's work, handed over once.
+    pub fn take_loaded(&self) -> Option<LoadedWorld> {
+        let loaded = {
+            let mut job = lock(&self.job);
+
+            let JobState::Loading { loaded } = &mut job.state else {
+                return None;
+            };
+
+            let loaded = *loaded.take()?;
+
+            job.state = JobState::Idle;
+
+            loaded
+        };
+
+        Some(loaded)
     }
 
     /// Records how far the renderer has to have got for the job to be complete.
@@ -335,6 +411,7 @@ impl WorldJob {
         self.join();
 
         lock(&self.job).state = JobState::Idle;
+        self.progress.finish();
         *lock(&self.error) = Some(reason);
         self.status.store(STATUS_FAILED, Ordering::Release);
     }
@@ -366,23 +443,32 @@ impl Drop for WorldJob {
     }
 }
 
-fn run_load(source: &dyn WorldSource) -> Result<RunResult, String> {
+/// The load pipeline, from a world's bytes to the snapshots the renderer takes.
+/// Its only output is plain data, so it runs on a thread with no renderer
+/// access.
+fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResult, String> {
     let name = source.name();
     let bytes = source
         .read()
         .map_err(|reason| format!("could not open {name}: {reason}"))?;
 
+    progress.end_stage(Stage::Read);
+
     let voxel_data =
         open_bytes(&bytes).map_err(|error| format!("could not parse {name}: {error:#}"))?;
 
+    progress.end_stage(Stage::Parse);
+
     let (world, clipped) = World::new_clipped(&voxel_data);
+
+    progress.end_stage(Stage::Build);
 
     if clipped > 0 {
         eprintln!("atlas_rt: clipped {clipped} voxels outside the lattice");
     }
 
-    let snapshots =
-        emit_snapshots(&world).map_err(|error| format!("could not emit {name}: {error:#}"))?;
+    let snapshots = emit_snapshots_reporting(&world, Some(progress))
+        .map_err(|error| format!("could not emit {name}: {error:#}"))?;
 
     Ok(RunResult::Loaded(Box::new(LoadedWorld {
         snapshots,
@@ -488,7 +574,7 @@ mod tests {
     #[test]
     fn an_accepted_load_reports_loading_before_it_finishes() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         assert!(job.load(Box::new(source(one_voxel_world())), 0).is_ok());
         assert_eq!(job.status(), Status::Loading);
@@ -497,7 +583,7 @@ mod tests {
     #[test]
     fn a_second_request_while_one_is_in_flight_is_refused() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
@@ -516,7 +602,7 @@ mod tests {
     #[test]
     fn a_load_while_a_clear_is_in_flight_is_refused() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         job.clear(0).unwrap();
 
@@ -529,7 +615,7 @@ mod tests {
     #[test]
     fn a_finished_load_hands_its_work_over_once() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 4).unwrap();
         job.settle();
@@ -564,7 +650,7 @@ mod tests {
     #[test]
     fn a_finished_load_hands_over_the_palette_that_colours_its_snapshots() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         let mut rgba = [0u8; 1024];
         let (entries, _) = rgba.as_chunks_mut::<4>();
@@ -601,7 +687,7 @@ mod tests {
     #[test]
     fn a_malformed_world_fails_without_killing_the_thread() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         job.load(Box::new(source(vec![0xde, 0xad, 0xbe, 0xef])), 0)
             .unwrap();
@@ -621,13 +707,22 @@ mod tests {
     }
 
     #[test]
-    fn a_clear_reaches_the_empty_state() {
+    fn a_clear_reaches_the_empty_state_on_the_frame_that_carries_it() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
 
         job.clear(0).unwrap();
 
         assert_eq!(poll_until(&mut job), Finished::Cleared);
+        assert_eq!(
+            job.status(),
+            Status::Loading,
+            "computed is not carried: the renderer still holds the old world"
+        );
+        assert!(job.holding(), "a submitted clear is still in flight");
+
+        job.arrive();
+
         assert_eq!(job.status(), Status::Empty);
     }
 
@@ -645,7 +740,7 @@ mod tests {
     #[test]
     fn only_the_first_admissible_frame_reports_a_completion() {
         let mut job = WorldJob::new();
-        job.world_resident();
+        job.arrive();
         job.load(Box::new(source(one_voxel_world())), 7).unwrap();
         job.settle();
         job.poll();
@@ -653,5 +748,82 @@ mod tests {
         assert!(!job.admitted(7), "the outgoing content stays out");
         assert!(job.admitted(8));
         assert!(!job.admitted(9), "a later frame is not a second completion");
+    }
+
+    #[test]
+    fn a_job_reports_how_far_its_load_has_got() {
+        let mut job = WorldJob::new();
+        job.arrive();
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+
+        assert!(
+            job.progress().abs() < f64::EPSILON,
+            "a fresh job has got nowhere"
+        );
+
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        assert!(
+            job.progress() < 1.0,
+            "the background work being done is not the world being resident"
+        );
+
+        job.arrive();
+
+        assert!(
+            (job.progress() - 1.0).abs() < f64::EPSILON,
+            "the job is done once the frame that carries it is admitted"
+        );
+        assert!(
+            !job.holding(),
+            "a settled job is not holding, so the next request is not refused"
+        );
+    }
+
+    #[test]
+    fn a_settled_load_whose_work_is_untaken_is_still_in_flight() {
+        let mut job = WorldJob::new();
+        job.arrive();
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        assert!(matches!(
+            job.load(Box::new(source(one_voxel_world())), 0),
+            Err(Refusal::Busy)
+        ));
+        assert_eq!(job.status(), Status::Loading);
+    }
+
+    #[test]
+    fn a_clear_reaches_full_progress_when_it_is_carried() {
+        let mut job = WorldJob::new();
+        job.arrive();
+        job.clear(0).unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Cleared);
+        assert!(job.progress() < 1.0, "the clear is not carried yet");
+
+        job.arrive();
+
+        assert_eq!(job.status(), Status::Empty);
+        assert!((job.progress() - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_failed_load_still_reaches_full_progress() {
+        let mut job = WorldJob::new();
+        job.arrive();
+        job.load(Box::new(source(vec![0xde, 0xad])), 0).unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Failed);
+        assert_eq!(job.status(), Status::Failed);
+        assert!(
+            (job.progress() - 1.0).abs() < f64::EPSILON,
+            "the loading bar is done either way"
+        );
     }
 }

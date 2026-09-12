@@ -114,8 +114,8 @@ impl IControl for AtlasRtView {
                             published_tx,
                         ));
 
-                        let mut job = WorldJob::new();
-                        job.world_resident();
+                        let job = WorldJob::new();
+                        job.arrive();
 
                         self.pipeline = Some(shared_pipeline.clone());
                         self.worker_publish_in = Some(published_rx);
@@ -123,16 +123,16 @@ impl IControl for AtlasRtView {
 
                         if let Err(probe) = Self::probe_backend(&gpu, &shared_pipeline) {
                             godot_error!("atlas_rt: init probe failed: {}", probe);
-                        } else {
-                            Signal::from_object_signal(
-                                &RenderingServer::singleton(),
-                                "frame_post_draw",
-                            )
-                            .connect(&Callable::from_object_method(
-                                &self.to_gd(),
-                                "on_frame_post_draw",
-                            ));
                         }
+
+                        Signal::from_object_signal(
+                            &RenderingServer::singleton(),
+                            "frame_post_draw",
+                        )
+                        .connect(&Callable::from_object_method(
+                            &self.to_gd(),
+                            "on_frame_post_draw",
+                        ));
                     }
                     Err(err) => {
                         godot_error!("atlas_rt: pipeline init failed: {}", err);
@@ -200,7 +200,6 @@ impl AtlasRtView {
         self.poll_job();
 
         self.tick += 1;
-
         let Some(published_in) = &self.worker_publish_in else {
             return;
         };
@@ -270,6 +269,13 @@ impl AtlasRtView {
             .map_or_else(GString::new, |reason| GString::from(reason.as_str()))
     }
 
+    /// How far the job in flight has got, 0 to 1, for a loading overlay's bar.
+    /// One when nothing is in flight, since there is then nothing to wait for.
+    #[func]
+    pub fn job_progress(&self) -> f64 {
+        self.job.as_ref().map_or(1.0, WorldJob::progress)
+    }
+
     #[func]
     pub fn set_camera(&mut self, camera: Gd<Camera3D>) {
         self.camera = Some(camera);
@@ -321,7 +327,6 @@ impl AtlasRtView {
         };
 
         let version = Self::batch_version(&self.pipeline);
-
         if let Err(refusal) = job.load(Self::source(&path), version) {
             Self::report_refusal("load_world", refusal);
 
@@ -508,8 +513,8 @@ impl AtlasRtView {
         }
     }
 
-    /// A clear of a world that is already gone leaves the job complete and the
-    /// view with nothing to show.
+    /// A clear leaves the view with nothing to show, so it completes into
+    /// empty-and-idle rather than into a world being resident.
     fn plan_clear(&mut self) {
         if self.world_chunks.is_empty() {
             if let Some(job) = self.job.as_mut() {
@@ -564,7 +569,6 @@ impl AtlasRtView {
             }
 
             let generation = pipeline.applied_generation();
-
             (Residency::new(generation), pipeline.batch_version())
         };
 
@@ -573,6 +577,7 @@ impl AtlasRtView {
 
         if let Some(job) = &self.job {
             job.record(residency);
+            job.taken();
         }
 
         true
@@ -580,7 +585,8 @@ impl AtlasRtView {
 
     /// Completes the job on the frame the renderer built after taking its
     /// batch, which is the frame the world it asked for is resident in. Only
-    /// then does the status say a world is resident.
+    /// then does the status say a world is resident, and only then does the
+    /// progress counter reach the top.
     fn settle_job(&mut self, version: u64, generation: u64) {
         let settled = self
             .job
@@ -588,7 +594,7 @@ impl AtlasRtView {
             .is_some_and(|job| job.resident(generation) && job.admitted(version));
 
         if settled && let Some(job) = self.job.as_mut() {
-            job.world_resident();
+            job.arrive();
         }
     }
 

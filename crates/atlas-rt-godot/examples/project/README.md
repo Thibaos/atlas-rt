@@ -41,6 +41,17 @@ exported project does not have: worlds shipped inside a `.pck` are out of
 reach until the load moves to a res:// source that reads on the main
 thread.
 
+Loading screen. `scripts/loading_overlay.gd` is a full-rect Control that
+reads the view's status, progress, and error string each frame, and
+`main.gd` adds one above the pause UI. The world buttons tell it a load is
+starting, and the atlas passthroughs call the view and nothing else: the
+old wrapper's clear-then-load pair is refused by the view's one-job rule.
+A load suppresses the outgoing world at the call, so the overlay covers
+the blank viewport until the frame that carries the new world is admitted,
+which is also when the status settles to `ready` and the overlay goes
+away. A failed load leaves the overlay up with the reason, and the world
+that was resident stays gone.
+
 Display path. The extension publishes raw linear radiance and does no
 display encoding, so the host owns it: main.gd attaches
 `atlas_composite.gdshader` as a ShaderMaterial on the view, which applies

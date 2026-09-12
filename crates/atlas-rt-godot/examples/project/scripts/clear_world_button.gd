@@ -2,8 +2,8 @@ class_name ClearWorldButton
 extends Button
 
 # The view reports "empty", "loading", "ready", or "failed". A job starts only
-# when nothing is in flight.
-const IDLE := ["empty", "ready"]
+# when nothing is in flight, so a settled failure is idle too.
+const IDLE := ["empty", "ready", "failed"]
 
 @export var atlas: Atlas
 

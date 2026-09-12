@@ -12,8 +12,10 @@ extends Node2D
 const TARGET_LINEAR := false
 
 const COMPOSITE_SHADER := preload("res://atlas_composite.gdshader")
+const OVERLAY := preload("res://scripts/loading_overlay.gd")
 
 var view: AtlasRtView
+var overlay: OVERLAY
 
 func _ready() -> void:
 	var node: AtlasRtView = AtlasRtView.new()
@@ -27,11 +29,31 @@ func _ready() -> void:
 	add_child(node)
 	self.view = node
 
+	# Above the pause UI, which the scene places after this node.
+	var screen: OVERLAY = OVERLAY.new()
+	add_child(screen)
+	self.overlay = screen
+
 	node.set_camera($player/pivot/camera)
 	node.load_world("res://worlds/castle.vox")
 
-func clear_world() -> bool:
-	return view.clear_world()
+# A world change is one job: a clear before a load would be refused while the
+# load is in flight. The overlay only appears once the view has taken the job,
+# so a refusal leaves the screen as it was.
+func load_world(name: String) -> bool:
+	if !view: return false
 
-func load_world(path: String) -> bool:
-	return view.load_world(path)
+	if !view.load_world("res://worlds/" + name + ".vox"): return false
+
+	overlay.watch(name)
+	return true
+
+# A clear is one job too, and it leaves the view with no world.
+func clear_world() -> bool:
+	if !view: return false
+
+	if !view.clear_world(): return false
+
+	overlay.watch()
+	return true
+

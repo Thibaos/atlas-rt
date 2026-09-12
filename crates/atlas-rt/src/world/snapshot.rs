@@ -7,6 +7,7 @@ use rustc_hash::FxBuildHasher;
 use crate::world::{
     World,
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
+    progress::{Progress, VOXEL_STEP},
 };
 
 const MICRO_EDGE: i32 = MICRO_CHUNK_LENGTH.cast_signed();
@@ -143,14 +144,41 @@ fn origin_axis(biased: u32) -> anyhow::Result<i32> {
 ///
 /// Returns an error if unsigned grid operation, material index, chunk bucketing, or snapshot creation failed.
 pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
+    emit_snapshots_reporting(world, None)
+}
+
+/// Emits the world's snapshots, reporting how far the walk has got.
+///
+/// # Errors
+///
+/// Returns an error if unsigned grid operation, material index, chunk bucketing, or snapshot creation failed.
+pub fn emit_snapshots_reporting(
+    world: &World,
+    progress: Option<&Progress>,
+) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
     let mut buckets: [Vec<u64>; BUCKET_COUNT] = std::array::from_fn(|_| Vec::new());
 
     let total = world.voxel_count();
+
+    if let Some(progress) = progress {
+        progress.start_emit();
+    }
+
     for bucket in &mut buckets {
         bucket.reserve(total / BUCKET_COUNT);
     }
 
+    let mut seen = 0usize;
+
     for (global, voxel) in world.iter_voxels() {
+        if let Some(progress) = progress {
+            seen = seen.saturating_add(1);
+
+            if seen.is_multiple_of(VOXEL_STEP) {
+                progress.count_voxel(total, seen);
+            }
+        }
+
         let origin = grid_origin(global, MICRO_CHUNK_LENGTH);
         let local = global
             .checked_sub(origin)
@@ -224,6 +252,10 @@ pub fn emit_snapshots(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> 
     }
 
     snapshots.sort_unstable_by_key(|s| s.global_coords.to_array());
+
+    if let Some(progress) = progress {
+        progress.end_emit();
+    }
 
     Ok(snapshots)
 }
