@@ -11,13 +11,9 @@ var _title: Label
 var _bar: ProgressBar
 var _failure: Label
 
-# Whether a job this overlay was told about is still in flight. Without it the
-# overlay would report the startup world's load, which no button started.
 var _active := false
 
 func _ready() -> void:
-	# Main is a Node2D, so this Control has no Control parent to anchor a preset
-	# against: the screen rect is taken directly, and again on every resize.
 	get_viewport().size_changed.connect(_match_screen)
 	_match_screen()
 
@@ -28,13 +24,11 @@ func _match_screen() -> void:
 	size = get_viewport_rect().size
 
 func _process(_delta: float) -> void:
-	var atlas := get_parent()
-
-	if !atlas or !atlas.view:
+	if !Main.view:
 		dismiss()
 		return
 
-	var view: AtlasRtView = atlas.view
+	var view: AtlasRtView = Main.view
 	var status := view.job_status_name()
 	var reason := view.job_error()
 
@@ -49,14 +43,11 @@ func _process(_delta: float) -> void:
 		visible = true
 		return
 
-	# The job settled, so the load is over whether or not it worked. A failure
-	# leaves its reason behind, on a label that outlives this overlay.
 	_active = false
 	visible = false
 
-# Tells the overlay a job is on its way: the world's name, or none for a clear.
-func watch(name: String = "") -> void:
-	_title.text = "Loading " + name if name else "Returning to the menu"
+func watch(text: String = "") -> void:
+	_title.text = "Loading " + text if text else "Returning to the menu"
 	_bar.value = 0.0
 	_failure.text = ""
 	_failure.visible = false
@@ -64,8 +55,6 @@ func watch(name: String = "") -> void:
 	_active = true
 	visible = true
 
-# A refused request started nothing, so the overlay goes away again. Any job
-# that is already in flight keeps reporting itself through `_process`.
 func dismiss() -> void:
 	_active = false
 	visible = false

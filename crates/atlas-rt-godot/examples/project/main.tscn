@@ -1,29 +1,24 @@
 [gd_scene format=3 uid="uid://b1idham0c2n4d"]
 
-[ext_resource type="Script" uid="uid://b6i2vx0jqn3q7" path="res://scripts/main.gd" id="1_main"]
 [ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
-[ext_resource type="Script" uid="uid://bxghcol37e5is" path="res://scripts/ui.gd" id="3_h2yge"]
 [ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
 
 [node name="main" type="Node" unique_id=1982182210]
 
-[node name="atlas" type="Node2D" parent="." unique_id=756664440]
-process_mode = 3
-script = ExtResource("1_main")
-
-[node name="player" type="CharacterBody3D" parent="atlas" unique_id=276233651]
+[node name="player" type="CharacterBody3D" parent="." unique_id=276233651]
+unique_name_in_owner = true
 process_mode = 1
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 300, 500)
 script = ExtResource("2_0xm2m")
 mouse_sensitivity = Vector2(0.5, 0.5)
 fly_speed = 200.0
 
-[node name="collider" type="CollisionShape3D" parent="atlas/player" unique_id=1681754065]
+[node name="collider" type="CollisionShape3D" parent="player" unique_id=1681754065]
 shape = SubResource("BoxShape3D_hjdlg")
 
-[node name="UI" type="Control" parent="." unique_id=1443735620 node_paths=PackedStringArray("atlas")]
+[node name="UI" type="Control" parent="." unique_id=1443735620]
 process_mode = 3
 visible = false
 layout_mode = 3
@@ -34,8 +29,6 @@ grow_horizontal = 2
 grow_vertical = 2
 size_flags_horizontal = 4
 size_flags_vertical = 4
-script = ExtResource("3_h2yge")
-atlas = NodePath("../atlas")
 
 [node name="ColorRect" type="ColorRect" parent="UI" unique_id=389876056]
 layout_mode = 1
@@ -75,22 +68,26 @@ offset_bottom = -272.0
 grow_horizontal = 2
 grow_vertical = 0
 
-[node name="castle" type="Button" parent="UI/HBoxContainer" unique_id=457740108]
+[node name="castle" type="Button" parent="UI/HBoxContainer" unique_id=457740108 node_paths=PackedStringArray("UI")]
 layout_mode = 2
 text = "castle"
 script = ExtResource("4_1bvp3")
+UI = NodePath("../..")
 
-[node name="bistro" type="Button" parent="UI/HBoxContainer" unique_id=1453636886]
+[node name="bistro" type="Button" parent="UI/HBoxContainer" unique_id=1453636886 node_paths=PackedStringArray("UI")]
 layout_mode = 2
 text = "bistro"
 script = ExtResource("4_1bvp3")
+UI = NodePath("../..")
 
-[node name="sponza" type="Button" parent="UI/HBoxContainer" unique_id=1178860499]
+[node name="sponza" type="Button" parent="UI/HBoxContainer" unique_id=1178860499 node_paths=PackedStringArray("UI")]
 layout_mode = 2
 text = "sponza"
 script = ExtResource("4_1bvp3")
+UI = NodePath("../..")
 
-[node name="nuke" type="Button" parent="UI/HBoxContainer" unique_id=2104730712]
+[node name="nuke" type="Button" parent="UI/HBoxContainer" unique_id=2104730712 node_paths=PackedStringArray("UI")]
 layout_mode = 2
 text = "nuke"
 script = ExtResource("4_1bvp3")
+UI = NodePath("../..")
