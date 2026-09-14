@@ -41,7 +41,7 @@ pub struct RenderContext {
 /// # Errors
 ///
 /// Returns an error if:
-///   - No physical device
+///   - No physical device found
 ///   - Physical device has no graphics support
 ///   - No queue with graphics support found
 ///   - No queue with compute support found
@@ -82,6 +82,7 @@ fn create_device(
 
     let (physical_device, graphics_family_index) = instance
         .enumerate_physical_devices()?
+        .into_iter()
         .filter(|p| {
             p.supported_extensions().contains(&device_extensions)
                 && p.supported_features().contains(&device_features)

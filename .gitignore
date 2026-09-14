@@ -24,7 +24,7 @@ Cargo.lock
 .vscode/
 .zed/
 imgui.ini
-docs/vulkan
+docs/ext
 docs/agents
 .pi
 .pi-subagents
