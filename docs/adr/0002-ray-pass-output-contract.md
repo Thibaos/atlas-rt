@@ -33,7 +33,8 @@ validator's capture path was removed with the validation teardown
   the world is bounded (+-2048), but making the ray range equal the camera's
   near/far keeps primary visibility semantically identical to a camera
   frustum (nothing closer than near, nothing beyond far) for free, and
-  gives the CPU reference tracer (ticket 06) one less divergence.
+  gives the CPU reference tracer
+  ([0008](0008-validation-reference-tracer.md)) one less divergence.
 
 ## Consequences
 
