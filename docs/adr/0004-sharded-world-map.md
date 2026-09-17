@@ -21,14 +21,14 @@ accepted (load-performance ticket 06, 2026-09-07)
 - **Keep serial insertion**. Rejected: 5.4s of world_new on bistro, and the
   ticket exists to parallelize that stage.
 - **Naive union into one map**. Rejected: merging per-thread maps re-inserts
-  every voxel once, about a second at bistro scale, which eats the parallel
-  win and funnels every insert through one lock.
+  every voxel once, about a second at bistro scale. That eats the parallel win
+  and funnels every insert through one lock.
 - **Sharded map with staged sequence-tag merge**. Chosen: routing spreads
   inserts over 64 maps, staged merging resolves overlapping writes without a
   global lock, and the strip pass is the only full rehash. Bistro world_new
-  drops 5.4s to ~0.9s.
+  drops from 5.4s to ~0.9s.
 - **Clone model voxels into the loader**. Rejected: the clone was ~1.8GB at
-  bistro scale; the traverser hands out borrowed voxel slices instead.
+  bistro scale. The traverser hands out borrowed voxel slices instead.
 
 ## Consequences
 

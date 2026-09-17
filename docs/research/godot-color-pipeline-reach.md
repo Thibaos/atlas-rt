@@ -1,21 +1,22 @@
 # Godot color-pipeline reach for 4.7.2 (Forward+)
 
-Facts for ADR 0006's rejected option "stock Environment tonemap does the color work": whether the
-Environment tonemap pass (Linear, Reinhard, Filmic, ACES, AgX) and the adjustments block
-(brightness, contrast, saturation, color correction) reach canvas-drawn content in Forward+ 4.7.2,
-what rendering/viewport/hdr_2d changes, whether ImageTexture and Texture2DRD differ on this path,
-and whether any viewport or project setting routes canvas content through a color-processing pass
-before the swapchain.
+This document examines ADR 0006's rejected option "stock Environment tonemap does the color work".
+It asks whether the Environment tonemap pass (Linear, Reinhard, Filmic, ACES, AgX) and adjustments
+block (brightness, contrast, saturation, color correction) process canvas-drawn content in
+Forward+ 4.7.2. It also examines rendering/viewport/hdr_2d, differences between ImageTexture and
+Texture2DRD on this path, and viewport or project settings that route canvas content through a
+color-processing pass before the swapchain.
 
-Short answer, stated loudly. With rendering/viewport/hdr_2d off (the default, and what ADR 0006
-pins) and a background that is not BG_CANVAS, stock tonemap and adjustments never touch
-canvas-drawn content in Forward+. Two configurations do process canvas content, and both matter:
-Environment background_mode BG_CANVAS feeds canvas pixels through the full tonemap pass, and
-hdr_2d on switches canvas to linear colors and adds a linear-to-sRGB encode plus optional dither
-at present time. On the path atlas-rt uses (full-rect canvas item, hdr_2d off, normal ordering),
-the extension's shader is the last color math on its pixels, 8-bit quantization aside.
+With rendering/viewport/hdr_2d off (the default, and what ADR 0006 pins) and a background that is
+not BG_CANVAS, stock tonemap and adjustments never process canvas-drawn content in Forward+.
+Two configurations do process it. Environment background_mode BG_CANVAS feeds canvas pixels
+through the full tonemap pass. With hdr_2d on, canvas uses linear colors and adds a
+linear-to-sRGB encode plus optional dither at present time.
 
-## Sources and method.
+On the path atlas-rt uses (full-rect canvas item, hdr_2d off, normal ordering), the extension's
+shader performs the last color math on its pixels, 8-bit quantization aside.
+
+## Sources and method
 
 Tag verified two ways: the GitHub refs API resolves refs/tags/4.7.2-stable to commit
 ed1daf0bf001b61586d9930840f2f1394092c079 (the same HEAD the earlier fact-find used), and the
@@ -117,12 +118,12 @@ where blit_render_targets_to_screen sets source_is_srgb = !render_target_is_usin
 optional debanding dither when the source is not sRGB and the swapchain is SDR (blit.glsl
 L176-188). The engine docs state the same contract for the setting (doc/classes/ProjectSettings.xml
 L3511-3514: "2D rendering will be performed on linear values and will be converted using the
-appropriate transfer function immediately before blitting to the screen"). Stated loudly, with
+appropriate transfer function immediately before blitting to the screen"). With
 hdr_2d on canvas-drawn content is converted sRGB-to-linear at draw setup and encoded
 linear-to-sRGB at present, with an optional dither. That is engine-side color processing of 2D
 content in a real configuration. ADR 0006 keeps hdr_2d off, and with it off none of this runs.
 The blit takes no
-conversion branch (blit.glsl L151, L173-189) and the canvas shader output lands in the target
+conversion branch (blit.glsl L151, L173-189) and the canvas shader output reaches the target
 byte for byte. HDR window output forces hdr_2d on the main viewport (window.cpp L1980-1988,
 scene_tree.cpp L2115-2122, doc/classes/DisplayServer.xml L2377), so hdr_2d-off with an HDR
 swapchain cannot occur on the root viewport.
@@ -143,7 +144,7 @@ tonemaps even with no camera, because render_empty_scene still runs the full ren
 (renderer_scene_cull.cpp L3757-3774, called from renderer_viewport.cpp L678, L727, L743). The
 engine docs agree that 2D sits inside the 3D pipeline in this mode (doc/classes/Viewport.xml
 L466: "2D rendering is not affected by debanding unless the Environment.background_mode is
-BG_CANVAS"). Stated loudly, in a viewport whose Environment uses BG_CANVAS, canvas content on a
+BG_CANVAS"). In a viewport whose Environment uses BG_CANVAS, canvas content on a
 layer below canvas_max_layer passes through the tonemap pass and the adjustments. For atlas-rt
 this happens only if the host game's viewport Environment picks BG_CANVAS and the extension's
 canvas layer sits below that cutoff; on the normal ordering the extension's rect draws after the
@@ -198,7 +199,7 @@ BG_CANVAS, are both outside that configuration by the ADR's choices.
 
 ## Sources note
 
-All load-bearing claims cite files of tag 4.7.2-stable, HEAD
+All substantive claims cite files of tag 4.7.2-stable, HEAD
 ed1daf0bf001b61586d9930840f2f1394092c079, read from a local extraction of the complete tag source
 (downloaded as the tag tarball after the sandbox TLS path blocked direct fetches; the same
 schannel failure the earlier fact-find recorded). Line numbers are per file and per tag as cited.
@@ -208,4 +209,4 @@ the BG_CANVAS double-pipeline consequence for the extension's output. Claims sco
 Mobile renderer statements are dispatch-level; absence claims (adjustments consumers, compositor
 callback types, blit conversion branches) rest on greps over the full extracted source tree.
 Related: docs/research/godot-rd-external-texture-semantics.md (texture wrap semantics, swapchain
-formats), docs/research/godot-renderer-integration.md (delivery seam).
+formats), docs/research/godot-renderer-integration.md (delivery interface).

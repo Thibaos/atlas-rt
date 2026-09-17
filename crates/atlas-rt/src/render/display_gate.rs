@@ -1,7 +1,7 @@
 /// Whether published frames may reach the screen.
 ///
-/// The host records a version as it asks for a world to go away, and admits
-/// only frames the renderer produced after it.
+/// The host records a version when it requests a world change, then admits
+/// only frames with a later version.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DisplayGate {
     suppressed: bool,
@@ -37,9 +37,8 @@ impl DisplayGate {
         !self.suppressed || version > self.version
     }
 
-    /// Whether `version` is both admissible and the first frame past the
-    /// suppression the gate was armed on. Reports a frame once: the arm is spent
-    /// by the answer.
+    /// Returns true for the first admissible frame after arming the gate, then
+    /// disarms it. Later calls return false until the gate is armed again.
     #[must_use]
     pub const fn admitted(&mut self, version: u64) -> bool {
         if !self.armed || !self.admits(version) {

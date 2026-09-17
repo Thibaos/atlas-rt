@@ -26,4 +26,3 @@ The example project's `lib/` is a junction into `target/`, so a build updates
 the library Godot loads with no copy step. See
 [crates/atlas-rt-godot/examples/project/README.md](crates/atlas-rt-godot/examples/project/README.md)
 for the junction setup.
-

@@ -8,17 +8,17 @@ const SCALE: u32 = 1_000_000;
 /// progress write no frame can observe.
 pub(crate) const VOXEL_STEP: usize = 65_536;
 
-/// The cumulative end of each bounded stage, in millionths, from the means
+/// Cumulative stage endpoints in millionths, based on mean timings across the
+/// example project's four worlds. Measured with
 /// `cargo test --release -p atlas-rt --lib load_stage_weights -- --ignored
-/// --nocapture` measured over the four worlds in the example project. The walk
-/// covers everything past build. Revisit this when the loader changes.
+/// --nocapture`. Emit covers all work after build. Revisit when the loader changes.
 const STAGES: [(u32, u8, &str); 3] = [
     (62_000, 1, "read"),
     (226_000, 2, "parse"),
     (489_000, 3, "build"),
 ];
 
-/// Where the walk stops: the top belongs to the frame that carries the batch.
+/// Emit's progress limit. Full progress requires a frame that includes the batch.
 const EMIT_END: u32 = 999_000;
 
 const NO_STAGE: u8 = 0;
@@ -70,9 +70,8 @@ impl Stage {
     }
 }
 
-/// How far the world being loaded has got, from 0 to 1. The stages run once
-/// each on the loader thread, in order, except emit, which reports as it walks
-/// the world's voxels.
+/// Load progress from 0 to 1. Stages report once each on the loader thread, in
+/// order, except emit, which reports throughout voxel traversal.
 #[derive(Debug, Default)]
 pub struct Progress {
     millionths: AtomicU32,
@@ -88,8 +87,8 @@ impl Progress {
         }
     }
 
-    /// Records that every stage before `stage` is done, and that the counter now
-    /// stands at that stage's share of the load.
+    /// Records completion of all stages before `stage` and sets progress to
+    /// that stage's cumulative endpoint.
     pub(crate) fn end_stage(&self, stage: Stage) {
         self.publish(stage, stage.share());
     }
@@ -99,15 +98,14 @@ impl Progress {
         self.publish(Stage::Emit, Stage::Build.share());
     }
 
-    /// Closes the emit stage's walk at the share it can reach, which is short of
-    /// the top.
+    /// Ends emit at its progress limit, below 1.
     pub(crate) fn end_emit(&self) {
         self.publish(Stage::Emit, EMIT_END);
     }
 
-    /// Reports the emit stage's walk: `done` voxels of `total` are emitted. The
-    /// caller asks at every `VOXEL_STEP` voxels, and the step is checked here
-    /// too, so a call in between accounts for nothing.
+    /// Reports `done` emitted voxels out of `total`. The caller reports every
+    /// `VOXEL_STEP` voxels. This method also checks the interval and ignores
+    /// calls between steps.
     #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn count_voxel(&self, total: usize, done: usize) {
         if !done.is_multiple_of(VOXEL_STEP) {
@@ -126,14 +124,14 @@ impl Progress {
         self.publish(Stage::Emit, millionths);
     }
 
-    /// The end of the job, and the only place the counter reaches the top. Runs
-    /// on the main thread, when the frame that carries the batch is admitted.
+    /// Ends the job. Only this method sets progress to 1. Runs on the main
+    /// thread when the frame containing the batch is admitted.
     pub(crate) fn finish(&self) {
         self.stage.store(EMIT, Ordering::Relaxed);
         self.millionths.store(SCALE, Ordering::Release);
     }
 
-    /// How far the load has got, 0 to 1.
+    /// Load progress from 0 to 1.
     #[must_use]
     pub fn load(&self) -> f64 {
         f64::from(self.millionths.load(Ordering::Acquire)) / f64::from(SCALE)

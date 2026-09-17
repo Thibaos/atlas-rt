@@ -235,10 +235,9 @@ impl AtlasRtView {
         self.to_gd().queue_redraw();
     }
 
-    /// The status the loading overlay and the load buttons read: no world and
-    /// nothing in flight, a job in flight, a world resident, or a failure. A
-    /// view whose pipeline never came up has no world and no job, which is a
-    /// failure.
+    /// Status for the loading overlay and load buttons. Reports empty and idle,
+    /// loading, a resident world, or failure. A pipeline that failed to initialize
+    /// has no world or job and reports failure.
     #[func]
     pub fn job_status(&self) -> i32 {
         self.job
@@ -270,8 +269,8 @@ impl AtlasRtView {
             .map_or_else(GString::new, |reason| GString::from(reason.as_str()))
     }
 
-    /// How far the job in flight has got, 0 to 1, for a loading overlay's bar.
-    /// One when nothing is in flight, since there is then nothing to wait for.
+    /// Job progress from 0 to 1 for the loading overlay. Returns 1 when no job
+    /// is in flight.
     #[func]
     pub fn job_progress(&self) -> f64 {
         self.job.as_ref().map_or(1.0, WorldJob::progress)
@@ -428,9 +427,8 @@ impl AtlasRtView {
         })
     }
 
-    /// Blanks the viewport on this turn. The view's material samples the
-    /// delivery image, so it has to come off for the placeholder to stand in for
-    /// the world.
+    /// Blanks the viewport on this turn. Detaches the material, which samples
+    /// the delivery image, so the placeholder can replace the world.
     fn suppress_display(&mut self) {
         if self.material_detached {
             return;
@@ -459,16 +457,15 @@ impl AtlasRtView {
         })
     }
 
-    /// The version the frames produced from now on carry. Recorded as the host
-    /// asks for a world to go away. Callers must hold no pipeline lock.
+    /// The version assigned to new frames, recorded when the host requests a
+    /// world change. Callers must not hold the pipeline lock.
     fn batch_version(pipeline: &Option<Arc<Mutex<EmbeddedPipeline>>>) -> u64 {
         pipeline
             .as_ref()
             .map_or(0, |pipeline| lock(pipeline).batch_version())
     }
 
-    /// A refusal is the in-flight guard doing its job against a direct call or
-    /// a stale press, so it is reported and changes nothing.
+    /// Reports a refused direct call or stale button press without changing state.
     fn report_refusal(entry: &str, refusal: Refusal) {
         match refusal {
             Refusal::Busy => {
@@ -555,9 +552,9 @@ impl AtlasRtView {
             .map_err(|error| format!("{error:#}"))
     }
 
-    /// Submits a planned batch and records where the renderer has to get to for
-    /// a frame to carry it. Callers must hold no pipeline lock: this takes it,
-    /// and taking it twice on one thread wedges the client.
+    /// Submits a planned batch and records the renderer generation required for
+    /// a frame to include it. Callers must not hold the pipeline lock. This
+    /// method acquires it, and reacquiring it on the same thread deadlocks.
     fn submit_world_change(&mut self, planned: batch::Batch) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
@@ -585,10 +582,8 @@ impl AtlasRtView {
         true
     }
 
-    /// Completes the job on the frame the renderer built after taking its
-    /// batch, which is the frame the world it asked for is resident in. Only
-    /// then does the status say a world is resident, and only then does the
-    /// progress counter reach the top.
+    /// Completes the job when an admitted frame includes its batch. Only then
+    /// does the status report the resulting world state and progress reach 1.
     fn settle_job(&mut self, version: u64, generation: u64) {
         let settled = self
             .job
@@ -752,8 +747,8 @@ impl AtlasRtView {
         }
     }
 
-    /// Callers must hold no pipeline lock: this takes it, and taking it twice on
-    /// one thread wedges the client.
+    /// Callers must not hold the pipeline lock. This method acquires it, and
+    /// reacquiring it on the same thread deadlocks.
     fn apply_batch(&mut self, planned: batch::Batch) -> bool {
         let Some(pipeline) = &self.pipeline else {
             return false;
@@ -878,14 +873,13 @@ impl WorldSource for VoxFile {
 /// Godot's camera pose as the view matrix the renderer's Vulkan projection
 /// expects.
 ///
-/// A `Basis` stores matrix rows, so the camera's axes are one component from
-/// each row: row 0 holds the x of all three axes, and so on. Godot's camera
-/// looks along its local -Z, so its forward is the negated third axis.
+/// A `Basis` stores matrix rows. Each camera axis takes one component from
+/// each row, with row 0 supplying x, row 1 y and row 2 z. Godot's camera looks
+/// along local -Z, so forward is the negated third axis.
 ///
-/// Godot's basis is right handed and the world the renderer holds is left
-/// handed, so the basis is mirrored on world x. Without that mirror the scene
-/// reads flipped left to right against the standalone app, which is the
-/// reference for how a world is meant to look.
+/// Godot's basis is right-handed and the renderer's world is left-handed.
+/// Mirroring the basis on world x prevents a left-right flip relative to the
+/// standalone app, the reference view.
 #[must_use]
 pub fn camera_view(origin: Vector3, basis: Basis) -> glam::Mat4 {
     let [row_0, row_1, row_2] = basis.rows;

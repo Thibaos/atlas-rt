@@ -79,7 +79,7 @@ pub struct LoadedWorld {
     pub palette: [Vec3; 256],
 }
 
-/// What a job left behind.
+/// The result of a completed background job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finished {
     Loaded,
@@ -97,7 +97,7 @@ pub trait WorldSource: Send {
     fn read(&self) -> Result<Vec<u8>, String>;
 }
 
-/// How far the renderer has to have got for a frame to carry a submitted batch.
+/// The renderer generation a frame must reach to include a submitted batch.
 #[derive(Clone, Copy, Debug)]
 pub struct Residency {
     generation: u64,
@@ -125,8 +125,8 @@ enum JobState {
     Done,
 }
 
-/// What a job asks the view to hold when its batch has been carried: the world
-/// it loaded, or no world at all.
+/// The requested view state after applying the batch, either the loaded world
+/// or no world.
 #[derive(Clone, Copy)]
 enum Outcome {
     Load,
@@ -185,8 +185,8 @@ impl WorldJob {
         Status::from_code(self.status.load(Ordering::Acquire))
     }
 
-    /// How far the job in flight has got, 0 to 1. A job that is not in flight
-    /// reads 1, so a host that polls until the status settles holds the maximum.
+    /// Job progress from 0 to 1. Returns 1 when no job is in flight, so a host
+    /// polling until the status settles retains full progress.
     #[must_use]
     pub fn progress(&self) -> f64 {
         if self.status() == Status::Loading {
@@ -201,9 +201,8 @@ impl WorldJob {
         lock(&self.error).clone()
     }
 
-    /// Declares the view to hold no world, for a clear that had nothing left to
-    /// take away: no batch is submitted, so the job is done on this call and
-    /// stops holding.
+    /// Completes a clear when no world remains. No batch is submitted, and the
+    /// job becomes empty and stops holding on this call.
     pub fn no_world(&mut self) {
         lock(&self.job).state = JobState::Done;
         self.status.store(STATUS_EMPTY, Ordering::Release);
@@ -342,10 +341,9 @@ impl WorldJob {
         lock(&self.job).display.admitted(version)
     }
 
-    /// Whether a job that finished its background work is waiting for the frame
-    /// that carries it. The job is past its work but not done, so it is still in
-    /// flight. A job whose carrying frame was admitted is `Done`, so it stops
-    /// holding in the same turn its status settles.
+    /// Whether background work has finished but the job still awaits a frame
+    /// that includes its batch. The job remains in flight until that frame is
+    /// admitted, when it becomes `Done` and its status settles.
     #[must_use]
     pub fn holding(&self) -> bool {
         matches!(
@@ -354,10 +352,10 @@ impl WorldJob {
         )
     }
 
-    /// Records that the frame carrying the submitted batch was admitted, which
-    /// is when the view holds what the job asked for. A load leaves a world
-    /// resident and a clear leaves none, and the counter reaches the top either
-    /// way, so the host's bar ends when the view does.
+    /// Completes the job when the frame containing its batch is admitted and
+    /// the view shows the requested result. A load leaves a resident world and
+    /// a clear leaves none. Both set progress to 1 so the host's bar completes
+    /// with the view.
     pub fn arrive(&self) {
         let status = {
             let mut job = lock(&self.job);
@@ -374,9 +372,9 @@ impl WorldJob {
         self.status.store(status, Ordering::Release);
     }
 
-    /// The submitted batch is the renderer's now, so the job is no longer
-    /// holding work. It is still in flight, and still refuses, until the frame
-    /// that carries the batch is admitted.
+    /// Marks the batch as submitted to the renderer. The job no longer holds
+    /// the work but remains in flight and refuses new requests until a frame
+    /// containing the batch is admitted.
     pub fn taken(&self) {
         lock(&self.job).state = JobState::Submitted;
     }
@@ -400,7 +398,7 @@ impl WorldJob {
         Some(loaded)
     }
 
-    /// Records how far the renderer has to have got for the job to be complete.
+    /// Records the renderer generation required to complete the job.
     pub fn record(&self, residency: Residency) {
         lock(&self.job).residency = Some(residency);
     }

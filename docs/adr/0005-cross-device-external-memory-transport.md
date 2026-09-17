@@ -38,7 +38,7 @@ path remains the fallback behind the same output interface.
   so the layout-handoff convention is needed here too.
 - **CPU copy as the primary path.** Rejected: readback plus ImageTexture
   upload costs ~2 GB/s one-way host traffic at 4K60, ~4 GB/s counting
-  readback and upload; kept as the fallback behind the same output
+  readback and upload. It stays the fallback behind the same output
   interface, never the performance path.
 - **DLL injection or waiting for upstream.** Ruled out at charter: the
   VulkanHooks seam is compile-in and unreachable from GDExtension (research
@@ -46,9 +46,8 @@ path remains the fallback behind the same output interface.
 
 ## Consequences
 
-- Two devices live side by side. A renderer failure's blast radius stays
-  inside the extension; Godot's device state is untouched by atlas-rt and
-  vice versa.
+- Two devices live side by side. A renderer failure stays inside the
+  extension; Godot's device state is untouched by atlas-rt and vice versa.
 - The hook's only mutation is appending three extension strings; the
   create-info passes through otherwise (ticket 02). Distribution: players
   receive the exported game on the custom 4.7.2 template binary; extension

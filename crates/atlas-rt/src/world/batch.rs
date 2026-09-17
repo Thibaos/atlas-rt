@@ -6,11 +6,10 @@ use crate::world::snapshot::MicroChunkSnapshot;
 /// The coordinates the renderer holds content for.
 pub type TrackedCoords = FxHashSet<IVec3>;
 
-/// A planned batch of Snapshots and the coordinates it leaves tracked.
+/// Planned snapshots and the coordinates tracked after applying them.
 ///
-/// The change queue coalesces last-wins per coordinate, so within `snapshots`
-/// the last entry for a coordinate is the content that survives. `tracked`
-/// holds the coordinates that carry content once the batch is applied.
+/// The change queue keeps the last entry in `snapshots` for each coordinate.
+/// `tracked` contains the coordinates with content after the batch is applied.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Batch {
     pub snapshots: Vec<MicroChunkSnapshot>,
@@ -23,8 +22,7 @@ pub fn plan_edit(incoming: Vec<MicroChunkSnapshot>, tracked: &TrackedCoords) -> 
     assemble(tracked, incoming)
 }
 
-/// A zero-mask snapshot for every tracked coordinate, and no tracked coordinate
-/// left.
+/// Clears every tracked coordinate with a zero-mask snapshot and stops tracking it.
 #[must_use]
 pub fn plan_clear(tracked: &TrackedCoords) -> Batch {
     assemble(tracked, clears(tracked))

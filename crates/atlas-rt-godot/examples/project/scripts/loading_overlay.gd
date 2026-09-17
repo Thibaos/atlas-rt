@@ -1,10 +1,9 @@
 class_name LoadingOverlay
 extends Control
 
-# Reports the load in flight: the world being loaded, how far it has got, and
-# the reason if it failed. Main owns one so the world buttons have something to
-# tell when a load starts, and the atlas passthroughs stay the only thing that
-# calls the view.
+# Shows the world being loaded, progress and any failure reason. Main owns the
+# overlay, which world buttons notify when a load starts. Only the atlas
+# passthroughs call the view.
 
 var _body: Control
 var _title: Label

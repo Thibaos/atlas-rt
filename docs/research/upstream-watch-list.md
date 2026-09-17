@@ -1,11 +1,13 @@
 # Upstream watch list and re-evaluation criteria - Godot integration
 
-Charter posture: watch and gate. ADR 0005 (cross-device external memory, CPU-fence
-bridge) is the standing transport; ADR 0007 records the GPU-side semaphore bridge as
-upstream-gated. Everything below is fetched from the GitHub API and master's current
-sources, second week of 2026-09. The question for each item is which of three gates it
-opens, and whether it reopens the transport decision (ADR 0005) or only changes the
-delivery path (how extensions and sync get enabled on a stock engine).
+The charter calls for watching upstream changes before proceeding. ADR 0005
+(cross-device external memory, CPU-fence bridge) remains the transport decision.
+ADR 0007 records the GPU-side semaphore bridge as dependent on upstream changes.
+
+Everything below was fetched from the GitHub API and master's current sources in the
+second week of 2026-09. Each item is assessed against three named gates. A change may
+reopen the transport decision (ADR 0005) or only change the delivery path, meaning how
+extensions and sync get enabled on a stock engine.
 
 Gates keyed to the plan:
 
@@ -31,7 +33,7 @@ actually got enabled. Master's extension registration
 [rendering_device_driver_vulkan.cpp L562-620](https://github.com/godotengine/godot/blob/master/drivers/vulkan/rendering_device_driver_vulkan.cpp)
 still requests no external-memory or external-semaphore extension on any platform, so
 not landed. Review pressure is mild: one review (AThousandShips, COMMENTED, 2026-01-14),
-no maintainer approval or concern. Momentum is the concern the other way: four
+no maintainer approval or concern. Evidence of demand comes from four
 independent real-hardware testimonials between April and August 2026 (D3D11 streaming,
 live broadcast, hardware video decode, and an XREAL/GL external-semaphore case in the
 2026-08-01 comment), plus a duplicate use case ([#122335](https://github.com/godotengine/godot/pull/122335)) closed in its favor.
@@ -88,10 +90,10 @@ endorsement.
   on #114940 (the proposal's only vehicle). The PR landing closes the proposal by
   implementation, so one watch point covers both.
 - Gate: **G3**, via the PR. Same re-evaluation scope as #114940 (delivery).
-- Secondary signal: a maintainer redesign on the proposal, i.e. a Godot-side surface
+- Secondary signal: a maintainer redesign on the proposal, i.e. a Godot-side API
   other than the string-array setting, such as a dedicated texture-sharing API on
   RenderingDevice. That would supersede our raw-Vulkan allocation-and-import block
-  with a supported surface; still delivery, still not ADR 0005.
+  with a supported API; this still changes delivery, not ADR 0005.
 
 ## Proposal [#15210](https://github.com/godotengine/godot-proposals/issues/15210) - enable `VK_KHR_external_memory` (+_win32/_fd) opportunistically for zero-copy sharing
 
@@ -114,14 +116,14 @@ since 2025-01-17, no milestone. Searches for an implementing PR (semaphore_creat
 semaphore_create_from_extension, explicit-semaphore RD support) return nothing open in
 godotengine/godot. The proposal's own plan bundles external-semaphore enabling plus
 `semaphore_create_from_extension` alongside `texture_create_from_extension`, i.e. the
-same seam shape we use.
+same API pattern we use.
 
 - Landed signal: a merged PR adding explicit-semaphore methods on RenderingDevice
   (watch `servers/rendering/rendering_device.h` for `semaphore_create` /
-  `semaphore_create_from_extension` / a wait-signal surface taking an external
+  `semaphore_create_from_extension` / a wait-signal API taking an external
   handle). Per the 4.7 pattern (finding 5, PR #118377), a ClassDB-bound method is also
   GDExtension-reachable even when marked experimental.
-- Gate: **G2**. Public RD has no external-wait surface, so v1 bridges sync with
+- Gate: **G2**. Public RD has no external-wait API, so v1 bridges sync with
   host-time CPU fences (ADR 0007); an external-semaphore API on RD is precisely what
   the GPU-side path waits on. Note the partial route: if #114940 lands first, enabling
   `VK_KHR_external_semaphore_fd`/`_win32` through the setting and doing signal/wait
@@ -188,7 +190,7 @@ or extensions return no open items; the matches are OpenXR feature PRs (#96439,
 - The check that outranks PR state: master's `drivers/vulkan/rendering_device_driver_vulkan.cpp`.
   The device-extension list and `max_queue_count_per_family` in that file are ground
   truth for G1 and G3 and settle any PR-state ambiguity.
-- No item is close to a gate. #114940 has energy but lacks review; the spare-queue
+- No item is close to satisfying a gate. #114940 has interest but lacks review; the spare-queue
   change has neither proposal nor PR; #11567 is dormant for 19 months, #11142 for 21.
   Nothing in 2026-09 changed the plan's assumptions: custom build stays the delivery,
   and reopen risks are nil.

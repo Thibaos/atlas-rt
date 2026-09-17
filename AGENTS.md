@@ -34,4 +34,3 @@ Headless is still the right way to parse-check a script:
 
     <godot-fork>\bin\godot.windows.editor.x86_64.exe --headless --path <project> \
         --check-only --script res://<script>
-

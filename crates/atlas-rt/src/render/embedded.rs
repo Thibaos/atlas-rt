@@ -57,9 +57,9 @@ pub struct EmbeddedPipeline {
     frame: usize,
 }
 
-/// Whether a store apply left the content a frame draws different: a region
-/// entered, left, or took new Snapshots. The report's rebuild log and TLAS flags
-/// describe the build, not the content, so they cannot answer this.
+/// Whether applying the batch changed frame content by adding or removing a
+/// resident region, or updating its snapshots. The report's rebuild log and
+/// TLAS flags describe the build and cannot determine content changes.
 const fn content_changed(report: &ApplyReport) -> bool {
     !report.became_resident.is_empty()
         || !report.left_resident.is_empty()
@@ -69,9 +69,9 @@ const fn content_changed(report: &ApplyReport) -> bool {
 /// The version stamped on published frames, and the change-queue generation it
 /// has accounted for.
 ///
-/// The version turns over when a frame takes delivery of a batch, which is not
-/// the same as the batch changing something: a load whose content already
-/// matches the store still has to reopen a gate the host closed on it.
+/// The version advances when a frame receives a batch, even if the content
+/// already matches the store. Such a load must still reopen the host's display
+/// gate.
 #[derive(Clone, Copy, Debug, Default)]
 struct BatchDelivery {
     version: u64,
@@ -390,10 +390,9 @@ impl EmbeddedPipeline {
         self.delivery.extent()
     }
 
-    /// The version the frames produced from now on carry. It turns over in the
-    /// frame that takes delivery of a batch, so the host can hold delivery back
-    /// until the content it asked for has reached the store. Recorded by the
-    /// host as it asks for a world to go away.
+    /// The version assigned to new frames. It advances when a frame receives a
+    /// batch. The host records it when requesting a world change, then suppresses
+    /// delivery until the requested content reaches the store.
     pub const fn batch_version(&self) -> u64 {
         self.batch.version()
     }

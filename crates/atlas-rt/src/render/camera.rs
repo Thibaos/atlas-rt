@@ -1,12 +1,9 @@
 use glam::{Mat4, Vec3, Vec4};
 
-/// The view matrix the ray generator expects: the camera's right on view x, its
-/// up on view y, its forward on view z.
+/// Builds the ray generator's world-to-view matrix.
 ///
-/// `axes` are the camera's own right, up and forward in world space, so its
-/// `forward` is the direction the camera looks along. Each lands in the row
-/// carrying the view axis it names, which is what makes the matrix a
-/// world-to-view transform.
+/// `axes` are the camera's right, up and viewing direction in world space.
+/// They form the matrix rows, mapping to view x, y and z, respectively.
 #[must_use]
 pub fn camera_view(origin: Vec3, axes: [Vec3; 3]) -> Mat4 {
     let [right, up, forward] = axes;
@@ -24,14 +21,12 @@ pub fn camera_view(origin: Vec3, axes: [Vec3; 3]) -> Mat4 {
     )
 }
 
-/// The world mirror a host camera needs to draw the scene the way the standalone
-/// app draws it.
+/// Mirrors a host camera's right axis to match the standalone app's view.
 ///
-/// The renderer holds the world left handed and the ray generator turns view +x
-/// into screen right, while a host hands over a right handed camera basis. Fed
-/// in unchanged, a host draws the world's +x on the other side of the frame and
-/// the scene reads mirrored. Mirroring the camera's right axis onto the world
-/// axis the world is already mirrored on cancels it.
+/// The renderer uses a left-handed world, and the ray generator maps view +x to
+/// screen right. An unchanged right-handed host basis puts world +x on the
+/// opposite side of the frame. Negating the camera's right axis compensates for
+/// the world's x mirror.
 #[must_use]
 #[allow(clippy::arithmetic_side_effects)]
 pub fn mirror_right(axes: [Vec3; 3]) -> [Vec3; 3] {
@@ -45,8 +40,8 @@ pub fn mirror_right(axes: [Vec3; 3]) -> [Vec3; 3] {
 mod tests {
     use super::*;
 
-    /// World units. Two constructions of the same view agree to this much, which
-    /// f32 costs at the eye distances this renderer works at.
+    /// Tolerance in world units for f32 differences between equivalent views
+    /// at the renderer's camera distances.
     const EPSILON: f32 = 1.0e-2;
 
     fn near(actual: f32, expected: f32) -> bool {
@@ -74,8 +69,7 @@ mod tests {
         (rotation.mul_vec3(Vec3::NEG_Z), rotation.mul_vec3(Vec3::Y))
     }
 
-    /// A host camera basis as a host hands one over: the camera's own axes,
-    /// right handed because a host's are, so its right is `forward x up`.
+    /// A right-handed host camera basis, with right computed as `forward x up`.
     fn host_basis(yaw: f32, pitch: f32) -> [Vec3; 3] {
         let (forward, up) = pose(yaw, pitch);
 

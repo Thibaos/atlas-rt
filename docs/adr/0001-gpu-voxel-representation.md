@@ -1,21 +1,41 @@
 # GPU voxel pools and in-shader voxel resolution
 
-The renderer represents voxels on the GPU as per-Region buffer voxel pools (BDA-addressed; per non-empty Micro-chunk a 64-byte Occupancy mask plus popcount-compacted u8 material bytes, found through a u32 offset table), and resolves a voxel from an acceleration-structure hit entirely in the intersection shader: micro-chunk AABBs are trimmed to their occupied bounds and authored in absolute region-local coordinates, so the hit position alone yields the micro-chunk and cell; the DDA commits via reportIntersectionEXT(t, material_index), the material riding the 8-bit hitKind so closest-hit stays a palette lookup and the payload stays {color, t}.
+The renderer stores voxels in one GPU buffer pool per Region, addressed through
+BDA. Each non-empty Micro-chunk has a 64-byte Occupancy mask and
+popcount-compacted u8 material bytes, located through a u32 offset table.
+
+The intersection shader resolves voxel hits. Micro-chunk AABBs use absolute
+region-local coordinates and are trimmed to occupied bounds, so the hit position
+identifies the micro-chunk and cell. The DDA commits a hit with
+`reportIntersectionEXT(t, material_index)`. The 8-bit `hitKind` carries the
+material index, leaving closest-hit to look up the palette entry and the payload
+to store `{color, t}`.
 
 ## Status
 
-accepted (rendering-core ticket 04, 2026-08-10)
+Accepted, rendering-core ticket 04, 2026-08-10.
 
-## Considered Options
+## Considered options
 
-- **Textures / bindless sampled images per micro-chunk**. Rejected: no filtering need for discrete palette indices, and sparse micro-chunks need indirection anyway.
-- **Dense fixed 512B material slabs per micro-chunk**. Rejected: ~8x memory waste on sparse micro-chunks; the one popcount per committed hit is negligible (material sampling is not the bottleneck).
-- **Material via SBT record offset or payload**. Rejected: cannot vary per primitive within a region / wastes payload bandwidth closest-hit doesn't need.
-- **Full 8^3 hulls**. Rejected by owner: trimmed hulls (Teardown finding 3) avoid intersection-shader invocations for rays that miss a sparse
-  micro-chunk's occupied sub-volume.
+- **Textures / bindless sampled images per micro-chunk.** Rejected. Discrete
+  palette indices need no filtering, and sparse micro-chunks need indirection
+  anyway.
+- **Dense fixed 512B material slabs per micro-chunk.** Rejected. They waste about
+  8x the memory on sparse micro-chunks. One popcount per committed hit costs
+  little; material sampling is not the bottleneck.
+- **Material via SBT record offset or payload.** Rejected. The SBT record offset
+  cannot vary per primitive within a region. The payload would carry data
+  closest-hit does not need.
+- **Full 8^3 hulls.** Rejected by the owner. Trimmed hulls avoid intersection-shader
+  invocations for rays that miss a sparse micro-chunk's occupied sub-volume.
+  See Teardown finding 3.
 
 ## Consequences
 
-- Voxel edits are region-scoped wholesale pool rebuilds + region BLAS rebuilds (compacted block sizes change with popcount); no in-place patching.
-- f32 precision confines to the ray origin/direction and instance transforms (region-local coordinates <= 256); ticket 05's precision question shrinks accordingly.
-- The world's input contract is Micro-chunk snapshots {coords, mask, materials}; the renderer owns the region lattice (the change path is ticket 07).
+- Voxel edits rebuild the whole region pool and region BLAS. Compacted block
+  sizes change with popcount, so there is no in-place patching.
+- f32 precision concerns are limited to ray origins, directions, and instance
+  transforms. Region-local coordinates are <= 256, narrowing ticket 05's
+  precision question.
+- The world supplies Micro-chunk snapshots `{coords, mask, materials}`. The
+  renderer owns the region lattice. Ticket 07 defines the change path.

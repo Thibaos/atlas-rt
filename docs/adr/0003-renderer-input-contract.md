@@ -1,6 +1,32 @@
 # Renderer input contract: snapshots, change queue, BLAS residency
 
-The world hands the renderer **Micro-chunk snapshots**, {global coords, 64-byte Occupancy mask, u8 material indices}, and create, update, and removal are the same message: an emptied Micro-chunk re-snapshots with a zero mask, and coalescing is last-wins per Micro-chunk. The renderer owns the region lattice, derives each region id from global coords (region = 256^3 voxels, origin-aligned; v1 extent ±2048/axis → 16^3 = 4096 regions, exactly the 12-bit region-id budget), and keeps a CPU-side mirror per region as the source for wholesale pool re-packing. A content edit rebuilds only the **region's BLAS, in place**. The TLAS instance references the BLAS by device address, stable across rebuilds, so the **TLAS rebuilds only when a region transitions empty ↔ non-empty** (its instance is created or removed); instance transforms are lattice-static, the custom index is the static region id, and masks are always 0xFF, so there is no instance-level culling (the hardware TLAS rejects per-ray). All rebuilds are **ordered taskgraph nodes** between the consuming trace and the next (pool upload → BLAS build → TLAS build on residency), which makes in-place rebuilds race-free and removes the need for double-buffered back ASes and a flip atomic; the worker keeps only the CPU-side drain/pack. Region memory (BLAS + pool buffer) is **free-listed**: a region becomes resident on its first non-empty Micro-chunk and leaves on its last, with memory returned and reused only after the rebuild sequence that dropped the referencing instance has executed; streaming is batches of snapshots.
+The world supplies Micro-chunk snapshots containing global coordinates, a
+64-byte Occupancy mask, and u8 material indices. Create, update, and removal use
+the same message. An emptied Micro-chunk supplies a zero mask, and the last
+snapshot for each Micro-chunk wins.
+
+The renderer owns the region lattice and derives region ids from global
+coordinates. Each origin-aligned region contains 256^3 voxels. The v1 extent of
+±2048 per axis gives 16^3 = 4096 regions, exactly the 12-bit region-id budget.
+A CPU-side mirror of each region supplies the data for whole-pool repacking.
+
+A content edit rebuilds only the region's BLAS, in place. Its device address
+stays stable, so the TLAS rebuilds only when a region becomes empty or non-empty
+and its instance is removed or created. Instance transforms and custom region
+indices are static; masks are always 0xFF. There is no instance-level culling.
+The hardware TLAS rejects regions per ray.
+
+Rebuilds are ordered between the trace that consumes the old data and the next
+trace: pool upload, BLAS build, then TLAS build if residency changed. The
+original decision used ordered taskgraph nodes; the amendments below describe
+the implemented host-side sequencing. This ordering makes in-place rebuilds
+race-free without double-buffered acceleration structures or an atomic flip.
+The worker only drains and packs CPU data.
+
+Free lists manage region BLAS and pool-buffer memory. A region becomes resident
+on its first non-empty Micro-chunk and leaves when its last Micro-chunk empties.
+Memory can be returned and reused only after the rebuild sequence that removes
+the referencing instance has executed. Streaming uses batches of snapshots.
 
 ## Status
 

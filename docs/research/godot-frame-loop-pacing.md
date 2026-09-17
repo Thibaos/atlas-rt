@@ -1,10 +1,12 @@
 # Godot 4.7.2 frame loop pacing: swapchain depth, vsync blocking, and RenderingDevice frames in flight
 
-Facts for the v1 CPU-fence bridge and its paced rewrite gate (ADR 0005 follow-up): which
-backpressure mechanisms in Godot 4.7.2 actually bound how long a canvas draw that samples the
-extension's Texture2DRD can still be executing on Godot's GPU. The soundness question this
-settles: can Godot's GPU be >= 2 frames behind its CPU, in execution terms, when the extension's
-worker thread rewrites a ring slot two coordinator ticks after Godot last sampled that slot?
+This ADR 0005 follow-up examines the v1 CPU-fence bridge and its paced rewrite condition.
+It identifies which Godot 4.7.2 backpressure mechanisms bound the execution time of a canvas
+draw that samples the extension's Texture2DRD.
+
+The soundness question is whether Godot's GPU can be >= 2 frames behind its CPU in execution
+when the extension's worker thread rewrites a ring slot two coordinator ticks after Godot last
+sampled that slot.
 
 Sources and method. Tag verified as 4.7.2-stable (version.py fetched from
 raw.githubusercontent.com reports major 4, minor 7, patch 2, status stable). No Godot checkout
@@ -152,7 +154,7 @@ _process(i). draw(i) records the canvas sampling of the texture wrapped at post_
 submits Godot frame i, and then swap_buffers advances the slot and _begin_frame stalls on the
 reused slot's fence, which is frame i+1-Q's (rendering_device.cpp L7877-7881, L8048-8051). So by
 the time iteration i's draw returns, Godot frames up to i+1-Q are complete, and the guarantee for
-the sampling frame m+1 lands at the end of draw(m+Q). The worker rewrites the sampled slot at its
+the sampling frame m+1 holds at the end of draw(m+Q). The worker rewrites the sampled slot at its
 frame m+R, submitted at _process(m+R), which runs after draw(m+R-1) and before draw(m+R). Sound
 rewrite requires _process(m+R) to follow the end of draw(m+Q), that is R >= Q+1 (inference from
 the cited lines; the worst case is the fast worker, where the slot wraps at post_draw(m) with m
