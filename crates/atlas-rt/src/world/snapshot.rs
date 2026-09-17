@@ -261,10 +261,10 @@ pub fn emit_snapshots_reporting(
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
+    use crate::world::placement_differential::Rng;
+
     use super::*;
-    use crate::world::testing::Rng;
 
     fn emit_snapshots_two_pass(world: &World) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
         let mut per_microchunk: HashMap<IVec3, Vec<(u32, u8)>, FxBuildHasher> = HashMap::default();

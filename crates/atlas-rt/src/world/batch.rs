@@ -68,7 +68,6 @@ fn assemble(tracked: &TrackedCoords, snapshots: Vec<MicroChunkSnapshot>) -> Batc
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
 mod tests {
     use std::collections::HashMap;
 

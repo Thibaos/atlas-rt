@@ -1,9 +1,4 @@
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::arithmetic_side_effects,
-    clippy::items_after_statements
-)]
 mod load_bench {
     use std::time::{Duration, Instant};
 

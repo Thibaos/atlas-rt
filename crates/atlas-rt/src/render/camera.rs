@@ -36,7 +36,6 @@ pub fn mirror_right(axes: [Vec3; 3]) -> [Vec3; 3] {
 }
 
 #[cfg(test)]
-#[allow(clippy::arithmetic_side_effects)] // the tests compare floating point
 mod tests {
     use super::*;
 

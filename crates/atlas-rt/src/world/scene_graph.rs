@@ -311,8 +311,10 @@ mod tests {
     use glam::{IVec3, UVec3};
 
     use super::VoxelPlacement;
-    use crate::world::grid;
-    use crate::world::testing::{Rng, rotation_bytes};
+    use crate::world::{
+        grid,
+        placement_differential::{Rng, rotation_bytes},
+    };
 
     fn placement(translation: [i32; 3], rotation: u8, size: (u32, u32, u32)) -> VoxelPlacement {
         VoxelPlacement::new(

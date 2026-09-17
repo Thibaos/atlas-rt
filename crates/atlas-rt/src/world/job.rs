@@ -488,14 +488,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 #[cfg(test)]
-#[allow(
-    clippy::unwrap_used,
-    clippy::arithmetic_side_effects,
-    clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    clippy::as_conversions
-)]
 mod tests {
     use std::time::{Duration, Instant};
 

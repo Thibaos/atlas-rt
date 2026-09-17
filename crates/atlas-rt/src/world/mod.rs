@@ -28,9 +28,6 @@ pub mod snapshot;
 #[cfg(test)]
 mod bench;
 
-#[cfg(test)]
-mod testing;
-
 const SHARD_COUNT: usize = 64;
 const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();
 const BUILD_CHUNK: usize = 8_192;
@@ -454,6 +451,8 @@ fn scene_fixture(specs: &[ModelSpec]) -> DotVoxData {
     }
 }
 
+
+
 #[cfg(test)]
 mod placement_differential {
     use std::collections::HashMap;
@@ -466,8 +465,6 @@ mod placement_differential {
 
     use rustc_hash::FxHasher;
 
-    use crate::world::testing::{Rng, rotation_bytes};
-
     use super::grid;
     use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
     use super::{BoundsPolicy, ModelSpec, World, scene_fixture};
@@ -476,6 +473,36 @@ mod placement_differential {
         0, 1, -1, 3, -3, 2047, -2047, 2048, -2048, 2049, -2049, 100_000, -100_000, 1_000_000,
         -1_000_000,
     ];
+
+    pub(crate) struct Rng(u64);
+
+    impl Rng {
+        pub(crate) fn new(seed: u64) -> Self {
+            Self(seed | 1)
+        }
+
+        pub(crate) fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        pub(crate) fn below(&mut self, bound: u64) -> u64 {
+            self.next() % bound
+        }
+    }
+
+    pub(crate) fn rotation_bytes() -> Vec<u8> {
+        (0u8..128)
+            .filter(|byte| {
+                let first = byte & 0b11;
+                let second = (byte >> 2) & 0b11;
+                first != 0b11 && second != 0b11 && first != second
+            })
+            .collect()
+    }
+
 
     fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
         let mut axis = || {

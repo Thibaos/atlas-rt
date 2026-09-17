@@ -34,3 +34,17 @@ Headless is still the right way to parse-check a script:
 
     <godot-fork>\bin\godot.windows.editor.x86_64.exe --headless --path <project> \
         --check-only --script res://<script>
+
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and wayfinder maps are markdown files under `.scratch/`, one directory per feature. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five canonical triage roles, written into each issue's `Status:` line. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+One context: `CONTEXT.md` holds the glossary, `docs/adr/` holds the decisions. See `docs/agents/domain.md`.
