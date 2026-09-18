@@ -29,8 +29,8 @@ use crate::render::{
 use crate::world::{World, snapshot::emit_snapshots};
 
 pub const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_2;
-const PROJ_NEAR: f32 = 0.01;
-const PROJ_FAR: f32 = 10000.0;
+pub const PROJ_NEAR: f32 = 0.01;
+pub const PROJ_FAR: f32 = 10000.0;
 
 pub struct FrameInput {
     pub view: Mat4,

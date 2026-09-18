@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::Context;
-use glam::Mat4;
+use glam::{Mat4, camera::lh::proj::vulkan::perspective};
 
 use winit::{
     application::ApplicationHandler,
@@ -26,10 +26,18 @@ use crate::{
         player::PlayerController,
         schedule::ScheduleController,
     },
-    render::context::RenderContext,
-    render::pipeline::{DEFAULT_FOV, FrameInput, FramePipeline},
-    render::region::task::RenderMode,
-    world::{World, format::open_file, grid::LATTICE_HALF_EXTENT},
+    render::{
+        context::RenderContext,
+        pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR},
+        region::task::RenderMode,
+    },
+    world::{
+        World,
+        format::open_file,
+        grid::LATTICE_HALF_EXTENT,
+        raycast::{raycast, screen_center_ray},
+        snapshot::emit_snapshots,
+    },
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -170,7 +178,7 @@ impl App {
         }
     }
 
-    fn player_view(&mut self) -> Mat4 {
+    fn next_player_view(&mut self) -> Mat4 {
         if self.focused {
             self.player_controller
                 .rotate(self.player_input.mouse_motion);
@@ -180,6 +188,20 @@ impl App {
             .fly_movement(self.delta_time, &self.player_input);
 
         self.player_controller.view()
+    }
+
+    fn raycast(&self, proj: Mat4, view: Mat4) {
+        let ray = screen_center_ray(proj.inverse(), view.inverse());
+        let start = Instant::now();
+        let raycast = raycast(&self.world, ray);
+        let raycast_duration = Instant::now().duration_since(start);
+        if let Some(hit) = raycast {
+            println!(
+                "Raycast hit {} ({}µs)",
+                hit.voxel,
+                raycast_duration.as_micros()
+            );
+        }
     }
 }
 
@@ -225,8 +247,6 @@ impl ApplicationHandler for App {
 
                 self.request_log();
 
-                let view = self.player_view();
-
                 let resized = std::mem::take(&mut self.resize_pending);
 
                 #[cfg(debug_assertions)]
@@ -238,6 +258,12 @@ impl ApplicationHandler for App {
 
                 let view_extent: [u32; 2] =
                     extent.map_or([0, 0], |extent| [extent.width, extent.height]);
+
+                let aspect = extent.map_or(16.0 / 9.0, |e| e.width as f32 / e.height as f32);
+                let view = self.next_player_view();
+                let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
+
+                self.raycast(proj, view);
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(

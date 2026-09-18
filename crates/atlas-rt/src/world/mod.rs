@@ -22,6 +22,7 @@ pub mod format;
 pub mod grid;
 pub mod job;
 pub mod progress;
+pub mod raycast;
 pub mod scene_graph;
 pub mod snapshot;
 
@@ -451,8 +452,6 @@ fn scene_fixture(specs: &[ModelSpec]) -> DotVoxData {
     }
 }
 
-
-
 #[cfg(test)]
 mod placement_differential {
     use std::collections::HashMap;
@@ -502,7 +501,6 @@ mod placement_differential {
             })
             .collect()
     }
-
 
     fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
         let mut axis = || {
