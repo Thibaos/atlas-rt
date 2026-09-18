@@ -1,7 +1,7 @@
 use glam::IVec3;
 use rustc_hash::FxHashSet;
 
-use crate::world::snapshot::MicroChunkSnapshot;
+use super::snapshot::MicroChunkSnapshot;
 
 /// The coordinates the renderer holds content for.
 pub type TrackedCoords = FxHashSet<IVec3>;

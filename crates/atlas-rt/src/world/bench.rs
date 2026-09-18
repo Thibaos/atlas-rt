@@ -6,8 +6,8 @@ mod load_bench {
         render::region::pack::pack_regions,
         world::{
             World,
-            progress::{Progress, Stage},
-            snapshot::{emit_snapshots, emit_snapshots_reporting},
+            load::progress::{Progress, Stage},
+            update::snapshot::{emit_snapshots, emit_snapshots_reporting},
         },
     };
 

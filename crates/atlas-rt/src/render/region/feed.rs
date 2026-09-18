@@ -15,7 +15,7 @@ use crate::{
     render::region::pack::{RegionData, pack_region, pack_regions},
     world::{
         grid::{assert_region_index_in_lattice, region_index_of},
-        snapshot::MicroChunkSnapshot,
+        update::snapshot::MicroChunkSnapshot,
     },
 };
 
@@ -474,7 +474,7 @@ mod tests {
         world::{
             World,
             grid::{MICRO_CHUNK_LENGTH, region_index_of},
-            snapshot::emit_snapshots,
+            update::snapshot::emit_snapshots,
         },
     };
 

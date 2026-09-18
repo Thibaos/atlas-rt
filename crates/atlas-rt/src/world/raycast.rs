@@ -64,7 +64,6 @@ pub fn screen_center_ray(proj_inverse: Mat4, view_inverse: Mat4) -> Ray {
 
 /// The global voxel coordinate a point falls in, matching the renderer's
 /// half-open cells.
-#[allow(clippy::cast_possible_truncation)]
 const fn cell_of(point: Vec3) -> IVec3 {
     IVec3::new(
         point.x.floor() as i32,
@@ -99,7 +98,6 @@ fn starting_normal(direction: Vec3) -> IVec3 {
 
 /// One axis's step, distance to its next boundary crossing, and the spacing
 /// between crossings.
-#[allow(clippy::cast_precision_loss)]
 fn axis_state(origin: f32, direction: f32, cell: i32) -> (i32, f32, f32) {
     if direction == 0.0 {
         return (1, f32::INFINITY, f32::INFINITY);
@@ -141,7 +139,7 @@ fn advance_past(t_next: (f32, f32, f32), t_delta: (f32, f32, f32), entry: f32) -
 }
 
 #[must_use]
-pub fn raycast(world: &World, ray: Ray) -> Option<VoxelHit> {
+fn raycast(world: &World, ray: Ray) -> Option<VoxelHit> {
     let Ray {
         origin,
         direction,

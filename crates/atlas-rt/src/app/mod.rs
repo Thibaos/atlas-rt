@@ -31,13 +31,7 @@ use crate::{
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR},
         region::task::RenderMode,
     },
-    world::{
-        World,
-        format::open_file,
-        grid::LATTICE_HALF_EXTENT,
-        raycast::{raycast, screen_center_ray},
-        snapshot::emit_snapshots,
-    },
+    world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, raycast::screen_center_ray},
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -193,7 +187,7 @@ impl App {
     fn raycast(&self, proj: Mat4, view: Mat4) {
         let ray = screen_center_ray(proj.inverse(), view.inverse());
         let start = Instant::now();
-        let raycast = raycast(&self.world, ray);
+        let raycast = self.world.raycast(ray);
         let raycast_duration = Instant::now().duration_since(start);
         if let Some(hit) = raycast {
             println!(

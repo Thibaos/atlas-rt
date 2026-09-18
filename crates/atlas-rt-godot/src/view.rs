@@ -1,5 +1,10 @@
 use std::sync::{Arc, Mutex, mpsc};
 
+use atlas_rt::world::update::batch::{self, TrackedCoords};
+use atlas_rt::world::update::job::{
+    Finished, Refusal, Residency, Status, WorldSource, WorldUpdateJob,
+};
+use atlas_rt::world::update::snapshot::MicroChunkSnapshot;
 use godot::classes::{
     Camera3D, Control, Engine, IControl, Material, ProjectSettings, RenderingServer,
     ShaderMaterial, Texture2Drd,
@@ -14,12 +19,7 @@ use atlas_rt::render::{
     pipeline::{DEFAULT_FOV, FrameInput},
     region::task::RenderMode,
 };
-use atlas_rt::world::{
-    batch::{self, TrackedCoords},
-    grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
-    job::{Finished, Refusal, Residency, Status, WorldJob, WorldSource},
-    snapshot::MicroChunkSnapshot,
-};
+use atlas_rt::world::grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH};
 
 use crate::worker::{FrameRequest, Worker, lock};
 
@@ -38,7 +38,7 @@ pub struct AtlasRtView {
     gpu: Option<Arc<Mutex<RenderContext>>>,
     pipeline: Option<Arc<Mutex<EmbeddedPipeline>>>,
     worker: Option<Worker>,
-    job: Option<WorldJob>,
+    job: Option<WorldUpdateJob>,
 
     worker_publish_in: Option<mpsc::Receiver<PublishedSlot>>,
     display: DisplayGate,
@@ -114,7 +114,7 @@ impl IControl for AtlasRtView {
                             published_tx,
                         ));
 
-                        let job = WorldJob::new();
+                        let job = WorldUpdateJob::new();
                         job.arrive();
 
                         self.pipeline = Some(shared_pipeline.clone());
@@ -242,7 +242,7 @@ impl AtlasRtView {
     pub fn job_status(&self) -> i32 {
         self.job
             .as_ref()
-            .map_or(Status::Failed, WorldJob::status)
+            .map_or(Status::Failed, WorldUpdateJob::status)
             .code()
             .into()
     }
@@ -254,7 +254,7 @@ impl AtlasRtView {
         GString::from(
             self.job
                 .as_ref()
-                .map_or(Status::Failed, WorldJob::status)
+                .map_or(Status::Failed, WorldUpdateJob::status)
                 .name(),
         )
     }
@@ -265,7 +265,7 @@ impl AtlasRtView {
     pub fn job_error(&self) -> GString {
         self.job
             .as_ref()
-            .and_then(WorldJob::error)
+            .and_then(WorldUpdateJob::error)
             .map_or_else(GString::new, |reason| GString::from(reason.as_str()))
     }
 
@@ -273,7 +273,7 @@ impl AtlasRtView {
     /// is in flight.
     #[func]
     pub fn job_progress(&self) -> f64 {
-        self.job.as_ref().map_or(1.0, WorldJob::progress)
+        self.job.as_ref().map_or(1.0, WorldUpdateJob::progress)
     }
 
     #[func]
@@ -495,7 +495,7 @@ impl AtlasRtView {
     /// Clears for the outgoing world ahead of the incoming snapshots, uploads
     /// the palette, and submits the whole thing as one batch.
     fn plan_load(&mut self) {
-        let Some(loaded) = self.job.as_ref().and_then(WorldJob::take_loaded) else {
+        let Some(loaded) = self.job.as_ref().and_then(WorldUpdateJob::take_loaded) else {
             return;
         };
 

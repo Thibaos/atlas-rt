@@ -4,9 +4,7 @@ use glam::{IVec3, UVec3};
 #[cfg(test)]
 use glam::{Mat4, Vec3A, Vec3Swizzles};
 
-use crate::world::{InsertResult, grid};
-
-use super::{BoundsPolicy, World};
+use crate::world::{BoundsPolicy, InsertResult, World, grid};
 
 pub struct SceneGraphTraverser<'world, 'scene> {
     pub world: &'world mut World,

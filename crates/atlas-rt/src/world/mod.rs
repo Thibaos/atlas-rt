@@ -9,7 +9,7 @@ use glam::IVec3;
 use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 
-use crate::world::scene_graph::{SceneGraphTraverser, VoxelPlacement};
+use crate::world::load::scene_graph::{SceneGraphTraverser, VoxelPlacement};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
@@ -17,14 +17,11 @@ pub enum BoundsPolicy {
     Clip,
 }
 
-pub mod batch;
 pub mod format;
 pub mod grid;
-pub mod job;
-pub mod progress;
+pub mod load;
 pub mod raycast;
-pub mod scene_graph;
-pub mod snapshot;
+pub mod update;
 
 #[cfg(test)]
 mod bench;
@@ -465,7 +462,7 @@ mod placement_differential {
     use rustc_hash::FxHasher;
 
     use super::grid;
-    use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
+    use super::load::scene_graph::{SceneGraphTraverser, VoxelPlacement};
     use super::{BoundsPolicy, ModelSpec, World, scene_fixture};
 
     const TRANSLATIONS: &[i32] = &[

@@ -16,17 +16,20 @@ use vulkano_taskgraph::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-use crate::render::{
-    context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
-    region::{
-        feed::RendererInput,
-        residency::RegionStore,
-        task::{
-            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+use crate::world::World;
+use crate::{
+    render::{
+        context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
+        region::{
+            feed::RendererInput,
+            residency::RegionStore,
+            task::{
+                RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+            },
         },
     },
+    world::update::snapshot::emit_snapshots,
 };
-use crate::world::{World, snapshot::emit_snapshots};
 
 pub const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_2;
 pub const PROJ_NEAR: f32 = 0.01;

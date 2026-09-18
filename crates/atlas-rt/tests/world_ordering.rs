@@ -1,16 +1,16 @@
 //! The load, edit, and clear paths driven through the real region feed.
 
-#![allow(clippy::unwrap_used)]
-
 use atlas_rt::{
     render::region::{
         feed::RendererInput,
         pack::{RegionData, pack_regions},
     },
     world::{
-        batch::{TrackedCoords, plan_clear, plan_edit, plan_load},
         grid::region_index_of,
-        snapshot::MicroChunkSnapshot,
+        update::{
+            batch::{TrackedCoords, plan_clear, plan_edit, plan_load},
+            snapshot::MicroChunkSnapshot,
+        },
     },
 };
 use glam::IVec3;

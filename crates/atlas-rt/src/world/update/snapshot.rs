@@ -7,7 +7,7 @@ use rustc_hash::FxBuildHasher;
 use crate::world::{
     World,
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
-    progress::{Progress, VOXEL_STEP},
+    load::progress::{Progress, VOXEL_STEP},
 };
 
 const MICRO_EDGE: i32 = MICRO_CHUNK_LENGTH.cast_signed();

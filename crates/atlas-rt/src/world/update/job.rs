@@ -15,10 +15,11 @@ use crate::{
     world::{
         World,
         format::{get_palette, open_bytes},
-        progress::{Progress, Stage},
-        snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
+        load::progress::{Progress, Stage},
     },
 };
+
+use super::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting};
 
 const STATUS_EMPTY: u8 = 0;
 const STATUS_LOADING: u8 = 1;
@@ -153,7 +154,7 @@ pub enum Refusal {
 }
 
 /// The load and clear jobs, one at a time, with the world they leave behind.
-pub struct WorldJob {
+pub struct WorldUpdateJob {
     status: AtomicU8,
     error: Mutex<Option<String>>,
     progress: Arc<Progress>,
@@ -162,7 +163,7 @@ pub struct WorldJob {
     job: Mutex<Job>,
 }
 
-impl WorldJob {
+impl WorldUpdateJob {
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -436,13 +437,13 @@ impl WorldJob {
     }
 }
 
-impl Default for WorldJob {
+impl Default for WorldUpdateJob {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Drop for WorldJob {
+impl Drop for WorldUpdateJob {
     fn drop(&mut self) {
         self.join();
     }
@@ -512,7 +513,7 @@ mod tests {
 
     /// Runs the frame loop until the background thread has handed something
     /// over. The host's own loop is the only other thing that calls `poll`.
-    fn poll_until(job: &mut WorldJob) -> Finished {
+    fn poll_until(job: &mut WorldUpdateJob) -> Finished {
         let deadline = Instant::now() + Duration::from_secs(5);
 
         loop {
@@ -562,7 +563,7 @@ mod tests {
 
     #[test]
     fn a_job_starts_with_no_world_and_nothing_in_flight() {
-        let job = WorldJob::new();
+        let job = WorldUpdateJob::new();
 
         assert_eq!(job.status(), Status::Empty);
         assert!(job.error().is_none());
@@ -570,7 +571,7 @@ mod tests {
 
     #[test]
     fn an_accepted_load_reports_loading_before_it_finishes() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         assert!(job.load(Box::new(source(one_voxel_world())), 0).is_ok());
@@ -579,7 +580,7 @@ mod tests {
 
     #[test]
     fn a_second_request_while_one_is_in_flight_is_refused() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
@@ -598,7 +599,7 @@ mod tests {
 
     #[test]
     fn a_load_while_a_clear_is_in_flight_is_refused() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         job.clear(0).unwrap();
@@ -611,7 +612,7 @@ mod tests {
 
     #[test]
     fn a_finished_load_hands_its_work_over_once() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 4).unwrap();
@@ -646,7 +647,7 @@ mod tests {
 
     #[test]
     fn a_finished_load_hands_over_the_palette_that_colours_its_snapshots() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         let mut rgba = [0u8; 1024];
@@ -683,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_malformed_world_fails_without_killing_the_thread() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         job.load(Box::new(source(vec![0xde, 0xad, 0xbe, 0xef])), 0)
@@ -705,7 +706,7 @@ mod tests {
 
     #[test]
     fn a_clear_reaches_the_empty_state_on_the_frame_that_carries_it() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
 
         job.clear(0).unwrap();
@@ -725,7 +726,7 @@ mod tests {
 
     #[test]
     fn only_the_generation_the_batch_landed_in_is_resident() {
-        let job = WorldJob::new();
+        let job = WorldUpdateJob::new();
 
         job.record(Residency::new(9));
 
@@ -736,7 +737,7 @@ mod tests {
 
     #[test]
     fn only_the_first_admissible_frame_reports_a_completion() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.load(Box::new(source(one_voxel_world())), 7).unwrap();
         job.settle();
@@ -749,7 +750,7 @@ mod tests {
 
     #[test]
     fn a_load_whose_batch_was_submitted_is_still_in_flight() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
         job.settle();
@@ -776,7 +777,7 @@ mod tests {
 
     #[test]
     fn a_job_reports_how_far_its_load_has_got() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
@@ -808,7 +809,7 @@ mod tests {
 
     #[test]
     fn a_settled_load_whose_work_is_untaken_is_still_in_flight() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
         job.settle();
@@ -824,7 +825,7 @@ mod tests {
 
     #[test]
     fn a_clear_reaches_full_progress_when_it_is_carried() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.clear(0).unwrap();
 
@@ -839,7 +840,7 @@ mod tests {
 
     #[test]
     fn a_failed_load_still_reaches_full_progress() {
-        let mut job = WorldJob::new();
+        let mut job = WorldUpdateJob::new();
         job.arrive();
         job.load(Box::new(source(vec![0xde, 0xad])), 0).unwrap();
 
