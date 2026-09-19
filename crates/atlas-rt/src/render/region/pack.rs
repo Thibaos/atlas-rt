@@ -224,8 +224,8 @@ mod tests {
     #[test]
     fn packs_across_region_boundary() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(255, 0, 0), 1);
-        world.insert_voxel_at(IVec3::new(256, 0, 0), 2);
+        world.set_voxel(IVec3::new(255, 0, 0), 1);
+        world.set_voxel(IVec3::new(256, 0, 0), 2);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let regions = pack_regions(&snapshots).unwrap();
@@ -259,9 +259,9 @@ mod tests {
     fn pack_layout_invariants() {
         let mut world = World::default();
 
-        world.insert_voxel_at(IVec3::new(0, 0, 0), 1);
-        world.insert_voxel_at(IVec3::new(7, 7, 7), 2);
-        world.insert_voxel_at(IVec3::new(8, 0, 0), 3);
+        world.set_voxel(IVec3::new(0, 0, 0), 1);
+        world.set_voxel(IVec3::new(7, 7, 7), 2);
+        world.set_voxel(IVec3::new(8, 0, 0), 3);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let regions = pack_regions(&snapshots).unwrap();
@@ -323,9 +323,9 @@ mod tests {
         for _ in 0..voxel_count {
             let material = u8::try_from((rng.draw() & 0xFF) | 1).unwrap_or(1);
 
-            world.insert_voxel_at(
+            world.set_voxel(
                 IVec3::new(offset(&mut rng), offset(&mut rng), offset(&mut rng)),
-                u32::from(material),
+                material,
             );
         }
 
@@ -358,13 +358,13 @@ mod tests {
     #[test]
     fn parallel_packing_matches_serial_oracle() {
         let mut boundary = World::default();
-        boundary.insert_voxel_at(IVec3::new(255, 0, 0), 1);
-        boundary.insert_voxel_at(IVec3::new(256, 0, 0), 2);
+        boundary.set_voxel(IVec3::new(255, 0, 0), 1);
+        boundary.set_voxel(IVec3::new(256, 0, 0), 2);
 
         let mut layout = World::default();
-        layout.insert_voxel_at(IVec3::new(0, 0, 0), 1);
-        layout.insert_voxel_at(IVec3::new(7, 7, 7), 2);
-        layout.insert_voxel_at(IVec3::new(8, 0, 0), 3);
+        layout.set_voxel(IVec3::new(0, 0, 0), 1);
+        layout.set_voxel(IVec3::new(7, 7, 7), 2);
+        layout.set_voxel(IVec3::new(8, 0, 0), 3);
 
         for world in [
             boundary,

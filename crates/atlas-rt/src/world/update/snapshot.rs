@@ -261,8 +261,8 @@ pub fn emit_snapshots_reporting(
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::world::placement_differential::Rng;
+pub(crate) mod tests {
+    use crate::world::placement_differential::{Rng, u8_below};
 
     use super::*;
 
@@ -334,11 +334,7 @@ mod tests {
         i32::try_from(rng.below(bound)).unwrap_or(i32::MAX)
     }
 
-    fn u32_below(rng: &mut Rng, bound: u64) -> u32 {
-        u32::try_from(rng.below(bound)).unwrap_or(u32::MAX)
-    }
-
-    fn random_world(rng: &mut Rng) -> World {
+    pub(crate) fn random_world(rng: &mut Rng) -> World {
         let mut world = World::default();
 
         for _ in 0..rng.below(8).saturating_add(1) {
@@ -357,7 +353,7 @@ mod tests {
                             continue;
                         }
 
-                        world.insert_voxel_at(center + IVec3::new(dx, dy, dz), u32_below(rng, 256));
+                        world.set_voxel(center + IVec3::new(dx, dy, dz), u8_below(rng, 256));
                     }
                 }
             }
@@ -370,7 +366,7 @@ mod tests {
                 i32_below(rng, 128).saturating_sub(64),
             );
 
-            world.insert_voxel_at(position, u32_below(rng, 256));
+            world.set_voxel(position, u8_below(rng, 256));
         }
 
         world
@@ -397,12 +393,12 @@ mod tests {
         for x in 0..10 {
             for y in 0..3 {
                 for z in 0..3 {
-                    world.insert_voxel_at(IVec3::new(x, y, z), 3);
+                    world.set_voxel(IVec3::new(x, y, z), 3);
                 }
             }
         }
 
-        world.insert_voxel_at(IVec3::new(-1, -1, -1), 5);
+        world.set_voxel(IVec3::new(-1, -1, -1), 5);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let total: usize = snapshots.iter().map(|s| s.occupied_count()).sum();
@@ -416,10 +412,10 @@ mod tests {
     #[test]
     fn materials_in_bit_order() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(0, 0, 0), 1); // idx 0
-        world.insert_voxel_at(IVec3::new(7, 0, 0), 2); // idx 7
-        world.insert_voxel_at(IVec3::new(0, 1, 0), 3); // idx 8
-        world.insert_voxel_at(IVec3::new(0, 0, 1), 4); // idx 64
+        world.set_voxel(IVec3::new(0, 0, 0), 1); // idx 0
+        world.set_voxel(IVec3::new(7, 0, 0), 2); // idx 7
+        world.set_voxel(IVec3::new(0, 1, 0), 3); // idx 8
+        world.set_voxel(IVec3::new(0, 0, 1), 4); // idx 64
 
         let snapshots = emit_snapshots(&world).unwrap();
         assert_eq!(snapshots.len(), 1);

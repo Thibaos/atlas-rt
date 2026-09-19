@@ -17,6 +17,7 @@ pub enum BoundsPolicy {
     Clip,
 }
 
+pub mod edit;
 pub mod format;
 pub mod grid;
 pub mod load;
@@ -265,11 +266,22 @@ impl World {
         self.shard(*position).get(&fold(*position))
     }
 
-    #[cfg(test)]
-    pub(crate) fn insert_voxel_at(&mut self, position: IVec3, material_index: u32) {
+    pub(crate) fn set_voxel(&mut self, position: IVec3, material: u8) {
         Self::assert_in_lattice(&position);
         self.shard_mut(position)
-            .insert(fold(position), material_index);
+            .insert(fold(position), u32::from(material));
+    }
+
+    pub(crate) fn clear_voxel(&mut self, position: IVec3) {
+        Self::assert_in_lattice(&position);
+        self.shard_mut(position).remove(&fold(position));
+    }
+
+    // every write into the shards is a byte, so only an absent voxel is None
+    #[must_use]
+    pub(crate) fn material_at(&self, position: &IVec3) -> Option<u8> {
+        self.get_voxel(position)
+            .and_then(|voxel| u8::try_from(*voxel).ok())
     }
 
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
@@ -497,6 +509,10 @@ mod placement_differential {
                 first != 0b11 && second != 0b11 && first != second
             })
             .collect()
+    }
+
+    pub(crate) fn u8_below(rng: &mut Rng, bound: u64) -> u8 {
+        u8::try_from(rng.below(bound)).unwrap_or(u8::MAX)
     }
 
     fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
@@ -923,8 +939,8 @@ mod tests {
     #[test]
     fn insert_and_contains() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(1, 1, 1), 1);
-        world.insert_voxel_at(IVec3::new(-8, 19, -15), 2);
+        world.set_voxel(IVec3::new(1, 1, 1), 1);
+        world.set_voxel(IVec3::new(-8, 19, -15), 2);
         assert!(world.contains(&IVec3::new(1, 1, 1)));
         assert!(world.contains(&IVec3::new(-8, 19, -15)));
         assert!(!world.contains(&IVec3::new(0, 0, 0)));
@@ -933,8 +949,8 @@ mod tests {
     #[test]
     fn voxel_count_and_bounds() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(0, 0, 0), 1);
-        world.insert_voxel_at(IVec3::new(5, -3, 2), 2);
+        world.set_voxel(IVec3::new(0, 0, 0), 1);
+        world.set_voxel(IVec3::new(5, -3, 2), 2);
         assert_eq!(world.voxel_count(), 2);
         assert_eq!(
             world.voxel_bounds(),
@@ -945,8 +961,8 @@ mod tests {
     #[test]
     fn world_extent_is_half_open() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(-2048, 0, 0), 1);
-        world.insert_voxel_at(IVec3::new(2047, 0, 0), 2);
+        world.set_voxel(IVec3::new(-2048, 0, 0), 1);
+        world.set_voxel(IVec3::new(2047, 0, 0), 2);
         assert!(world.contains(&IVec3::new(-2048, 0, 0)));
         assert!(world.contains(&IVec3::new(2047, 0, 0)));
     }
@@ -955,7 +971,7 @@ mod tests {
     #[should_panic(expected = "outside the ±2048 lattice")]
     fn insert_rejects_beyond_lattice() {
         let mut world = World::default();
-        world.insert_voxel_at(IVec3::new(2048, 0, 0), 1);
+        world.set_voxel(IVec3::new(2048, 0, 0), 1);
     }
 
     #[test]

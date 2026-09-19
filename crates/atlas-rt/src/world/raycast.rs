@@ -230,11 +230,11 @@ mod tests {
     const FOV: f32 = std::f32::consts::FRAC_PI_2;
     const TOLERANCE: f32 = 1.0e-3;
 
-    fn world_with(voxels: &[(IVec3, u32)]) -> World {
+    fn world_with(voxels: &[(IVec3, u8)]) -> World {
         let mut world = World::default();
 
         for (position, material) in voxels {
-            world.insert_voxel_at(*position, *material);
+            world.set_voxel(*position, *material);
         }
 
         world

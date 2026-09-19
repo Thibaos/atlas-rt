@@ -702,9 +702,9 @@ mod tests {
     fn startup_batch_matches_direct_pack() {
         let mut world = World::default();
 
-        world.insert_voxel_at(IVec3::new(7, 0, 0), 1);
-        world.insert_voxel_at(IVec3::new(255, 0, 0), 2);
-        world.insert_voxel_at(IVec3::new(256, 0, 0), 3);
+        world.set_voxel(IVec3::new(7, 0, 0), 1);
+        world.set_voxel(IVec3::new(255, 0, 0), 2);
+        world.set_voxel(IVec3::new(256, 0, 0), 3);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let input = RendererInput::new().unwrap();
