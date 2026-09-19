@@ -74,7 +74,7 @@ impl Error for EditError {}
 ///
 /// Returns an [`EditError`] naming the position when an edit lies outside the
 /// voxel lattice or its Micro-chunk lies outside the renderer lattice.
-pub fn apply(
+pub fn edit_world(
     world: &mut World,
     edits: &[VoxelEdit],
     tracked: &TrackedCoords,
@@ -185,7 +185,7 @@ mod tests {
 
     use super::{
         EditError, EditReason, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, VoxelChange,
-        VoxelEdit, apply,
+        VoxelEdit, edit_world,
     };
 
     #[allow(clippy::as_conversions)]
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn a_set_creates_the_chunk_it_lands_in() {
         let mut world = World::default();
-        let batch = apply(&mut world, &[set(0, 0, 0, 5)], &TrackedCoords::default()).unwrap();
+        let batch = edit_world(&mut world, &[set(0, 0, 0, 5)], &TrackedCoords::default()).unwrap();
 
         assert_eq!(batch.snapshots, vec![cell(IVec3::ZERO, 5)]);
         assert_eq!(
@@ -331,11 +331,11 @@ mod tests {
         let origin = IVec3::ZERO;
         let tracked: TrackedCoords = [origin].into_iter().collect();
 
-        let batch = apply(&mut world, &[set(1, 2, 3, 7)], &tracked).unwrap();
+        let batch = edit_world(&mut world, &[set(1, 2, 3, 7)], &tracked).unwrap();
 
         assert!(batch.tracked.contains(&origin));
 
-        let batch = apply(&mut world, &[clear(1, 2, 3)], &batch.tracked).unwrap();
+        let batch = edit_world(&mut world, &[clear(1, 2, 3)], &batch.tracked).unwrap();
 
         assert_eq!(batch.snapshots, vec![MicroChunkSnapshot::cleared(origin)]);
         assert!(batch.tracked.is_empty(), "the emptied chunk is dropped");
@@ -345,7 +345,7 @@ mod tests {
     #[test]
     fn a_clear_of_a_position_the_world_never_held_clears_the_chunk() {
         let mut world = World::default();
-        let batch = apply(&mut world, &[clear(0, 0, 0)], &TrackedCoords::default()).unwrap();
+        let batch = edit_world(&mut world, &[clear(0, 0, 0)], &TrackedCoords::default()).unwrap();
 
         assert_eq!(
             batch.snapshots,
@@ -360,12 +360,13 @@ mod tests {
         let origin = IVec3::new(24, -16, 8);
         let mut world = World::default();
 
-        let batch = apply(&mut world, &[set(24, -16, 8, 9)], &TrackedCoords::default()).unwrap();
+        let batch =
+            edit_world(&mut world, &[set(24, -16, 8, 9)], &TrackedCoords::default()).unwrap();
 
         assert_eq!(batch.snapshots, vec![cell(origin, 9)]);
         assert_eq!(batch.tracked, [origin].into_iter().collect());
 
-        let batch = apply(
+        let batch = edit_world(
             &mut world,
             &[set(24, -16, 8, 9), clear(24, -16, 8)],
             &batch.tracked,
@@ -379,7 +380,7 @@ mod tests {
         );
         assert_eq!(world.voxel_count(), 0, "set then clear leaves it clear");
 
-        let batch = apply(
+        let batch = edit_world(
             &mut world,
             &[clear(24, -16, 8), set(24, -16, 8, 3)],
             &batch.tracked,
@@ -401,7 +402,7 @@ mod tests {
 
         // the tracked set is borrowed, so a rejection cannot change it
         let error: EditError =
-            apply(&mut world, &[set(1, 0, 0, 8), set(2048, 0, 0, 8)], &tracked).unwrap_err();
+            edit_world(&mut world, &[set(1, 0, 0, 8), set(2048, 0, 0, 8)], &tracked).unwrap_err();
 
         assert_eq!(
             error.to_string(),
@@ -432,7 +433,7 @@ mod tests {
     fn materials_come_out_in_ascending_cell_index() {
         let mut world = World::default();
 
-        let batch = apply(
+        let batch = edit_world(
             &mut world,
             &[
                 set(0, 0, 1, 3),
@@ -472,7 +473,7 @@ mod tests {
     fn a_batch_touching_many_chunks_pushes_one_snapshot_each() {
         let mut world = World::default();
 
-        let batch = apply(
+        let batch = edit_world(
             &mut world,
             &[set(0, 0, 0, 1), set(8, 0, 0, 2), clear(16, 0, 0)],
             &TrackedCoords::default(),
@@ -573,7 +574,7 @@ mod tests {
                 .chain([IVec3::new(64, 64, 64)])
                 .collect();
 
-            let batch = apply(&mut world, &edits, &tracked).unwrap();
+            let batch = edit_world(&mut world, &edits, &tracked).unwrap();
 
             let mut compiled: Vec<IVec3> = batch
                 .snapshots
@@ -621,7 +622,7 @@ mod tests {
     fn a_perturbed_snapshot_stops_matching_the_world() {
         let mut world = World::default();
 
-        let batch = apply(
+        let batch = edit_world(
             &mut world,
             &[set(0, 0, 0, 3), set(7, 0, 0, 4)],
             &TrackedCoords::default(),
@@ -666,8 +667,8 @@ mod tests {
         let chunks = chunk_origins(&mut rng, &world);
         let edits = random_edits(&mut rng, &chunks);
 
-        let first = apply(&mut world, &edits, &TrackedCoords::default()).unwrap();
-        let second = apply(&mut world, &edits, &first.tracked).unwrap();
+        let first = edit_world(&mut world, &edits, &TrackedCoords::default()).unwrap();
+        let second = edit_world(&mut world, &edits, &first.tracked).unwrap();
 
         assert_eq!(
             first.snapshots, second.snapshots,

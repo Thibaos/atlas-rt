@@ -17,7 +17,6 @@ pub enum BoundsPolicy {
     Clip,
 }
 
-pub mod edit;
 pub mod format;
 pub mod grid;
 pub mod load;

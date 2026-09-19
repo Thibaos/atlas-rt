@@ -31,7 +31,16 @@ use crate::{
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR},
         region::task::RenderMode,
     },
-    world::{World, format::open_file, grid::LATTICE_HALF_EXTENT, raycast::screen_center_ray},
+    world::{
+        World,
+        format::open_file,
+        grid::LATTICE_HALF_EXTENT,
+        raycast::screen_center_ray,
+        update::{
+            batch::TrackedCoords,
+            edit::{self, VoxelEdit, edit_world},
+        },
+    },
 };
 
 #[allow(clippy::struct_excessive_bools)]
@@ -44,7 +53,8 @@ pub struct App {
     focused: bool,
 
     pub voxel_data: dot_vox::DotVoxData,
-    pub world: Arc<World>,
+    world: World,
+    last_edit_tracked_coords: TrackedCoords,
 
     player_controller: PlayerController,
     player_input: Input,
@@ -83,7 +93,6 @@ impl App {
         if clipped > 0 {
             println!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
         }
-        let world = Arc::new(world);
 
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
@@ -108,6 +117,7 @@ impl App {
 
             voxel_data,
             world,
+            last_edit_tracked_coords: TrackedCoords::default(),
 
             window: None,
             pipeline: None,
@@ -184,17 +194,26 @@ impl App {
         self.player_controller.view()
     }
 
-    fn raycast(&self, proj: Mat4, view: Mat4) {
+    fn raycast(&mut self, proj: Mat4, view: Mat4) {
         let ray = screen_center_ray(proj.inverse(), view.inverse());
-        let start = Instant::now();
         let raycast = self.world.raycast(ray);
-        let raycast_duration = Instant::now().duration_since(start);
+
         if let Some(hit) = raycast {
-            println!(
-                "Raycast hit {} ({}µs)",
-                hit.voxel,
-                raycast_duration.as_micros()
-            );
+            let edit = VoxelEdit {
+                position: hit.voxel,
+                change: edit::VoxelChange::Clear,
+            };
+
+            match edit_world(&mut self.world, &[edit], &self.last_edit_tracked_coords) {
+                Ok(batch) => {
+                    let input = self.pipeline.as_ref().unwrap().input();
+                    input.submit_batch(batch.snapshots).unwrap();
+                    input.wait_until_idle().unwrap();
+
+                    self.last_edit_tracked_coords = batch.tracked;
+                }
+                Err(e) => eprintln!("{e:?}"),
+            }
         }
     }
 }
