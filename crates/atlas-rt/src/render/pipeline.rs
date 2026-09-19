@@ -218,6 +218,21 @@ impl FramePipeline {
         })
     }
 
+    /// The queue to submit batches to. A submit only enqueues; the renderer
+    /// takes delivery of the batch inside `run_frame`.
+    pub const fn input(&self) -> &RendererInput {
+        &self.input
+    }
+
+    /// How many batches the input worker has taken delivery of, read outside
+    /// `run_frame`. The count is monotonic and advances on the worker, not on
+    /// the frame that uploads the regions. A caller records it when it submits
+    /// and reads it again on a later frame: a higher count means that frame
+    /// uploads everything the worker had taken, which includes the batch.
+    pub fn applied_generation(&self) -> u64 {
+        self.input.take_applied_generation()
+    }
+
     fn recreate_if_needed(&mut self, gpu: &RenderContext) -> anyhow::Result<bool> {
         if !self.recreate_swapchain {
             return Ok(false);
