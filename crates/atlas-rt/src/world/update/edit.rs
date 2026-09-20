@@ -176,7 +176,7 @@ mod tests {
     use crate::world::{
         World,
         grid::{MICRO_CHUNK_LENGTH, grid_origin},
-        placement_differential::{Rng, u8_below},
+        placement::{Rng, u8_below},
         update::{
             batch::TrackedCoords,
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},

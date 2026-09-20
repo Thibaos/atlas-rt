@@ -1,5 +1,3 @@
-//! The load, edit, and clear paths driven through the real region feed.
-
 use atlas_rt::{
     render::region::{
         feed::RendererInput,
