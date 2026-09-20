@@ -24,12 +24,12 @@ use crate::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
                 PoolAllocation, allocate_blas, allocate_pool,
             },
-            decision::{RegionEffect, RegionSlot, decide},
             feed::RendererInput,
             pack::{REGION_COUNT, RegionData},
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
+            residency::decision::{RegionEffect, RegionSlot, decide},
             task::{default_scene, production_raygen},
         },
     },
@@ -38,6 +38,8 @@ use crate::{
         grid::{REGION_LENGTH, region_id},
     },
 };
+
+pub mod decision;
 
 struct ResidentRegion {
     pool_buffer_id: Id<Buffer>,

@@ -1,5 +1,7 @@
 use std::sync::{Arc, Mutex, mpsc};
 
+use atlas_rt::render::image::delivery::SLOT_COUNT;
+use atlas_rt::render::image::display_gate::DisplayGate;
 use atlas_rt::world::update::batch::TrackedCoords;
 use atlas_rt::world::update::job::{Status, WorldUpdateJob};
 use godot::classes::{
@@ -9,8 +11,6 @@ use godot::prelude::*;
 
 use atlas_rt::render::{
     context::RenderContext,
-    delivery::SLOT_COUNT,
-    display_gate::DisplayGate,
     embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
     pipeline::{DEFAULT_FOV, FrameInput},
 };

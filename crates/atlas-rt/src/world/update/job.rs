@@ -11,7 +11,7 @@ use std::{
 use glam::Vec3;
 
 use crate::{
-    render::display_gate::DisplayGate,
+    render::image::display_gate::DisplayGate,
     world::{
         World,
         format::{get_palette, open_bytes},
