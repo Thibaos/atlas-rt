@@ -881,9 +881,8 @@ fn create_storage_buffer<T: BufferContents>(gpu: &RenderContext) -> anyhow::Resu
 }
 
 fn create_instance_buffer(gpu: &RenderContext) -> anyhow::Result<Id<Buffer>> {
-    let layout =
-        DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(u64::try_from(REGION_COUNT)?)
-            .context("device layout for the instance buffer is invalid")?;
+    let layout = DeviceLayout::new_unsized::<[AccelerationStructureInstance]>(REGION_COUNT as u64)
+        .context("device layout for the instance buffer is invalid")?;
 
     Ok(gpu.resources.create_buffer(
         &BufferCreateInfo {

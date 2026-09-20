@@ -74,7 +74,7 @@ impl RebuildPlan {
         for upload in &self.uploads {
             log.push(RebuildLogEntry::Upload {
                 region_index: upload.region_index,
-                pool_bytes: u64::try_from(upload.pool_bytes.len())?,
+                pool_bytes: upload.pool_bytes.len() as u64,
                 aabbs: u32::try_from(upload.aabbs.len())?,
             });
         }

@@ -189,8 +189,8 @@ mod load_bench {
             .saturating_add(emit)
             .saturating_add(pack);
 
-        let voxels = u64::try_from(world.voxel_count()).unwrap_or(0);
-        let micro_chunks = u64::try_from(snapshots.len()).unwrap_or(0);
+        let voxels = world.voxel_count() as u64;
+        let micro_chunks = snapshots.len() as u64;
 
         println!("path            {path}");
         println!("voxels          {}", world.voxel_count());

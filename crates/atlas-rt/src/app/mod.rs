@@ -194,7 +194,7 @@ impl App {
         self.player_controller.view()
     }
 
-    fn raycast(&mut self, proj: Mat4, view: Mat4) {
+    fn destroy_ray(&mut self, proj: Mat4, view: Mat4) -> anyhow::Result<()> {
         let ray = screen_center_ray(proj.inverse(), view.inverse());
         let raycast = self.world.raycast(ray);
 
@@ -204,17 +204,16 @@ impl App {
                 change: edit::VoxelChange::Clear,
             };
 
-            match edit_world(&mut self.world, &[edit], &self.last_edit_tracked_coords) {
-                Ok(batch) => {
-                    let input = self.pipeline.as_ref().unwrap().input();
-                    input.submit_batch(batch.snapshots).unwrap();
-                    input.wait_until_idle().unwrap();
+            let batch = edit_world(&mut self.world, &[edit], &self.last_edit_tracked_coords)?;
 
-                    self.last_edit_tracked_coords = batch.tracked;
-                }
-                Err(e) => eprintln!("{e:?}"),
-            }
+            let input = self.pipeline.as_ref().context("pipeline is none")?.input();
+            input.submit_batch(batch.snapshots)?;
+            input.wait_until_idle()?;
+
+            self.last_edit_tracked_coords = batch.tracked;
         }
+
+        Ok(())
     }
 }
 
@@ -276,7 +275,9 @@ impl ApplicationHandler for App {
                 let view = self.next_player_view();
                 let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
 
-                self.raycast(proj, view);
+                if let Err(e) = self.destroy_ray(proj, view) {
+                    eprintln!("{e:?}");
+                }
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(

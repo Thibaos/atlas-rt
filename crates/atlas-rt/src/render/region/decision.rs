@@ -59,7 +59,7 @@ pub fn decide(
         let id = region_id(region_index);
 
         let was_resident = slots
-            .get(usize::try_from(id)?)
+            .get(id as usize)
             .context(format!("region slot {id} out of range"))?
             .is_some();
 
@@ -72,7 +72,7 @@ pub fn decide(
                 decision.tlas_dirty = true;
                 decision.table_changed = true;
                 RegionEffect::Enter {
-                    pool_bytes: u64::try_from(pack.blocks.len())?,
+                    pool_bytes: pack.blocks.len() as u64,
                     aabbs: u32::try_from(pack.aabbs.len())?,
                     pack,
                 }
@@ -95,7 +95,7 @@ pub fn decide(
             (true, Some(pack)) => {
                 let slot = slot_of(slots, id)?;
 
-                let pool_grows = slot.pool_capacity < u64::try_from(pack.blocks.len())?;
+                let pool_grows = slot.pool_capacity < pack.blocks.len() as u64;
                 let blas_grows = slot.aabb_capacity < u32::try_from(pack.aabbs.len())?;
 
                 if pool_grows {
@@ -110,7 +110,7 @@ pub fn decide(
                 decision.dirty.push(region_index);
 
                 RegionEffect::Update {
-                    pool_bytes: u64::try_from(pack.blocks.len())?,
+                    pool_bytes: pack.blocks.len() as u64,
                     aabbs: u32::try_from(pack.aabbs.len())?,
                     retire_pool: pool_grows.then_some(slot.pool_capacity),
                     retire_blas: blas_grows.then_some(slot.aabb_capacity),

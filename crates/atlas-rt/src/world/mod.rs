@@ -186,7 +186,7 @@ impl World {
             if policy == BoundsPolicy::Clip && placement.misses_lattice() {
                 clipped = clipped.saturating_add(voxels.len());
             } else {
-                let attempts = u64::try_from(voxels.len()).unwrap_or(u64::MAX);
+                let attempts = voxels.len() as u64;
                 let capacity = placement.in_lattice_capacity(attempts);
 
                 live = live.saturating_add(usize::try_from(capacity).unwrap_or(usize::MAX));
@@ -223,18 +223,14 @@ impl World {
             .par_iter()
             .enumerate()
             .flat_map(|(model_index, (placement, voxels))| {
-                let model_base = u64::try_from(model_index)
-                    .unwrap_or(u64::MAX)
-                    .wrapping_mul(1u64 << 40);
+                let model_base = (model_index as u64).wrapping_mul(1u64 << 40);
 
                 voxels
                     .par_chunks(BUILD_CHUNK)
                     .enumerate()
                     .map(move |(chunk_index, chunk)| {
-                        let chunk_base = model_base.wrapping_add(
-                            u64::try_from(chunk_index.wrapping_mul(BUILD_CHUNK))
-                                .unwrap_or(u64::MAX),
-                        );
+                        let chunk_base =
+                            model_base.wrapping_add(chunk_index.wrapping_mul(BUILD_CHUNK) as u64);
 
                         (placement, chunk, chunk_base)
                     })

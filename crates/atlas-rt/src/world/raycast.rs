@@ -41,7 +41,7 @@ impl World {
     }
 }
 
-/// Builds the ray through the centre of the frame.
+/// Builds the ray through the center of the frame.
 ///
 /// The matrices are the ones the renderer hands the GPU. The embedded path's
 /// view carries `render::camera::mirror_right`, since the renderer's world is
@@ -62,14 +62,9 @@ pub fn screen_center_ray(proj_inverse: Mat4, view_inverse: Mat4) -> Ray {
     }
 }
 
-/// The global voxel coordinate a point falls in, matching the renderer's
-/// half-open cells.
-const fn cell_of(point: Vec3) -> IVec3 {
-    IVec3::new(
-        point.x.floor() as i32,
-        point.y.floor() as i32,
-        point.z.floor() as i32,
-    )
+/// The global voxel coordinate a point falls in.
+fn cell_of(point: Vec3) -> IVec3 {
+    Vec3::new(point.x.floor(), point.y.floor(), point.z.floor()).as_ivec3()
 }
 
 /// The normal of the face a ray entered the current cell through.
@@ -104,7 +99,7 @@ fn axis_state(origin: f32, direction: f32, cell: i32) -> (i32, f32, f32) {
     }
 
     if direction > 0.0 {
-        let boundary = (cell + 1) as f32;
+        let boundary = (cell.strict_add(1)) as f32;
 
         (1, (boundary - origin) / direction, 1.0 / direction)
     } else {
@@ -426,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn the_centre_ray_follows_the_cameras_forward_axis() {
+    fn the_center_ray_follows_the_cameras_forward_axis() {
         let eye = Vec3::new(31.0, 300.0, 500.0);
         let axes = [Vec3::X, Vec3::Y, Vec3::Z];
         let view = camera_view(eye, axes);

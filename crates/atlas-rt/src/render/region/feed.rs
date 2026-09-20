@@ -736,11 +736,8 @@ mod tests {
                 let queue = queue.clone();
                 std::thread::spawn(move || {
                     for m in 0..PER_THREAD {
-                        let coords = IVec3::new(
-                            (t * PER_THREAD + m) * i32::try_from(MICRO_CHUNK_LENGTH).unwrap(),
-                            t,
-                            0,
-                        );
+                        let coords =
+                            IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_LENGTH as i32, t, 0);
                         queue.submit_microchunk(snapshot(coords, &[(0, (m % 256) as u8)]));
                     }
                 })
@@ -762,11 +759,7 @@ mod tests {
             .flat_map(|t| {
                 (0..PER_THREAD).map(move |m| {
                     snapshot(
-                        IVec3::new(
-                            (t * PER_THREAD + m) * i32::try_from(MICRO_CHUNK_LENGTH).unwrap(),
-                            t,
-                            0,
-                        ),
+                        IVec3::new((t * PER_THREAD + m) * MICRO_CHUNK_LENGTH as i32, t, 0),
                         &[(0, (m % 256) as u8)],
                     )
                 })

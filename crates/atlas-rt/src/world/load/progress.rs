@@ -113,10 +113,7 @@ impl Progress {
         }
 
         let span = u64::from(EMIT_END.saturating_sub(Stage::Build.share()));
-        let walked = u64::try_from(done.min(total))
-            .unwrap_or(u64::MAX)
-            .saturating_mul(span)
-            / u64::try_from(total.max(1)).unwrap_or(1);
+        let walked = (done.min(total) as u64).saturating_mul(span) / (total.max(1) as u64);
         let millionths = Stage::Build
             .share()
             .saturating_add(u32::try_from(walked).unwrap_or(EMIT_END));

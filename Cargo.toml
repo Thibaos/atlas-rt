@@ -21,8 +21,10 @@ todo = "deny"
 string_slice = "deny"
 panic_in_result_fn = "deny"
 exit = "deny"
-as_conversions = "deny"
+as_conversions = "allow"
 too_many_arguments = "allow"
+cast_precision_loss = "allow"
+while_float = "allow"
 
 [profile.release]
 codegen-units = 1

@@ -38,17 +38,11 @@ pub struct RenderContext {
     pub compute_flight_id: Id<Flight>,
 }
 
-/// # Errors
-///
-/// Returns an error if:
-///   - No physical device found
-///   - Physical device has no graphics support
-///   - No queue with graphics support found
-///   - No queue with compute support found
-fn create_device(
-    instance: &Arc<Instance>,
+const fn device_description(
+    required_extensions: &DeviceExtensions,
+    required_features: &DeviceFeatures,
     presentation: Option<&EventLoop<()>>,
-) -> anyhow::Result<(Arc<Device>, Vec<Arc<Queue>>)> {
+) -> (DeviceExtensions, DeviceFeatures) {
     let device_extensions = DeviceExtensions {
         khr_acceleration_structure: true,
         khr_deferred_host_operations: true,
@@ -61,7 +55,7 @@ fn create_device(
         khr_external_memory_win32: cfg!(windows),
         khr_external_semaphore_win32: cfg!(windows),
         khr_external_fence_win32: cfg!(windows),
-        ..BindlessContext::required_extensions(instance)
+        ..*required_extensions
     };
 
     let device_features = DeviceFeatures {
@@ -77,8 +71,28 @@ fn create_device(
         shader_subgroup_clock: true,
         shader_device_clock: cfg!(debug_assertions),
         storage_buffer8_bit_access: true,
-        ..BindlessContext::required_features(instance)
+        ..*required_features
     };
+
+    (device_extensions, device_features)
+}
+
+/// # Errors
+///
+/// Returns an error if:
+///   - No physical device found
+///   - Physical device has no graphics support
+///   - No queue with graphics support found
+///   - No queue with compute support found
+fn create_device(
+    instance: &Arc<Instance>,
+    presentation: Option<&EventLoop<()>>,
+) -> anyhow::Result<(Arc<Device>, Vec<Arc<Queue>>)> {
+    let required_extensions = BindlessContext::required_extensions(instance);
+    let required_features = BindlessContext::required_features(instance);
+
+    let (device_extensions, device_features) =
+        device_description(&required_extensions, &required_features, presentation);
 
     let (physical_device, graphics_family_index) = instance
         .enumerate_physical_devices()?

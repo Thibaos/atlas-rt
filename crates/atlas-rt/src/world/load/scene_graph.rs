@@ -258,6 +258,7 @@ impl VoxelPlacement {
             let length = i64::from(hi)
                 .saturating_sub(i64::from(lo))
                 .saturating_add(1);
+
             u64::try_from(length).unwrap_or(u64::MAX)
         };
 
@@ -347,7 +348,7 @@ mod tests {
                 return 0;
             }
 
-            u64::try_from(hi - lo + 1).unwrap_or(u64::MAX)
+            (hi - lo + 1) as u64
         };
 
         span(min.x, max.x) * span(min.y, max.y) * span(min.z, max.z)
