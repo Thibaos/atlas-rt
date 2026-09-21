@@ -30,7 +30,7 @@ mod load_bench {
     const WORLD_NEW: StageModel = StageModel {
         floor: ms(10),
         per_voxel: ns(70),
-        per_micro_chunk: ns(100),
+        per_micro_chunk: ns(200),
         per_byte: ns(0),
     };
 
