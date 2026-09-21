@@ -16,13 +16,15 @@ use vulkano::{Handle, VulkanObject};
 use crate::render::{
     context::RenderContext,
     image::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, bind_slot, delivery_memory},
-    pipeline::FrameInput,
-    region::{
-        feed::RendererInput,
-        residency::{ApplyReport, RegionStore},
+    pipeline::{
+        FrameInput,
         task::{
             RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
         },
+    },
+    region::{
+        feed::RendererInput,
+        residency::{ApplyReport, RegionStore},
     },
 };
 

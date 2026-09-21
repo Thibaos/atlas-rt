@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Context;
+use tracing::error;
 use vulkano::{
     acceleration_structure::AccelerationStructure,
     buffer::Buffer,
@@ -314,24 +315,24 @@ impl Task for RegionRenderTask {
                 let swapchain_state = tcx.swapchain(swapchain_id);
 
                 let Some(image_index) = swapchain_state.current_image_index() else {
-                    eprintln!("swapchain has no current image");
+                    error!("swapchain has no current image");
                     return Ok(());
                 };
 
                 let Ok(image_index) = usize::try_from(image_index) else {
-                    eprintln!("swapchain image index does not fit usize");
+                    error!("swapchain image index does not fit usize");
                     return Ok(());
                 };
 
                 let Some(swapchain_first_image) = swapchain_state.images().first() else {
-                    eprintln!("swapchain has no images");
+                    error!("swapchain has no images");
                     return Ok(());
                 };
 
                 let extent = swapchain_first_image.extent();
 
                 let Some(image_id) = rcx.swapchain_storage_image_ids.get(image_index) else {
-                    eprintln!("no storage image bound for the current swapchain image");
+                    error!("no storage image bound for the current swapchain image");
                     return Ok(());
                 };
 

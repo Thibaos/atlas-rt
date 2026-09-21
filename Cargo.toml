@@ -26,6 +26,11 @@ too_many_arguments = "allow"
 cast_precision_loss = "allow"
 while_float = "allow"
 
+[workspace.dependencies]
+glam = { version = "*", features = ["bytemuck"] }
+tracing = "*"
+tracing-subscriber = "*"
+
 [profile.release]
 codegen-units = 1
 

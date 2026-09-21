@@ -10,7 +10,7 @@ use atlas_rt::render::{
     context::RenderContext,
     embedded::EmbeddedPipeline,
     image::delivery::{DeviceMemory, SLOT_COUNT},
-    region::task::RenderMode,
+    pipeline::task::RenderMode,
 };
 use atlas_rt::world::grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH};
 

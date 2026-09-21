@@ -1,7 +1,12 @@
-use atlas_rt::app::App;
+mod app;
+
+use app::App;
+use tracing_subscriber;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt::init();
+
     let args: Vec<String> = std::env::args().collect();
 
     let world_path = args

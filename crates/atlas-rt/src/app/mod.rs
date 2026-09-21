@@ -10,6 +10,7 @@ use std::{
 use anyhow::Context;
 use glam::{Mat4, camera::lh::proj::vulkan::perspective};
 
+use tracing::{error, info, warn};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -19,17 +20,11 @@ use winit::{
 };
 
 #[cfg(debug_assertions)]
-use crate::render::pipeline::next_render_mode;
-use crate::{
-    app::{
-        input::{Input, InputButton, InputKey},
-        player::PlayerController,
-        schedule::ScheduleController,
-    },
+use atlas_rt::render::pipeline::next_render_mode;
+use atlas_rt::{
     render::{
         context::RenderContext,
-        pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR},
-        region::task::RenderMode,
+        pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR, task::RenderMode},
     },
     world::{
         World,
@@ -42,6 +37,10 @@ use crate::{
         },
     },
 };
+
+use input::{Input, InputButton, InputKey};
+use player::PlayerController;
+use schedule::ScheduleController;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -91,7 +90,7 @@ impl App {
             (World::new(&voxel_data), 0)
         };
         if clipped > 0 {
-            println!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
+            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
         }
 
         let mut schedule_controller = ScheduleController::new();
@@ -175,7 +174,7 @@ impl App {
 
         if self.schedule_controller.check("log").is_some() {
             let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
-            println!("{fps:.0} fps");
+            info!("{fps:.0} fps");
 
             self.log_frames = 0;
             self.log_since = Instant::now();
@@ -230,12 +229,12 @@ impl ApplicationHandler for App {
                     Ok(pipeline) => {
                         self.pipeline = Some(pipeline);
                     }
-                    Err(e) => eprintln!("{e:?}"),
+                    Err(e) => error!("{e:?}"),
                 }
 
                 self.window = Some(window);
             }
-            Err(e) => eprintln!("{e:?}"),
+            Err(e) => error!("{e:?}"),
         }
     }
 
@@ -254,7 +253,7 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = self.update_delta_time() {
-                    eprintln!("{e:?}");
+                    error!("{e:?}");
                 }
 
                 self.request_log();
@@ -276,7 +275,7 @@ impl ApplicationHandler for App {
                 let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
 
                 if let Err(e) = self.destroy_ray(proj, view) {
-                    eprintln!("{e:?}");
+                    error!("{e:?}");
                 }
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
@@ -291,7 +290,7 @@ impl ApplicationHandler for App {
                             delta_time: self.delta_time.as_secs_f32(),
                         },
                     ) {
-                        eprintln!("{e:?}");
+                        error!("{e:?}");
                     }
                 } else {
                     panic!("app pipeline is None");
@@ -304,7 +303,7 @@ impl ApplicationHandler for App {
                             if mapped == InputButton::Right
                                 && let Err(e) = self.toggle_capture_mouse()
                             {
-                                eprintln!("{e:?}");
+                                error!("{e:?}");
                             }
                             self.player_input.buttons_down.insert(mapped);
                         }

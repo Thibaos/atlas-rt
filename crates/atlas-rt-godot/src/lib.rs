@@ -1,7 +1,7 @@
-use godot::init::{ExtensionLibrary, gdextension};
-
 pub mod view;
 pub mod worker;
+
+use godot::init::{ExtensionLibrary, gdextension};
 
 struct AtlasExtension;
 

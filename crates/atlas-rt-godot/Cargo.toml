@@ -7,7 +7,7 @@ publish.workspace = true
 [dependencies]
 godot = "0.5.5"
 atlas-rt = { path = "../atlas-rt" }
-glam = "0.33"
+glam = { workspace = true }
 
 [lib]
 crate-type = ["cdylib", "rlib"]

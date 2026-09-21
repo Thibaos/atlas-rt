@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use glam::IVec3;
+use tracing::error;
 use vulkano::{
     DeviceSize,
     acceleration_structure::{
@@ -21,7 +22,8 @@ use vulkano_taskgraph::{
 use crate::render::{
     accel,
     context::RenderContext,
-    region::{pack::REGION_COUNT, residency::RegionStore, task::production_raygen},
+    pipeline::task::production_raygen,
+    region::{pack::REGION_COUNT, residency::RegionStore},
 };
 
 pub struct RegionUpload {
@@ -150,15 +152,15 @@ impl Task for UploadRegionsTask {
     ) -> TaskResult {
         for upload in &self.uploads {
             let Ok(pool_byte_size) = DeviceSize::try_from(upload.pool_bytes.len()) else {
-                eprintln!("upload pool bytes len could not be cast to device size");
+                error!("upload pool bytes len could not be cast to device size");
                 return Ok(());
             };
             let Ok(aabbs_size) = DeviceSize::try_from(upload.aabbs.len()) else {
-                eprintln!("upload aabbs len could not be cast to device size");
+                error!("upload aabbs len could not be cast to device size");
                 return Ok(());
             };
             let Ok(aabb_position_size) = DeviceSize::try_from(size_of::<AabbPositions>()) else {
-                eprintln!("AabbPositions size could not be cast to device size");
+                error!("AabbPositions size could not be cast to device size");
                 return Ok(());
             };
 
@@ -182,13 +184,13 @@ impl Task for UploadRegionsTask {
 
         if let Some(instances) = &self.instances {
             let Ok(instances_size) = DeviceSize::try_from(instances.len()) else {
-                eprintln!("instances could not be cast to device size");
+                error!("instances could not be cast to device size");
                 return Ok(());
             };
 
             let Ok(as_size) = DeviceSize::try_from(size_of::<AccelerationStructureInstance>())
             else {
-                eprintln!("AccelerationStructureInstance size could not be cast to device size");
+                error!("AccelerationStructureInstance size could not be cast to device size");
                 return Ok(());
             };
 

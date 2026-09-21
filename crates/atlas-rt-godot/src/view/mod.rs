@@ -1,8 +1,8 @@
-use atlas_rt::world::update::job::WorldSource;
-use godot::prelude::*;
-
 pub mod api;
 pub mod internal;
+
+use atlas_rt::world::update::job::WorldSource;
+use godot::prelude::*;
 
 const REJECT: &str = "atlas_rt: rejected input: ";
 const ATLAS_MODE_UNIFORM: &str = "mode";

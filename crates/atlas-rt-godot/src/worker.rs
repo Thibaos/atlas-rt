@@ -100,7 +100,6 @@ impl Worker {
                     Ok(None) => None,
                     Err(error) => {
                         eprintln!("atlas_rt: frame failed: {error:#}");
-
                         None
                     }
                 };

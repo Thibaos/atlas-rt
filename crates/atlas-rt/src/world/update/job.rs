@@ -9,6 +9,7 @@ use std::{
 };
 
 use glam::Vec3;
+use tracing::error;
 
 use crate::{
     render::image::display_gate::DisplayGate,
@@ -470,7 +471,7 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
     progress.end_stage(Stage::Build);
 
     if clipped > 0 {
-        eprintln!("atlas_rt: clipped {clipped} voxels outside the lattice");
+        error!("atlas_rt: clipped {clipped} voxels outside the lattice");
     }
 
     let snapshots = emit_snapshots_reporting(&world, Some(progress))

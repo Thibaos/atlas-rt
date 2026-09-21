@@ -1,3 +1,5 @@
+pub mod decision;
+
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -19,6 +21,7 @@ use crate::{
     render::{
         accel,
         context::RenderContext,
+        pipeline::task::{default_scene, production_raygen},
         region::{
             alloc::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
@@ -30,7 +33,6 @@ use crate::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },
             residency::decision::{RegionEffect, RegionSlot, decide},
-            task::{default_scene, production_raygen},
         },
     },
     world::{
@@ -38,8 +40,6 @@ use crate::{
         grid::{REGION_LENGTH, region_id},
     },
 };
-
-pub mod decision;
 
 struct ResidentRegion {
     pool_buffer_id: Id<Buffer>,

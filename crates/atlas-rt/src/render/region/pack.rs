@@ -385,7 +385,7 @@ mod contract {
     use std::fs;
     use std::path::{Path, PathBuf};
 
-    use crate::render::region::task::RenderMode;
+    use crate::render::pipeline::task::RenderMode;
 
     use super::*;
 

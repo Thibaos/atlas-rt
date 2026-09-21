@@ -1,3 +1,5 @@
+pub mod task;
+
 use anyhow::Context;
 use dot_vox::DotVoxData;
 use glam::{Mat4, camera::lh::proj::vulkan::perspective};
@@ -16,19 +18,15 @@ use vulkano_taskgraph::{
 };
 use winit::{dpi::PhysicalSize, window::Window};
 
-use crate::world::World;
 use crate::{
     render::{
         context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
-        region::{
-            feed::RendererInput,
-            residency::RegionStore,
-            task::{
-                RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
-            },
+        pipeline::task::{
+            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
         },
+        region::{feed::RendererInput, residency::RegionStore},
     },
-    world::update::snapshot::emit_snapshots,
+    world::{World, update::snapshot::emit_snapshots},
 };
 
 pub const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_2;

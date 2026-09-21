@@ -1,3 +1,12 @@
+pub mod format;
+pub mod grid;
+pub mod load;
+pub mod raycast;
+pub mod update;
+
+#[cfg(test)]
+mod bench;
+
 use std::{
     collections::{HashMap, hash_map::Entry},
     fmt::Display,
@@ -16,15 +25,6 @@ pub enum BoundsPolicy {
     Panic,
     Clip,
 }
-
-pub mod format;
-pub mod grid;
-pub mod load;
-pub mod raycast;
-pub mod update;
-
-#[cfg(test)]
-mod bench;
 
 const SHARD_COUNT: usize = 64;
 const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();

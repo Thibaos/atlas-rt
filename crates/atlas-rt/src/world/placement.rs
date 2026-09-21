@@ -3,6 +3,7 @@ use std::ops::Neg;
 
 use dot_vox::{DotVoxData, Rotation, Voxel};
 use glam::{DMat4, DQuat, DVec3, DVec4, IVec3, IVec4, UVec3, Vec4Swizzles};
+use tracing::info;
 
 use std::hash::{Hash, Hasher};
 
@@ -439,7 +440,7 @@ fn asset_differential(path: &str) {
         content_hash(&serial),
         "content hash diverged from the serial oracle for {path}"
     );
-    println!(
+    info!(
         "{path}: {} voxels, content hash {parallel_hash:016x}",
         parallel_map.len()
     );
