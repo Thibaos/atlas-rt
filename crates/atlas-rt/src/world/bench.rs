@@ -2,8 +2,6 @@
 mod load_bench {
     use std::time::{Duration, Instant};
 
-    use tracing::info;
-
     use crate::{
         render::region::pack::pack_regions,
         world::{
@@ -154,16 +152,16 @@ mod load_bench {
             u32::try_from(millionths).unwrap_or(0)
         };
 
-        info!("asset           {path}");
-        info!("voxels          {}", world.voxel_count());
-        info!("clipped         {clipped}");
-        info!("micro chunks    {}", snapshots.len());
-        info!("file bytes      {}", bytes.len());
-        info!("read            {read:10.3?}  {}", share(read));
-        info!("parse           {parse:10.3?}  {}", share(parse));
-        info!("build           {build:10.3?}  {}", share(build));
-        info!("emit            {emit:10.3?}  {}", share(emit));
-        info!("total           {total:10.3?}");
+        println!("asset           {path}");
+        println!("voxels          {}", world.voxel_count());
+        println!("clipped         {clipped}");
+        println!("micro chunks    {}", snapshots.len());
+        println!("file bytes      {}", bytes.len());
+        println!("read            {read:10.3?}  {}", share(read));
+        println!("parse           {parse:10.3?}  {}", share(parse));
+        println!("build           {build:10.3?}  {}", share(build));
+        println!("emit            {emit:10.3?}  {}", share(emit));
+        println!("total           {total:10.3?}");
     }
 
     fn run_asset(path: &str) {
@@ -194,17 +192,17 @@ mod load_bench {
         let voxels = world.voxel_count() as u64;
         let micro_chunks = snapshots.len() as u64;
 
-        info!("path            {path}");
-        info!("voxels          {}", world.voxel_count());
-        info!("clipped         {clipped}");
-        info!("micro chunks    {}", snapshots.len());
-        info!("regions         {}", packed.len());
-        info!("parse           {parse:10.3?}");
-        info!("world_new       {world_new:10.3?}");
-        info!("reserved        {reserved}");
-        info!("emit_snapshots  {emit:10.3?}");
-        info!("pack            {pack:10.3?}");
-        info!("total           {total:10.3?}");
+        println!("path            {path}");
+        println!("voxels          {}", world.voxel_count());
+        println!("clipped         {clipped}");
+        println!("micro chunks    {}", snapshots.len());
+        println!("regions         {}", packed.len());
+        println!("parse           {parse:10.3?}");
+        println!("world_new       {world_new:10.3?}");
+        println!("reserved        {reserved}");
+        println!("emit_snapshots  {emit:10.3?}");
+        println!("pack            {pack:10.3?}");
+        println!("total           {total:10.3?}");
 
         let stage_budgets = [
             WORLD_NEW.budget(voxels, micro_chunks, 0),

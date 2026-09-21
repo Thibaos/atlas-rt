@@ -467,8 +467,6 @@ pub fn apply_snapshots(
 
 #[cfg(test)]
 mod tests {
-    use tracing::info;
-
     use super::*;
     use std::time::Instant;
 
@@ -968,11 +966,11 @@ mod tests {
         let reapply_dirty = apply_snapshots(&mut mirrors, reapply_batch);
         let reapply = start.elapsed();
 
-        info!("micro chunks    {MICRO_CHUNKS}");
-        info!("regions         {REGIONS}");
-        info!("build batch     {build:.3?}");
-        info!("apply (build)   {build_apply:.3?}");
-        info!("apply (reapply) {reapply:.3?}");
+        println!("micro chunks    {MICRO_CHUNKS}");
+        println!("regions         {REGIONS}");
+        println!("build batch     {build:.3?}");
+        println!("apply (build)   {build_apply:.3?}");
+        println!("apply (reapply) {reapply:.3?}");
 
         assert_eq!(mirrors.len(), REGIONS);
         assert_eq!(dirty.len(), REGIONS);
@@ -1016,14 +1014,14 @@ mod tests {
 
         let consumed_bytes: usize = regions.iter().map(|region| region.blocks.len()).sum();
 
-        info!("asset                 {path}");
-        info!("micro chunks          {micro_chunks}");
-        info!("regions               {mirror_regions}");
-        info!("apply (old, main)     {apply:10.3?}");
-        info!("pack (old, main)      {main_pack:10.3?}");
-        info!("apply+pack (worker)   {worker_apply_pack:10.3?}");
-        info!("consume (new, main)   {consume:10.3?}");
-        info!("packed bytes          {packed_bytes}");
+        println!("asset                 {path}");
+        println!("micro chunks          {micro_chunks}");
+        println!("regions               {mirror_regions}");
+        println!("apply (old, main)     {apply:10.3?}");
+        println!("pack (old, main)      {main_pack:10.3?}");
+        println!("apply+pack (worker)   {worker_apply_pack:10.3?}");
+        println!("consume (new, main)   {consume:10.3?}");
+        println!("packed bytes          {packed_bytes}");
 
         assert_eq!(regions.len(), mirror_regions);
         assert_eq!(
