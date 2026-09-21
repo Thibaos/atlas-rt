@@ -266,7 +266,6 @@ impl FramePipeline {
     /// # Errors
     ///
     /// Returns an error if flight waiting or frame execution failed
-    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn run_frame(&mut self, gpu: &RenderContext, input: &FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
 

@@ -32,7 +32,6 @@ pub(crate) enum Stage {
     Emit,
 }
 
-// The index is the variant's own, so it is always inside the table.
 #[allow(clippy::indexing_slicing)]
 const fn stage_table(stage: Stage) -> (u32, u8, &'static str) {
     STAGES[stage.index()]
@@ -106,14 +105,15 @@ impl Progress {
     /// Reports `done` emitted voxels out of `total`. The caller reports every
     /// `VOXEL_STEP` voxels. This method also checks the interval and ignores
     /// calls between steps.
-    #[allow(clippy::arithmetic_side_effects)]
     pub(crate) fn count_voxel(&self, total: usize, done: usize) {
         if !done.is_multiple_of(VOXEL_STEP) {
             return;
         }
 
         let span = u64::from(EMIT_END.saturating_sub(Stage::Build.share()));
-        let walked = (done.min(total) as u64).saturating_mul(span) / (total.max(1) as u64);
+        let walked = (done.min(total) as u64)
+            .saturating_mul(span)
+            .div_ceil(total.max(1) as u64);
         let millionths = Stage::Build
             .share()
             .saturating_add(u32::try_from(walked).unwrap_or(EMIT_END));

@@ -1,5 +1,3 @@
-#![allow(clippy::as_conversions)]
-#![allow(clippy::cast_possible_wrap)]
 use glam::{IVec3, UVec3};
 
 pub const MICRO_CHUNK_LENGTH: u32 = 8;
@@ -9,24 +7,24 @@ pub const LATTICE_HALF_EXTENT: u32 = REGION_HALF_EXTENT * REGION_LENGTH;
 
 #[must_use]
 pub fn grid_index(global: IVec3, edge: u32) -> IVec3 {
-    global.div_euclid(IVec3::splat(edge as i32))
+    global.div_euclid(IVec3::splat(edge.cast_signed()))
 }
 
 #[must_use]
 pub fn grid_origin(global: IVec3, edge: u32) -> IVec3 {
-    grid_index(global, edge).saturating_mul(IVec3::splat(edge as i32))
+    grid_index(global, edge).saturating_mul(IVec3::splat(edge.cast_signed()))
 }
 
 #[must_use]
 pub fn in_lattice(global: IVec3) -> bool {
-    let half = IVec3::splat(LATTICE_HALF_EXTENT as i32);
+    let half = IVec3::splat(LATTICE_HALF_EXTENT.cast_signed());
 
     global.cmpge(half.saturating_mul(IVec3::splat(-1))).all() && global.cmplt(half).all()
 }
 
 #[must_use]
 pub fn region_index_in_lattice(region_index: IVec3) -> bool {
-    let half = IVec3::splat(REGION_HALF_EXTENT as i32);
+    let half = IVec3::splat(REGION_HALF_EXTENT.cast_signed());
 
     region_index
         .cmpge(half.saturating_mul(IVec3::splat(-1)))

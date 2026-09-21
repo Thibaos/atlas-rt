@@ -35,7 +35,6 @@ impl AtlasRtView {
         self.basis = transform.basis;
     }
 
-    #[allow(clippy::needless_pass_by_ref_mut)]
     pub(super) fn match_viewport_size(&mut self) {
         self.to_gd().set_size(self.to_gd().get_viewport_rect().size);
     }

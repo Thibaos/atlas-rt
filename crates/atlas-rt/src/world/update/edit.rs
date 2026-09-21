@@ -12,14 +12,10 @@ use crate::world::{
     },
 };
 
-const MICRO_EDGE: usize = 8;
+const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
 const MICRO_AREA: usize = MICRO_EDGE * MICRO_EDGE;
 const MICRO_CELLS: usize = MICRO_EDGE * MICRO_AREA;
 const MICRO_BYTES: usize = MICRO_CELLS / MICRO_EDGE;
-
-// the probe walk below indexes cells by hand, so the edge must be the lattice's
-#[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
-const _: [(); 1] = [(); (MICRO_CHUNK_LENGTH == MICRO_EDGE as u32) as usize];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoxelChange {
@@ -188,7 +184,6 @@ mod tests {
         VoxelEdit, edit_world,
     };
 
-    #[allow(clippy::as_conversions)]
     const CHUNK: i32 = MICRO_CHUNK_LENGTH as i32;
 
     fn set(x: i32, y: i32, z: i32, material: u8) -> VoxelEdit {

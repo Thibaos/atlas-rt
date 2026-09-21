@@ -42,7 +42,6 @@ impl MicroChunkSnapshot {
         }
     }
 
-    #[allow(clippy::as_conversions)]
     #[must_use]
     pub fn occupied_count(&self) -> usize {
         self.mask

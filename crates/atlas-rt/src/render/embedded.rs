@@ -96,7 +96,6 @@ impl BatchDelivery {
     }
 }
 
-#[allow(clippy::as_conversions, clippy::cast_precision_loss)]
 fn projection(input: &Mat4, fov: f32, extent: [u32; 2]) -> production_raygen::Camera {
     let [width, height] = extent;
     let aspect = match (width, height) {
@@ -443,7 +442,6 @@ impl EmbeddedPipeline {
     ///   - `slot_storage_ids` failed
     ///   - Store `apply` failed
     ///   - Current slot is invalid
-    #[allow(clippy::as_conversions, clippy::cast_precision_loss)]
     pub fn run_frame(
         &mut self,
         gpu: &RenderContext,

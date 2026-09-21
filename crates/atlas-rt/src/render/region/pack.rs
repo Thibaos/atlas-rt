@@ -12,13 +12,11 @@ use crate::world::{
     update::snapshot::MicroChunkSnapshot,
 };
 
-#[allow(clippy::as_conversions)]
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
 pub const MICRO_CHUNKS_PER_REGION: usize =
     MC_PER_REGION_SIDE * MC_PER_REGION_SIDE * MC_PER_REGION_SIDE;
 pub const OFFSET_TABLE_SIZE: usize = MICRO_CHUNKS_PER_REGION * 4;
 pub const OFFSET_SENTINEL: u32 = u32::MAX;
-#[allow(clippy::as_conversions)]
 pub const REGION_COUNT: usize = (2 * REGION_HALF_EXTENT as usize).pow(3);
 
 pub struct RegionData {

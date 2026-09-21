@@ -299,7 +299,6 @@ fn build_ray_tracing_pipeline(
 impl Task for RegionRenderTask {
     type World = RegionRenderContext;
 
-    #[allow(clippy::as_conversions)]
     unsafe fn execute(
         &self,
         cbf: &mut RecordingCommandBuffer<'_>,

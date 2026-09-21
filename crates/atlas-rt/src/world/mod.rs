@@ -30,9 +30,7 @@ const SHARD_COUNT: usize = 64;
 const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();
 const BUILD_CHUNK: usize = 8_192;
 
-// every fold input is gated by grid::in_lattice, so the signed cast is exact
-#[allow(clippy::as_conversions, clippy::cast_possible_wrap)]
-const LATTICE_BIAS: i32 = grid::LATTICE_HALF_EXTENT as i32;
+const LATTICE_BIAS: i32 = grid::LATTICE_HALF_EXTENT.cast_signed();
 const FOLD_FIELD_BITS: u32 = grid::LATTICE_HALF_EXTENT.trailing_zeros() + 1;
 const FOLD_FIELD_MASK: u64 = (1u64 << FOLD_FIELD_BITS) - 1;
 
@@ -61,12 +59,7 @@ fn fold(position: IVec3) -> u64 {
         | u64::from(biased.z)
 }
 
-// call sites gate inputs with grid::in_lattice, so every field fits i32
-#[allow(
-    clippy::as_conversions,
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation
-)]
+#[allow(clippy::cast_possible_truncation)]
 fn unfold(key: u64) -> IVec3 {
     let axis = |field: u64| (field as i32).wrapping_sub(LATTICE_BIAS);
 
@@ -77,8 +70,6 @@ fn unfold(key: u64) -> IVec3 {
     )
 }
 
-// The golden multiply spreads the packed fold; the top bits always fit usize.
-#[allow(clippy::as_conversions)]
 const fn shard_index(key: u64) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> SHARD_ROUTE_SHIFT) as usize
 }

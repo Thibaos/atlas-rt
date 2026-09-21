@@ -1,3 +1,5 @@
+use std::ops::Neg;
+
 use glam::{Mat4, Vec3, Vec4};
 
 /// Builds the ray generator's world-to-view matrix.
@@ -28,11 +30,10 @@ pub fn camera_view(origin: Vec3, axes: [Vec3; 3]) -> Mat4 {
 /// opposite side of the frame. Negating the camera's right axis compensates for
 /// the world's x mirror.
 #[must_use]
-#[allow(clippy::arithmetic_side_effects)]
 pub fn mirror_right(axes: [Vec3; 3]) -> [Vec3; 3] {
     let [right, up, forward] = axes;
 
-    [-right, up, forward]
+    [right.neg(), up, forward]
 }
 
 #[cfg(test)]

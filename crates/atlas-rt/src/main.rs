@@ -1,7 +1,6 @@
 mod app;
 
 use app::App;
-use tracing_subscriber;
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {

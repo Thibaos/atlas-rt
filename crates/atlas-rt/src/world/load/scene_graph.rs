@@ -1,3 +1,5 @@
+use std::ops::Mul;
+
 use dot_vox::{DotVoxData, Rotation, SceneNode, Voxel};
 use glam::{IVec3, UVec3};
 
@@ -299,9 +301,8 @@ fn half_center(size: u32, determinant: i32) -> i32 {
         .unwrap_or_else(|_| panic!("model size {size} too large for integer placement"))
 }
 
-#[allow(clippy::arithmetic_side_effects)] // dot_vox composes packed rotation bitfields
 fn compose(rotation: Rotation, next: Rotation) -> Rotation {
-    rotation * next
+    rotation.mul(next)
 }
 
 #[cfg(test)]

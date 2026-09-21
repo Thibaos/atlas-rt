@@ -1,6 +1,6 @@
 use core::f32;
 use std::{
-    f32::consts::{FRAC_PI_2, TAU},
+    f64::consts::{FRAC_PI_2, TAU},
     ops::{Add, Mul, Sub},
     time::Duration,
 };
@@ -14,8 +14,8 @@ pub struct PlayerController {
     pub sensitivity: f64,
     pub translation: Vec3,
 
-    yaw: f32,
-    pitch: f32,
+    yaw: f64,
+    pitch: f64,
 
     view: Mat4,
     needs_view_update: bool,
@@ -38,8 +38,8 @@ impl Default for PlayerController {
 }
 
 impl PlayerController {
-    const MAX_PITCH: f32 = FRAC_PI_2 - 0.01;
-    const MIN_PITCH: f32 = -Self::MAX_PITCH;
+    const MAX_PITCH: f64 = FRAC_PI_2 - 0.01;
+    const MIN_PITCH: f64 = -Self::MAX_PITCH;
 
     pub fn view(&mut self) -> Mat4 {
         if self.needs_view_update {
@@ -88,10 +88,9 @@ impl PlayerController {
         self.needs_view_update = true;
     }
 
-    #[allow(clippy::as_conversions, clippy::cast_possible_truncation)]
     pub fn rotate(&mut self, delta: (f64, f64)) {
-        self.yaw = self.yaw.add(delta.0.mul(self.sensitivity) as f32);
-        self.pitch = self.pitch.sub((delta.1.mul(self.sensitivity)) as f32);
+        self.yaw = self.yaw.add(delta.0.mul(self.sensitivity));
+        self.pitch = self.pitch.sub(delta.1.mul(self.sensitivity));
 
         self.yaw = self.yaw.rem_euclid(TAU);
 
@@ -100,9 +99,10 @@ impl PlayerController {
         self.needs_view_update = true;
     }
 
+    #[allow(clippy::cast_possible_truncation)]
     fn orientation(&self) -> Quat {
-        let yaw_q = Quat::from_rotation_y(self.yaw);
-        let pitch_q = Quat::from_rotation_x(self.pitch);
+        let yaw_q = Quat::from_rotation_y(self.yaw as f32);
+        let pitch_q = Quat::from_rotation_x(self.pitch as f32);
 
         yaw_q.mul(pitch_q)
     }
