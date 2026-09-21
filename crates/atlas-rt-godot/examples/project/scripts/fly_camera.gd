@@ -128,8 +128,6 @@ enum MouseButton {
 
 #endregion
 
-
-
 #=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=
 
 #    Internals
@@ -156,7 +154,6 @@ var _actions_to_key := {
 
 const _PITCH_LIMIT : int   = 90
 
-
 var _mouse_click_pos : Vector2
 var _mouse_hidden    : bool
 
@@ -166,8 +163,6 @@ var _cam_pivot: Node3D            # The Y rotation pivot node
 
 var _yaw   : float = 0
 var _pitch : float = 0
-
-
 
 func _ready() -> void:
 	_cam_pivot = Node3D.new()
@@ -185,10 +180,8 @@ func _ready() -> void:
 	set_rot(rot)
 
 func _input(event: InputEvent) -> void:
-	if _is_cam_action_pressed(_ACTION_FASTER):   fly_speed *= speed_factor
-	if _is_cam_action_pressed(_ACTION_SLOWER):   fly_speed /= speed_factor
-	
-	#_check_mouse_capture(event)
+	if _is_cam_action_pressed(_ACTION_FASTER): fly_speed *= speed_factor
+	if _is_cam_action_pressed(_ACTION_SLOWER): fly_speed /= speed_factor
 
 	## Camera motion
 	if event is InputEventMouseMotion:
@@ -204,8 +197,7 @@ func _input(event: InputEvent) -> void:
 		_cam_pivot.rotation.y = deg_to_rad(_yaw)
 		_camera.rotation.x = deg_to_rad(_pitch)
 
-
-func _physics_process(delta: float) -> void:
+func _process(delta: float) -> void:
 	var aim : Basis = _camera.get_camera_transform().basis
 
 	var dir := Vector3()
@@ -215,16 +207,14 @@ func _physics_process(delta: float) -> void:
 		if _is_cam_action_pressed(_ACTION_BACKWARD): dir += aim[2]
 		if _is_cam_action_pressed(_ACTION_LEFT):     dir += aim[0]
 		if _is_cam_action_pressed(_ACTION_RIGHT):    dir -= aim[0]
-
+	
 	dir = dir.normalized()
-
 	var target := dir * fly_speed
-	velocity = velocity.lerp( target, acceleration*delta )
+	velocity = velocity.lerp(target, acceleration*delta )
 	move_and_slide()
-
+	
 	if is_zero_approx(velocity.length()):
 		velocity = Vector3.ZERO
-
 
 func _is_cam_action_pressed(action: String) -> bool:
 	if not use_default_controls and InputMap.has_action(action):
@@ -271,8 +261,6 @@ func _revert_mouse_pos() -> void:
 
 
 #endregion
-
-
 
 #=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=#=
 
