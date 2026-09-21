@@ -15,7 +15,7 @@ use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
     context::RenderContext,
-    image::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, bind_slot, delivery_memory},
+    image::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, delivery_memory},
     pipeline::{
         FrameInput,
         task::{
@@ -56,7 +56,6 @@ pub struct EmbeddedPipeline {
     store: RegionStore,
     input: RendererInput,
     batch: BatchDelivery,
-    frame: usize,
 }
 
 /// Whether applying the batch changed frame content by adding or removing a
@@ -155,29 +154,215 @@ mod tests {
 
     #[test]
     fn never_wrapped_slots_start_eligible() {
-        assert_eq!(gated_slot(0, &wrap_times([None; SLOT_COUNT], 0)), Some(0));
-    }
-
-    #[test]
-    fn the_ring_slot_waits_full_gate_even_fresh() {
-        let wrap_times = wrap_times([Some(0), None, None], REWRITE_GATE_TICKS - 1);
-
-        assert_eq!(gated_slot(0, &wrap_times), Some(1));
-        assert_eq!(gated_slot(1, &wrap_times), Some(1));
+        assert_eq!(gated_slot(&wrap_times([None; SLOT_COUNT], 0)), Some(0));
     }
 
     #[test]
     fn the_gate_opens_on_the_third_tick() {
         let wrap_times = wrap_times([Some(0), None, None], REWRITE_GATE_TICKS);
 
-        assert_eq!(gated_slot(0, &wrap_times), Some(0));
+        assert_eq!(gated_slot(&wrap_times), Some(0));
+    }
+
+    #[test]
+    fn a_slot_wrapped_on_the_last_tick_is_held() {
+        let wrap_times = wrap_times([Some(0), Some(9), Some(9)], REWRITE_GATE_TICKS - 1);
+
+        assert_eq!(
+            gated_slot(&wrap_times),
+            None,
+            "one tick is not the rewrite distance ADR 0007 proves"
+        );
     }
 
     #[test]
     fn every_recently_wrapped_slot_skips_the_frame() {
-        let wrap_times = wrap_times([Some(9), Some(9), Some(9)], 10);
+        let wrap_times = wrap_times([Some(9), Some(9), Some(9)], 9);
 
-        assert_eq!(gated_slot(1, &wrap_times), None);
+        assert_eq!(gated_slot(&wrap_times), None);
+    }
+
+    #[test]
+    fn the_oldest_waiting_slot_wins() {
+        let wrap_times = wrap_times([Some(5), Some(0), Some(3)], 5);
+
+        assert_eq!(
+            gated_slot(&wrap_times),
+            Some(1),
+            "the slot wrapped first is the one a viewer stopped needing first"
+        );
+    }
+
+    /// The wrap times of a ring whose other slots are all far too fresh, so
+    /// the slot under test is the only candidate.
+    fn only_slot_zero(wrap: u64, tick: u64) -> WrapTimes {
+        wrap_times([Some(wrap), Some(tick), Some(tick)], tick)
+    }
+
+    /// The decision is taken at process(n) on a snapshot stamped at
+    /// frame_post_draw(n-1), and the write lands at frame_post_draw(n). A slot
+    /// is admitted when that write lands exactly `REWRITE_GATE_TICKS` after its
+    /// wrap: never earlier (ADR 0007's soundness offset) and never later (a
+    /// later one spends a tick of the ring's cycle).
+    #[test]
+    fn the_admitted_write_lands_exactly_the_gate_after_the_wrap() {
+        for wrap in 0..64_u64 {
+            let opening = wrap + REWRITE_GATE_TICKS;
+
+            assert_eq!(
+                gated_slot(&only_slot_zero(wrap, opening)),
+                Some(0),
+                "a write at tick {opening} lands exactly {REWRITE_GATE_TICKS} after the wrap at {wrap}"
+            );
+
+            assert_eq!(
+                gated_slot(&only_slot_zero(wrap, opening - 1)),
+                None,
+                "a write at tick {} would land {} after the wrap at {wrap}",
+                opening - 1,
+                REWRITE_GATE_TICKS - 1
+            );
+        }
+    }
+
+    /// How far the snapshot's tick runs ahead of the writes its `wrapped_at`
+    /// array lists. The coordinator stamps both at frame_post_draw(n-1), and
+    /// the writes are that frame's, so the tick has to name that same frame.
+    const SNAPSHOT_NAMES_ITS_OWN_FRAME: u64 = 1;
+
+    /// The host loop. In tick `n` the coordinator submits the request at
+    /// process(n) carrying the snapshot frame_post_draw(n-1) stamped, the
+    /// worker answers it, frame_post_draw(n) wraps the slot the answer wrote,
+    /// and the coordinator ticks over. `snapshot_lag` is how much of that
+    /// pairing the snapshot reports: 1 when the tick names the frame its wraps
+    /// belong to, 0 when it names the frame before it.
+    struct HostLoop {
+        tick: u64,
+        snapshot_lag: u64,
+        frames: u64,
+        written: [Option<u64>; SLOT_COUNT],
+        wrapped_at: [Option<u64>; SLOT_COUNT],
+        snapshot: WrapTimes,
+        rewrite_gaps: Vec<u64>,
+        refused: Vec<u64>,
+    }
+
+    impl HostLoop {
+        const fn new(snapshot_lag: u64) -> Self {
+            Self {
+                tick: 0,
+                snapshot_lag,
+                frames: 0,
+                written: [None; SLOT_COUNT],
+                wrapped_at: [None; SLOT_COUNT],
+                snapshot: WrapTimes {
+                    wrapped_at: [None; SLOT_COUNT],
+                    tick: 0,
+                },
+                rewrite_gaps: Vec::new(),
+                refused: Vec::new(),
+            }
+        }
+
+        fn step(&mut self) {
+            let write_tick = self.tick;
+
+            let Some(slot) = gated_slot(&self.snapshot) else {
+                self.refused.push(write_tick);
+
+                return;
+            };
+
+            if let Some(previous) = self.written.get(slot).copied().flatten() {
+                self.rewrite_gaps.push(write_tick.saturating_sub(previous));
+            }
+
+            self.written[slot] = Some(write_tick);
+            self.wrapped_at[slot] = Some(write_tick);
+            self.frames = self.frames.saturating_add(1);
+        }
+
+        /// frame_post_draw(n): tick over, then stamp the snapshot the next
+        /// request carries.
+        fn wrap(&mut self) {
+            self.tick = self.tick.saturating_add(1);
+
+            let reported = if self.snapshot_lag == SNAPSHOT_NAMES_ITS_OWN_FRAME {
+                self.tick
+            } else {
+                self.tick.saturating_sub(1)
+            };
+
+            self.snapshot = WrapTimes {
+                wrapped_at: self.wrapped_at,
+                tick: reported,
+            };
+        }
+    }
+
+    #[test]
+    fn a_worker_that_keeps_pace_delivers_every_tick() {
+        const TICKS: u64 = 480;
+
+        let mut host = HostLoop::new(SNAPSHOT_NAMES_ITS_OWN_FRAME);
+
+        for _ in 0..TICKS {
+            host.step();
+            host.wrap();
+        }
+
+        assert!(
+            host.refused.is_empty(),
+            "a worker that keeps pace must never be refused: refused at {:?}",
+            host.refused
+        );
+
+        assert_eq!(
+            host.frames, TICKS,
+            "every tick must carry a frame: 180/s of 240Hz is this test failing"
+        );
+
+        assert!(
+            host.rewrite_gaps
+                .iter()
+                .all(|gap| *gap >= REWRITE_GATE_TICKS),
+            "a slot may not be rewritten closer than the gate to its last write: {:?}",
+            host.rewrite_gaps
+                .iter()
+                .filter(|gap| **gap < REWRITE_GATE_TICKS)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The recorded bug: the snapshot carried the previous frame's tick beside
+    /// the current frame's wraps. The gate then read the newest wrap as two
+    /// ticks old instead of one, so a slot was admitted a tick late, the ring's
+    /// three slots became a four-tick cycle, and one tick in four held the
+    /// previous frame. Measured live as 180 produced and 180 wrapped per second
+    /// of a 240Hz session, with every fourth tick refused.
+    #[test]
+    fn a_snapshot_that_trails_its_own_wraps_starves_a_quarter_of_the_ticks() {
+        const TICKS: u64 = 480;
+
+        let mut host = HostLoop::new(0);
+
+        for _ in 0..TICKS {
+            host.step();
+            host.wrap();
+        }
+
+        assert_eq!(
+            host.refused.len() as u64,
+            TICKS / 4,
+            "one tick in four is refused: {:?}",
+            host.refused
+        );
+
+        assert_eq!(
+            host.frames,
+            TICKS * 3 / 4,
+            "three frames per four ticks is 180/s on a 240Hz monitor"
+        );
     }
 
     #[test]
@@ -245,7 +430,22 @@ mod tests {
     }
 }
 
-fn gated_slot(bind: usize, wrap_times: &WrapTimes) -> Option<usize> {
+/// The slot this frame may write, or `None` while every slot is still too
+/// fresh. The oldest wrap wins, since every eligible slot passed the gate.
+///
+/// The frame counter's ring position is deliberately not consulted. That
+/// counter advances only on a frame that writes, so under the gate it holds a
+/// ratio below one against the ticks the wraps are stamped with, and it drifts
+/// a whole slot against `wrapped_at` every cycle. Naming the ring slot as the
+/// preferred one then rejects a frame some slot was ready for.
+///
+/// `wrap_times.tick` names the frame the write admitted here lands on, so a
+/// slot is admitted exactly when that write falls `REWRITE_GATE_TICKS` after
+/// its wrap: the tightest offset ADR 0007 proves sound. Admitting one tick
+/// later, which the previous pairing of tick and `wrapped_at` did, turns the
+/// ring's three slots into a four-tick cycle and costs a quarter of the ticks:
+/// the 180 frames per second of a 240Hz session measured on 2026-09-21.
+fn gated_slot(wrap_times: &WrapTimes) -> Option<usize> {
     let eligible = |slot: usize| -> bool {
         wrap_times
             .wrapped_at
@@ -254,13 +454,9 @@ fn gated_slot(bind: usize, wrap_times: &WrapTimes) -> Option<usize> {
             .flatten()
             .is_none_or(|wrap| {
                 wrap.checked_add(REWRITE_GATE_TICKS)
-                    .is_some_and(|res| wrap_times.tick >= res)
+                    .is_some_and(|res| res <= wrap_times.tick)
             })
     };
-
-    if eligible(bind) {
-        return Some(bind);
-    }
 
     let mut fallback_slot = None;
     let mut oldest_wrap = None;
@@ -367,7 +563,6 @@ impl EmbeddedPipeline {
             store,
             input,
             batch: BatchDelivery::default(),
-            frame: 0,
         })
     }
 
@@ -481,9 +676,7 @@ impl EmbeddedPipeline {
         self.region.render_extent = extent;
         self.region.camera = projection(&input.view, input.fov, extent);
 
-        let bind = bind_slot(self.frame);
-
-        let Some(slot) = gated_slot(bind, wrap_times) else {
+        let Some(slot) = gated_slot(wrap_times) else {
             return Ok(None);
         };
 
@@ -509,8 +702,6 @@ impl EmbeddedPipeline {
             version: self.batch.version(),
             generation,
         };
-
-        self.frame = self.frame.wrapping_add(1);
 
         Ok(Some(published))
     }

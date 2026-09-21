@@ -1,19 +1,21 @@
 use std::sync::{Arc, Mutex, mpsc};
 
-use atlas_rt::render::image::delivery::SLOT_COUNT;
-use atlas_rt::render::image::display_gate::DisplayGate;
-use atlas_rt::world::update::batch::TrackedCoords;
-use atlas_rt::world::update::job::{Status, WorldUpdateJob};
+use atlas_rt::{
+    render::{
+        context::RenderContext,
+        embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
+        image::{delivery::SLOT_COUNT, display_gate::DisplayGate},
+        pipeline::{DEFAULT_FOV, FrameInput},
+    },
+    world::update::{
+        batch::TrackedCoords,
+        job::{Status, WorldUpdateJob},
+    },
+};
 use godot::classes::{
     Camera3D, Control, IControl, Material, RenderingServer, ShaderMaterial, Texture2Drd,
 };
 use godot::prelude::*;
-
-use atlas_rt::render::{
-    context::RenderContext,
-    embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
-    pipeline::{DEFAULT_FOV, FrameInput},
-};
 
 use crate::view::ATLAS_MODE_UNIFORM;
 use crate::worker::{FrameRequest, Worker, lock};
@@ -37,6 +39,7 @@ pub struct AtlasRtView {
     pub(super) material_detached: bool,
     pub(super) wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
+    wrap_tick: u64,
     pub(super) world_chunks: TrackedCoords,
     tick: u64,
     pub(super) camera: Option<Gd<Camera3D>>,
@@ -62,6 +65,7 @@ impl IControl for AtlasRtView {
             material_detached: false,
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
+            wrap_tick: 0,
             world_chunks: TrackedCoords::default(),
             tick: 0,
             camera: None,
@@ -161,7 +165,7 @@ impl IControl for AtlasRtView {
             },
             wrap_times: WrapTimes {
                 wrapped_at: self.wrapped_at,
-                tick: self.tick,
+                tick: self.wrap_tick,
             },
         });
     }
@@ -221,6 +225,9 @@ impl AtlasRtView {
         }
 
         *entry = Some(self.tick);
+
+        self.wrap_tick = self.tick + 1;
+
         self.hand_off_zero_copy(slot);
         self.settle_job(version, generation);
         self.to_gd().queue_redraw();
