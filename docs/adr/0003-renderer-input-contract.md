@@ -44,6 +44,11 @@ call moved from the app into `FramePipeline::run_frame`; the drain-point
 contract stands: `new` and `apply` remain the only drain points of the
 dirty-region set, applied unconditionally each frame.
 
+Amended (voxel-edits ticket 06, 2026-09-22): the world side named as
+"implemented later" in the Consequences exists for edits. Its contract is
+[0009](0009-world-side-voxel-edit-contract.md), so that line is history, not
+open work.
+
 ## Considered Options
 
 - **TLAS rebuild on every content edit**. Rejected: the instance references the BLAS by device address, stable across in-place rebuilds; a per-edit TLAS rebuild is needless work.
@@ -55,7 +60,10 @@ dirty-region set, applied unconditionally each frame.
 
 ## Consequences
 
-- The world side (loading/editing/streaming, implemented later) calls `submit_microchunk` / `submit_batch`; enqueue-only, any thread, never blocks on GPU.
+- The world side (loading/editing/streaming, implemented later; edits exist
+  under [0009](0009-world-side-voxel-edit-contract.md)) calls
+  `submit_microchunk` / `submit_batch`; enqueue-only, any thread, never blocks
+  on GPU.
 - Content edits cost one in-place region BLAS rebuild; TLAS rebuilds only on
   region residency transitions; rebuild GPU time is inline in one frame
   (measured by ticket 06); startup is a one-shot pre-loop build.

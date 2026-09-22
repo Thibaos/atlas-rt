@@ -8,8 +8,18 @@ vulkano). Renders sparse voxel worlds loaded from .vox files.
 **World**:
 The scene loaded from a .vox file: a sparse set of occupied voxels, held in a
 flat map keyed by global coordinates, internally sharded 64 ways by hash
-route, plus a 256-color palette. Worlds are loaded once at startup today.
+route, plus a 256-color palette. The single source of truth for voxel content:
+a load constructs one, the Voxel edit path is the only later mutation, and the
+renderer holds only packed regions built from its Snapshots.
 _Avoid_: Scene, level, map
+
+**Voxel edit**:
+A caller's unit of change: a position and a change, `Set` with a u8 material
+index or `Clear`. A batch is validated first and all-or-nothing, applied to the
+World in input order with last write wins, then compiled on the world side into
+one Snapshot per touched Micro-chunk. The renderer never receives a Voxel edit.
+_Avoid_: edit message, brush (a message is a Snapshot; a brush is a generator
+of edits, out of scope)
 
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping material indices to
@@ -84,6 +94,15 @@ The renderer's inbound queue of Snapshots plus its dirty-region set; the
 world enqueues, the renderer drains. Coalescing is last-wins per
 Micro-chunk.
 _Avoid_: Event bus, message bus
+
+**Tracked coordinates**:
+The caller-owned set of Micro-chunk origins the renderer holds content for
+after the last submitted batch. A load, clear, or edit returns the set its
+batch leaves behind. The set is not derivable from the World, because the
+World runs ahead of the renderer between a submit and the frame that applies
+the batch.
+_Avoid_: occupied chunks, world chunks (those describe the World, which runs
+ahead)
 
 **World load**:
 The unit of world supply: one .vox source, clipped to the lattice, its
