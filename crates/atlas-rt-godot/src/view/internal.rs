@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_rt::world::update::batch::{self};
-use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit, edit_world};
+use atlas_rt::world::update::edit::{
+    MICRO_AREA, MICRO_CELLS, MICRO_EDGE, VoxelChange, VoxelEdit, edit_world,
+};
 use atlas_rt::world::update::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
@@ -528,6 +530,8 @@ impl AtlasRtView {
     }
 }
 
+const MASK_BYTES: usize = MICRO_CELLS / 8;
+
 /// A Micro-chunk that passed the GDScript boundary checks, ready to diff.
 /// Only the edit primitive builds Snapshots.
 pub(super) struct ValidatedChunk {
@@ -535,11 +539,6 @@ pub(super) struct ValidatedChunk {
     mask: [u8; MASK_BYTES],
     materials: Vec<u8>,
 }
-
-const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
-const MICRO_AREA: usize = MICRO_EDGE * MICRO_EDGE;
-const MICRO_CELLS: usize = MICRO_EDGE * MICRO_AREA;
-const MASK_BYTES: usize = MICRO_CELLS / 8;
 
 /// The Set and Clear edits that turn `world`'s copy of `chunk` into the
 /// incoming mask and materials. Cells walk in ascending index order;
