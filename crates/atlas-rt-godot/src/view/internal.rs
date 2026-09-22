@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_rt::world::update::batch::{self};
+use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit, edit_world};
 use atlas_rt::world::update::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
-use atlas_rt::world::update::snapshot::MicroChunkSnapshot;
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -12,7 +12,9 @@ use atlas_rt::render::{
     image::delivery::{DeviceMemory, SLOT_COUNT},
     pipeline::task::RenderMode,
 };
+use atlas_rt::world::World;
 use atlas_rt::world::grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH};
+use glam::IVec3;
 
 use crate::view::api::AtlasRtView;
 use crate::view::{ATLAS_FRAME_UNIFORM, REJECT, VoxFile, camera_view};
@@ -124,8 +126,8 @@ impl AtlasRtView {
         }
     }
 
-    /// Clears for the outgoing world ahead of the incoming snapshots, uploads
-    /// the palette, and submits the whole thing as one batch.
+    /// Plans the finished load's batch, uploads the palette, submits it, and
+    /// stores the world the batch describes.
     fn plan_load(&mut self) {
         let Some(loaded) = self.job.as_ref().and_then(WorldUpdateJob::take_loaded) else {
             return;
@@ -141,13 +143,18 @@ impl AtlasRtView {
 
         if !self.submit_world_change(planned) {
             self.fail_job(String::from("the edit queue rejected the world"));
+
+            return;
         }
+
+        self.world = Some(loaded.world);
     }
 
-    /// A clear leaves the view with nothing to show, so it completes into
-    /// empty-and-idle rather than into a world being resident.
+    /// A clear completes into empty-and-idle and drops the stored world.
     fn plan_clear(&mut self) {
         if self.world_chunks.is_empty() {
+            self.world = None;
+
             if let Some(job) = self.job.as_mut() {
                 job.no_world();
             }
@@ -159,7 +166,11 @@ impl AtlasRtView {
 
         if !self.submit_world_change(planned) {
             self.fail_job(String::from("the edit queue rejected the clear"));
+
+            return;
         }
+
+        self.world = None;
     }
 
     /// Gives up on the load in flight, for a failure the background thread
@@ -367,16 +378,44 @@ impl AtlasRtView {
         shader.set_shader_parameter(ATLAS_FRAME_UNIFORM, &frame.to_variant());
     }
 
-    /// Plans validated edits into one batch. A rejected boundary read is logged
-    /// here, once.
-    pub(super) fn submit_edits(&mut self, edits: Result<Vec<MicroChunkSnapshot>, String>) -> bool {
-        match edits {
-            Ok(snapshots) => self.apply_batch(batch::plan_edit(snapshots, &self.world_chunks)),
+    /// Diffs validated chunks against the stored world, applies the edit
+    /// primitive, and submits its batch. Does not suppress the display or touch
+    /// the job. Refuses without a world or without a pipeline before mutating.
+    pub(super) fn submit_edits(&mut self, edits: Result<Vec<ValidatedChunk>, String>) -> bool {
+        let chunks = match edits {
+            Ok(chunks) => chunks,
             Err(reason) => {
                 godot_error!("{}{}", REJECT, reason);
-                false
+
+                return false;
             }
+        };
+
+        if self.pipeline.is_none() {
+            return false;
         }
+
+        let Some(world) = &mut self.world else {
+            godot_error!("{}{}", REJECT, "no world is loaded");
+
+            return false;
+        };
+
+        let voxel_edits: Vec<VoxelEdit> = chunks
+            .iter()
+            .flat_map(|chunk| chunk_edits(world, chunk))
+            .collect();
+
+        let planned = match edit_world(world, &voxel_edits, &self.world_chunks) {
+            Ok(planned) => planned,
+            Err(err) => {
+                godot_error!("{}{}", REJECT, err);
+
+                return false;
+            }
+        };
+
+        self.apply_batch(planned)
     }
 
     /// Callers must not hold the pipeline lock. This method acquires it, and
@@ -398,10 +437,8 @@ impl AtlasRtView {
         submitted
     }
 
-    pub(super) fn validate_edits(
-        edits: &Array<Variant>,
-    ) -> Result<Vec<MicroChunkSnapshot>, String> {
-        let mut snapshots = Vec::with_capacity(edits.len());
+    pub(super) fn validate_edits(edits: &Array<Variant>) -> Result<Vec<ValidatedChunk>, String> {
+        let mut chunks = Vec::with_capacity(edits.len());
 
         for (index, edit) in edits.iter_shared().enumerate() {
             let fields = edit
@@ -412,10 +449,10 @@ impl AtlasRtView {
             let mask = Self::read_field::<PackedByteArray>(&fields, index, "mask")?;
             let materials = Self::read_field::<PackedByteArray>(&fields, index, "materials")?;
 
-            snapshots.push(Self::validate_edit(coords, &mask, &materials)?);
+            chunks.push(Self::validate_edit(coords, &mask, &materials)?);
         }
 
-        Ok(snapshots)
+        Ok(chunks)
     }
 
     fn read_field<T: FromGodot>(
@@ -434,7 +471,7 @@ impl AtlasRtView {
         coords: Vector3i,
         mask: &PackedByteArray,
         materials: &PackedByteArray,
-    ) -> Result<MicroChunkSnapshot, String> {
+    ) -> Result<ValidatedChunk, String> {
         let half = LATTICE_HALF_EXTENT.cast_signed();
         let inside = coords.x >= -half
             && coords.x < half
@@ -455,8 +492,11 @@ impl AtlasRtView {
             return Err(format!("coords {coords} not a multiple of 8"));
         }
 
-        if mask.len() != 64 {
-            return Err(format!("mask has {} bytes; expected 64", mask.len()));
+        if mask.len() != MASK_BYTES {
+            return Err(format!(
+                "mask has {} bytes; expected {MASK_BYTES}",
+                mask.len()
+            ));
         }
 
         let occupied = mask
@@ -472,7 +512,7 @@ impl AtlasRtView {
             ));
         }
 
-        let mut mask_bytes = [0u8; 64];
+        let mut mask_bytes = [0u8; MASK_BYTES];
 
         for (index, byte) in mask.to_vec().iter().copied().enumerate() {
             if let Some(entry) = mask_bytes.get_mut(index) {
@@ -480,10 +520,339 @@ impl AtlasRtView {
             }
         }
 
-        Ok(MicroChunkSnapshot {
-            global_coords: glam::IVec3::new(coords.x, coords.y, coords.z),
+        Ok(ValidatedChunk {
+            origin: glam::IVec3::new(coords.x, coords.y, coords.z),
             mask: mask_bytes,
             materials: materials.to_vec(),
         })
+    }
+}
+
+/// A Micro-chunk that passed the GDScript boundary checks, ready to diff.
+/// Only the edit primitive builds Snapshots.
+pub(super) struct ValidatedChunk {
+    origin: IVec3,
+    mask: [u8; MASK_BYTES],
+    materials: Vec<u8>,
+}
+
+const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
+const MICRO_AREA: usize = MICRO_EDGE * MICRO_EDGE;
+const MICRO_CELLS: usize = MICRO_EDGE * MICRO_AREA;
+const MASK_BYTES: usize = MICRO_CELLS / 8;
+
+/// The Set and Clear edits that turn `world`'s copy of `chunk` into the
+/// incoming mask and materials. Cells walk in ascending index order;
+/// `materials` is consumed only for set bits, matching Snapshot packing.
+fn chunk_edits(world: &World, chunk: &ValidatedChunk) -> Vec<VoxelEdit> {
+    let ValidatedChunk {
+        origin,
+        mask,
+        materials,
+    } = chunk;
+    let mut edits = Vec::new();
+    let mut next_material = 0;
+
+    for index in 0..MICRO_CELLS {
+        let offset = IVec3::new(
+            i32::try_from(index % MICRO_EDGE).unwrap_or(0),
+            i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
+            i32::try_from(index / MICRO_AREA).unwrap_or(0),
+        );
+        let position = origin.saturating_add(offset);
+
+        let occupied = mask
+            .get(index / MICRO_EDGE)
+            .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0);
+
+        let incoming = if occupied {
+            let material = materials.get(next_material).copied();
+            next_material = next_material.saturating_add(1);
+            material
+        } else {
+            None
+        };
+
+        let current = world
+            .get_voxel(&position)
+            .and_then(|voxel| u8::try_from(*voxel).ok());
+
+        match (incoming, current) {
+            (Some(material), Some(existing)) if material == existing => {}
+            (Some(material), _) => edits.push(VoxelEdit {
+                position,
+                change: VoxelChange::Set(material),
+            }),
+            (None, Some(_)) => edits.push(VoxelEdit {
+                position,
+                change: VoxelChange::Clear,
+            }),
+            (None, None) => {}
+        }
+    }
+
+    edits
+}
+
+#[cfg(test)]
+mod tests {
+    use atlas_rt::world::{
+        World,
+        update::{
+            batch::TrackedCoords,
+            edit::{VoxelChange, VoxelEdit, edit_world},
+        },
+    };
+    use glam::IVec3;
+
+    use super::{MASK_BYTES, ValidatedChunk, chunk_edits};
+
+    const ORIGIN: IVec3 = IVec3::ZERO;
+
+    fn chunk(origin: IVec3, mask: [u8; MASK_BYTES], materials: Vec<u8>) -> ValidatedChunk {
+        ValidatedChunk {
+            origin,
+            mask,
+            materials,
+        }
+    }
+
+    fn mask_for(indices: &[u32]) -> [u8; MASK_BYTES] {
+        let mut mask = [0u8; MASK_BYTES];
+
+        for index in indices {
+            if let Some(byte) = mask.get_mut((*index / 8) as usize) {
+                *byte |= 1u8 << (index % 8);
+            }
+        }
+
+        mask
+    }
+
+    fn cell_position(index: u32) -> IVec3 {
+        IVec3::new(
+            (index % 8) as i32,
+            ((index / 8) % 8) as i32,
+            (index / 64) as i32,
+        )
+    }
+
+    fn set_edit(position: IVec3, material: u8) -> VoxelEdit {
+        VoxelEdit {
+            position,
+            change: VoxelChange::Set(material),
+        }
+    }
+
+    fn world_at(origin: IVec3, cells: &[(u32, u8)]) -> World {
+        let mut world = World::default();
+        let edits: Vec<VoxelEdit> = cells
+            .iter()
+            .map(|(index, material)| set_edit(origin + cell_position(*index), *material))
+            .collect();
+
+        if edit_world(&mut world, &edits, &TrackedCoords::default()).is_err() {
+            panic!("the fixture edit must apply");
+        }
+
+        world
+    }
+
+    fn world_with(cells: &[(u32, u8)]) -> World {
+        world_at(ORIGIN, cells)
+    }
+
+    #[test]
+    fn a_zero_mask_clears_every_occupied_cell() {
+        let world = world_with(&[(0, 3), (7, 4), (511, 5)]);
+
+        let edits = chunk_edits(&world, &chunk(ORIGIN, [0u8; MASK_BYTES], Vec::new()));
+
+        assert_eq!(
+            edits,
+            vec![
+                VoxelEdit {
+                    position: cell_position(0),
+                    change: VoxelChange::Clear,
+                },
+                VoxelEdit {
+                    position: cell_position(7),
+                    change: VoxelChange::Clear,
+                },
+                VoxelEdit {
+                    position: cell_position(511),
+                    change: VoxelChange::Clear,
+                },
+            ],
+            "cell index order, one clear per occupied cell"
+        );
+    }
+
+    #[test]
+    fn a_chunk_identical_to_the_world_produces_no_edits() {
+        let world = world_with(&[(0, 9), (64, 2)]);
+
+        let edits = chunk_edits(&world, &chunk(ORIGIN, mask_for(&[0, 64]), vec![9, 2]));
+
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn a_material_change_emits_set_for_that_cell_only() {
+        let world = world_with(&[(0, 9), (1, 4)]);
+
+        let edits = chunk_edits(&world, &chunk(ORIGIN, mask_for(&[0, 1]), vec![9, 7]));
+
+        assert_eq!(
+            edits,
+            vec![VoxelEdit {
+                position: cell_position(1),
+                change: VoxelChange::Set(7),
+            }]
+        );
+    }
+
+    #[test]
+    fn cells_the_world_lacks_emit_set() {
+        let edits = chunk_edits(&World::default(), &chunk(ORIGIN, mask_for(&[3]), vec![6]));
+
+        assert_eq!(
+            edits,
+            vec![VoxelEdit {
+                position: cell_position(3),
+                change: VoxelChange::Set(6),
+            }]
+        );
+    }
+
+    #[test]
+    fn materials_are_walked_in_mask_bit_order() {
+        let indices = [0, 7, 64, 511];
+
+        let edits = chunk_edits(
+            &World::default(),
+            &chunk(ORIGIN, mask_for(&indices), vec![1, 2, 3, 4]),
+        );
+
+        assert_eq!(
+            edits,
+            vec![
+                VoxelEdit {
+                    position: cell_position(0),
+                    change: VoxelChange::Set(1),
+                },
+                VoxelEdit {
+                    position: cell_position(7),
+                    change: VoxelChange::Set(2),
+                },
+                VoxelEdit {
+                    position: cell_position(64),
+                    change: VoxelChange::Set(3),
+                },
+                VoxelEdit {
+                    position: cell_position(511),
+                    change: VoxelChange::Set(4),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_off_origin_chunk_diffs_against_its_own_cells() {
+        let origin = IVec3::new(8, -16, 24);
+        let world = world_at(origin, &[(0, 1)]);
+
+        let edits = chunk_edits(&world, &chunk(origin, mask_for(&[0]), vec![5]));
+
+        assert_eq!(
+            edits,
+            vec![VoxelEdit {
+                position: origin + cell_position(0),
+                change: VoxelChange::Set(5),
+            }]
+        );
+    }
+
+    fn must<T>(result: Result<T, impl std::fmt::Display>) -> T {
+        match result {
+            Ok(value) => value,
+            Err(err) => panic!("{err}"),
+        }
+    }
+
+    fn assert_feed_matches_world(
+        input: &atlas_rt::render::region::feed::RendererInput,
+        world: &World,
+    ) {
+        let expected = must(atlas_rt::world::update::snapshot::emit_snapshots(world));
+        let want = must(atlas_rt::render::region::pack::pack_regions(&expected));
+        let got = must(input.packed_regions());
+
+        assert_eq!(got.len(), want.len(), "resident region count");
+
+        for (got, want) in got.iter().zip(&want) {
+            assert_eq!(got.region_index, want.region_index);
+            assert!(got.blocks == want.blocks, "region blocks differ");
+            assert_eq!(got.aabbs, want.aabbs, "region aabbs");
+        }
+    }
+
+    #[test]
+    fn a_chunk_submission_leaves_the_feed_and_the_world_in_agreement() {
+        use atlas_rt::render::region::feed::RendererInput;
+        use atlas_rt::world::update::batch::TrackedCoords;
+        use atlas_rt::world::update::edit::edit_world;
+
+        let mut world = world_with(&[(0, 1), (7, 2), (64, 3)]);
+        let input = must(RendererInput::new());
+        let origin = ORIGIN;
+
+        let edits = chunk_edits(
+            &world,
+            &chunk(origin, mask_for(&[0, 7, 64, 100]), vec![1, 2, 3, 9]),
+        );
+
+        let batch = must(edit_world(&mut world, &edits, &TrackedCoords::default()));
+        must(input.submit_batch(batch.snapshots));
+        must(input.wait_until_idle());
+
+        assert_feed_matches_world(&input, &world);
+    }
+
+    #[test]
+    fn a_zero_mask_submission_empties_the_chunk_and_leaves_the_rest_resident() {
+        use atlas_rt::render::region::feed::RendererInput;
+        use atlas_rt::world::update::batch::TrackedCoords;
+        use atlas_rt::world::update::edit::edit_world;
+
+        let mut world = world_with(&[(0, 1), (7, 2)]);
+        let neighbour = IVec3::new(8, 0, 0);
+        let neighbour_edits = vec![set_edit(neighbour + cell_position(0), 4)];
+
+        let batch = must(edit_world(
+            &mut world,
+            &neighbour_edits,
+            &TrackedCoords::default(),
+        ));
+
+        let input = must(RendererInput::new());
+        let mut tracked = batch.tracked;
+
+        must(input.submit_batch(batch.snapshots));
+        must(input.wait_until_idle());
+
+        let edits = chunk_edits(&world, &chunk(ORIGIN, [0u8; MASK_BYTES], Vec::new()));
+        let batch = must(edit_world(&mut world, &edits, &tracked));
+        tracked = batch.tracked;
+
+        must(input.submit_batch(batch.snapshots));
+        must(input.wait_until_idle());
+
+        assert!(
+            !tracked.contains(&ORIGIN),
+            "the emptied chunk leaves the tracked set"
+        );
+        assert!(tracked.contains(&neighbour), "the neighbour stays resident");
+        assert_feed_matches_world(&input, &world);
     }
 }

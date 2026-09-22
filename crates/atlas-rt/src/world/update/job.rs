@@ -74,9 +74,11 @@ impl Status {
     }
 }
 
-/// A finished load's snapshots and palette, ready for the main thread.
+/// A finished load's world, its snapshots, and its palette, ready for the main
+/// thread.
 #[derive(Debug)]
 pub struct LoadedWorld {
+    pub world: World,
     pub snapshots: Vec<MicroChunkSnapshot>,
     pub palette: [Vec3; 256],
 }
@@ -478,6 +480,7 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
         .map_err(|error| format!("could not emit {name}: {error:#}"))?;
 
     Ok(RunResult::Loaded(Box::new(LoadedWorld {
+        world,
         snapshots,
         palette: get_palette(&voxel_data),
     })))
@@ -494,6 +497,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
+    use crate::world::update::snapshot::emit_snapshots;
 
     /// A world's bytes, standing in for a file on disk.
     struct Bytes(Vec<u8>);
@@ -643,6 +647,30 @@ mod tests {
             job.status(),
             Status::Loading,
             "handing the work over is not the world being resident"
+        );
+    }
+
+    #[test]
+    fn a_finished_load_hands_over_the_world_that_emitted_its_snapshots() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        let Some(loaded) = job.take_loaded() else {
+            panic!("the finished load must yield its world");
+        };
+
+        let occupied: usize = loaded.snapshots.iter().map(|s| s.occupied_count()).sum();
+
+        assert_eq!(loaded.world.voxel_count(), occupied);
+        assert_eq!(
+            emit_snapshots(&loaded.world).unwrap(),
+            loaded.snapshots,
+            "the snapshots are emission of the world they arrive with"
         );
     }
 

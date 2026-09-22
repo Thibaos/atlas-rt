@@ -7,9 +7,12 @@ use atlas_rt::{
         image::{delivery::SLOT_COUNT, display_gate::DisplayGate},
         pipeline::{DEFAULT_FOV, FrameInput},
     },
-    world::update::{
-        batch::TrackedCoords,
-        job::{Status, WorldUpdateJob},
+    world::{
+        World,
+        update::{
+            batch::TrackedCoords,
+            job::{Status, WorldUpdateJob},
+        },
     },
 };
 use godot::classes::{
@@ -41,6 +44,7 @@ pub struct AtlasRtView {
     wrapped_at: [Option<u64>; SLOT_COUNT],
     wrap_tick: u64,
     pub(super) world_chunks: TrackedCoords,
+    pub(super) world: Option<World>,
     tick: u64,
     pub(super) camera: Option<Gd<Camera3D>>,
 
@@ -67,6 +71,7 @@ impl IControl for AtlasRtView {
             wrapped_at: [None; SLOT_COUNT],
             wrap_tick: 0,
             world_chunks: TrackedCoords::default(),
+            world: None,
             tick: 0,
             camera: None,
             base,
