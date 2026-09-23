@@ -160,21 +160,31 @@ void main() {
                     uint byte_off = block_offset + MASK_BYTES + count;
                     uint byte_word = pool.words[byte_off >> 2u];
                     uint material = (byte_word >> ((byte_off & 3u) << 3u)) & 0xFFu;
-                    float t_report = t_entry;
+                    float alpha = palette.colors[material].a;
 
-                    if (last_axis >= 0) {
-                        float boundary = (step[last_axis] > 0)
-                            ? float(cell[last_axis])
-                            : float(cell[last_axis] + 1);
-                        t_report = max(
-                            (boundary - origin[last_axis]) / dir[last_axis],
-                            tmin
-                        );
+                    #ifdef SKIP_TRANSPARENT
+                    bool intersects = alpha >= 1.0;
+                    #else
+                    bool intersects = alpha > 0.0;
+                    #endif
+
+                    if (intersects) {
+                        float t_report = t_entry;
+
+                        if (last_axis >= 0) {
+                            float boundary = (step[last_axis] > 0)
+                                ? float(cell[last_axis])
+                                : float(cell[last_axis] + 1);
+                            t_report = max(
+                                (boundary - origin[last_axis]) / dir[last_axis],
+                                tmin
+                            );
+                        }
+
+                        reportIntersectionEXT(t_report, material);
+
+                        return;
                     }
-
-                    reportIntersectionEXT(t_report, material);
-
-                    return;
                 }
             }
         }

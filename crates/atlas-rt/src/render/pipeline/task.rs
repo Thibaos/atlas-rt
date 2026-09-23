@@ -44,6 +44,16 @@ pub mod intersect {
     }
 }
 
+pub mod skip_transparent_intersect {
+    vulkano_shaders::shader! {
+        root_path_env: "CARGO_MANIFEST_DIR",
+        ty: "intersection",
+        path: "shaders/voxel/intersect.rint",
+        define: [("SKIP_TRANSPARENT", "1")],
+        vulkan_version: "1.3"
+    }
+}
+
 pub mod miss {
     vulkano_shaders::shader! {
         root_path_env: "CARGO_MANIFEST_DIR",
@@ -139,6 +149,12 @@ impl RegionRenderTask {
                     .context("main entry point not found for intersect shader")?
             };
 
+            let skip_transparent_intersection = unsafe {
+                skip_transparent_intersect::load(&gpu.device)?
+                    .entry_point("main")
+                    .context("main entry point not found for skip-transparent intersect shader")?
+            };
+
             let closest_hit = unsafe {
                 closest_hit::load(&gpu.device)?
                     .entry_point("main")
@@ -151,7 +167,15 @@ impl RegionRenderTask {
                     .context("main entry point not found for shadow hit shader")?
             };
 
-            build_ray_tracing_pipeline(gpu, raygen, &miss, &intersection, &closest_hit, &shadow_hit)
+            build_ray_tracing_pipeline(
+                gpu,
+                raygen,
+                &miss,
+                &intersection,
+                &skip_transparent_intersection,
+                &closest_hit,
+                &shadow_hit,
+            )
         }?;
 
         let shader_binding_table = ShaderBindingTable::new(&gpu.memory_allocator, &pipeline)?;
@@ -183,6 +207,7 @@ fn build_ray_tracing_pipeline(
     raygen: &EntryPoint,
     miss: &EntryPoint,
     intersection: &EntryPoint,
+    skip_transparent_intersection: &EntryPoint,
     closest_hit: &EntryPoint,
     shadow_hit: &EntryPoint,
 ) -> anyhow::Result<Arc<RayTracingPipeline>> {
@@ -191,6 +216,7 @@ fn build_ray_tracing_pipeline(
         .bindless_context()
         .context("bindless context not found")?;
 
+    #[cfg(debug_assertions)]
     let hull_intersection = unsafe {
         hull_intersect::load(&gpu.device)?
             .entry_point("main")
@@ -208,7 +234,7 @@ fn build_ray_tracing_pipeline(
         const RAYGEN_INDEX: u32 = 0;
         const MISS_INDEX: u32 = 1;
         const DEFAULT_INTERSECTION_INDEX: u32 = 2;
-        const COARSE_INTERSECTION_INDEX: u32 = 3;
+        const SKIP_TRANSPARENT_INTERSECTION_INDEX: u32 = 3;
         const DEFAULT_CHIT_INDEX: u32 = 4;
         const SHADOW_CHIT_INDEX: u32 = 5;
         #[cfg(debug_assertions)]
@@ -219,7 +245,8 @@ fn build_ray_tracing_pipeline(
         let raygen = PipelineShaderStageCreateInfo::new(raygen);
         let miss = PipelineShaderStageCreateInfo::new(miss);
         let default_intersection = PipelineShaderStageCreateInfo::new(intersection);
-        let coarse_intersection = PipelineShaderStageCreateInfo::new(&hull_intersection);
+        let skip_transparent_intersection =
+            PipelineShaderStageCreateInfo::new(skip_transparent_intersection);
         let default_closest_hit = PipelineShaderStageCreateInfo::new(closest_hit);
         let shadow_closest_hit = PipelineShaderStageCreateInfo::new(shadow_hit);
 
@@ -228,7 +255,7 @@ fn build_ray_tracing_pipeline(
             raygen,
             miss,
             default_intersection,
-            coarse_intersection,
+            skip_transparent_intersection,
             default_closest_hit,
             shadow_closest_hit,
         ];
@@ -238,7 +265,7 @@ fn build_ray_tracing_pipeline(
             raygen,
             miss,
             default_intersection,
-            coarse_intersection,
+            skip_transparent_intersection,
             default_closest_hit,
             shadow_closest_hit,
             PipelineShaderStageCreateInfo::new(&hull_intersection),
@@ -260,12 +287,12 @@ fn build_ray_tracing_pipeline(
             RayTracingShaderGroupCreateInfo::ProceduralHit {
                 closest_hit_shader: Some(SHADOW_CHIT_INDEX),
                 any_hit_shader: None,
-                intersection_shader: DEFAULT_INTERSECTION_INDEX,
+                intersection_shader: SKIP_TRANSPARENT_INTERSECTION_INDEX,
             },
             RayTracingShaderGroupCreateInfo::ProceduralHit {
-                closest_hit_shader: Some(SHADOW_CHIT_INDEX),
+                closest_hit_shader: Some(DEFAULT_CHIT_INDEX),
                 any_hit_shader: None,
-                intersection_shader: COARSE_INTERSECTION_INDEX,
+                intersection_shader: SKIP_TRANSPARENT_INTERSECTION_INDEX,
             },
             #[cfg(debug_assertions)]
             RayTracingShaderGroupCreateInfo::ProceduralHit {

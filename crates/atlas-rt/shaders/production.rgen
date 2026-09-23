@@ -25,7 +25,7 @@ void reset_payload() {
 
 #define VOXEL_SBT_INDEX 0u
 #define SHADOW_SBT_INDEX 1u
-#define COARSE_SHADOW_SBT_INDEX 2u
+#define RETRACE_SBT_INDEX 2u
 #define HULL_SBT_INDEX 3u
 
 void main() {
