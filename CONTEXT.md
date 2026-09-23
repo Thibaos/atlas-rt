@@ -24,8 +24,8 @@ of edits, out of scope)
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping material indices to
 display colors; kept sRGB-encoded end to end. The ray pass converts a hit's
-entry to linear for the display path. GPU-side: a bindless vec4[256] storage
-buffer.
+entry to linear for the display path. Alpha below 255 engages Transparency.
+GPU-side: a bindless vec4[256] storage buffer.
 _Avoid_: Color table, LUT
 
 **Material index**:
@@ -33,6 +33,15 @@ The per-voxel u8 the voxel pool carries beside the Occupancy mask: the
 Palette entry the voxel paints with. There is no surface property table, so
 the renderer shades from the Palette alone.
 _Avoid_: material id, MATL, material system
+
+**Transparency**:
+A Palette property: alpha below 255. The nearest such surface (0 < a < 255)
+blends over the first opaque surface or the Background behind it, one layer
+deep, so a transparent surface further back never appears. Alpha 0 is
+fully see-through and never intersects. No transparent surface casts a
+shadow, whatever its alpha. Voxel mode only.
+_Avoid_: opacity (inverted), glass (a material), alpha blending (the blend
+equation, not the property)
 
 **Normal**:
 The geometric surface normal at a voxel hit: the face the DDA's march

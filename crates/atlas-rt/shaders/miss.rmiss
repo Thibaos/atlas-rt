@@ -17,6 +17,5 @@ void main() {
     incoming_payload.normal = vec3(0.0);
     incoming_payload.t = FLT_MAX;
 
-    // shadow_payload.attenuation = 1.0;
     shadow_payload.t = FLT_MAX;
 }
