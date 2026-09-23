@@ -28,6 +28,22 @@ void reset_payload() {
 #define RETRACE_SBT_INDEX 2u
 #define HULL_SBT_INDEX 3u
 
+void shade_hit(vec3 origin, vec3 direction) {
+    if (payload.t >= FLT_MAX) {
+        return;
+    }
+
+    vec3 sun_direction = normalize(vec3(-0.5, -0.8, 0.5));
+    vec3 hit_position = origin + (payload.t - EPSILON) * direction;
+
+    shadow_payload.t = FLT_MAX;
+    traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
+
+    if (shadow_payload.t < FLT_MAX) {
+        payload.color.rgb *= 0.25;
+    }
+}
+
 void main() {
     vec3 origin;
     vec3 direction;
@@ -49,15 +65,18 @@ void main() {
         return;
     }
 
-    if (payload.t < FLT_MAX) {
-        vec3 sun_direction = normalize(vec3(-0.5, -0.8, 0.5));
-        vec3 hit_position = origin + (payload.t - EPSILON) * direction;
+    shade_hit(origin, direction);
 
-        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
+    if (mode == MODE_VOXEL && payload.alpha > 0.0 && payload.alpha < 1.0) {
+        float coverage = payload.alpha;
+        vec4 stashed_color = payload.color;
+        float stashed_t = payload.t;
 
-        if (shadow_payload.t < FLT_MAX) {
-            payload.color.rgb *= 0.25;
-        }
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, RETRACE_SBT_INDEX, 0u, 0u, origin, stashed_t, direction, RAY_T_MAX, 0);
+
+        shade_hit(origin, direction);
+
+        payload.color.rgb = stashed_color.rgb * coverage + payload.color.rgb * (1.0 - coverage);
     }
 
     imageStore(vko_image2D_rgba8(image_id), ivec2(gl_LaunchIDEXT.xy), payload.color);
