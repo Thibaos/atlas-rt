@@ -149,10 +149,7 @@ impl RegionStore {
     ) -> anyhow::Result<Self> {
         let mut store = Self::new_empty(gpu)?;
 
-        store.upload_palette(
-            gpu,
-            get_palette(voxel_data).map(|color| [color.x, color.y, color.z, 1.0]),
-        )?;
+        store.upload_palette(gpu, get_palette(voxel_data).map(|color| color.to_array()))?;
 
         input.wait_until_idle()?;
 

@@ -8,7 +8,7 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-use glam::Vec3;
+use glam::Vec4;
 use tracing::error;
 
 use crate::{
@@ -80,7 +80,7 @@ impl Status {
 pub struct LoadedWorld {
     pub world: World,
     pub snapshots: Vec<MicroChunkSnapshot>,
-    pub palette: [Vec3; 256],
+    pub palette: [Vec4; 256],
 }
 
 /// The result of a completed background job.
@@ -707,6 +707,35 @@ mod tests {
             assert!(
                 (color.x - expected).abs() < 1.0e-6 && color.y > 0.0,
                 "entry {entry} does not carry its own colour"
+            );
+        }
+    }
+
+    #[test]
+    fn a_palette_carries_the_alpha_the_file_wrote_at_every_slot() {
+        let mut rgba = [0u8; 1024];
+        let (entries, _) = rgba.as_chunks_mut::<4>();
+
+        for (entry, slot) in entries.iter_mut().enumerate() {
+            let byte = (entry & 0xFF) as u8;
+            slot.copy_from_slice(&[byte, 1, 2, byte]);
+        }
+
+        let bytes = paletted_world(&rgba);
+        let Ok(voxel_data) = open_bytes(&bytes) else {
+            panic!("the paletted world must parse");
+        };
+        let palette = get_palette(&voxel_data);
+
+        for slot in [0usize, 128, 255] {
+            let expected = (slot & 0xFF) as f32 / 255.0;
+            let Some(color) = palette.get(slot) else {
+                panic!("the palette holds 256 slots");
+            };
+
+            assert!(
+                (color.w - expected).abs() < 1.0e-6,
+                "slot {slot} does not carry the alpha the file wrote"
             );
         }
     }

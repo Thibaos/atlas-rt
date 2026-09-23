@@ -185,7 +185,7 @@ impl AtlasRtView {
         }
     }
 
-    fn upload_palette(&self, palette: [glam::Vec3; 256]) -> Result<(), String> {
+    fn upload_palette(&self, palette: [glam::Vec4; 256]) -> Result<(), String> {
         let (Some(gpu), Some(pipeline)) = (&self.gpu, &self.pipeline) else {
             return Ok(());
         };
@@ -193,7 +193,7 @@ impl AtlasRtView {
         let gpu = lock(gpu);
 
         lock(pipeline)
-            .upload_palette(&gpu, palette.map(|color| [color.x, color.y, color.z, 1.0]))
+            .upload_palette(&gpu, palette.map(|color| color.to_array()))
             .map_err(|error| format!("{error:#}"))
     }
 

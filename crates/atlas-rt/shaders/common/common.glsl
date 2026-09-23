@@ -1,6 +1,7 @@
 struct MainPassPayload {
     float t;
     vec4 color;
+    float alpha;
     vec3 normal;
 };
 
