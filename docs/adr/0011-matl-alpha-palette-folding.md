@@ -22,9 +22,11 @@ world. A file with no `MATL` chunks is palette-only and produces no material
 fallback warning. Warnings are aggregated.
 
 Only `_alpha` is read. `_trans`, `_ior`, `_d`, and `_att` remain unsupported
-material properties and do not change the result. No material table or new GPU
-buffer is added. `get_palette` remains the raw RGBA conversion, while
-`get_effective_palette` is the fallible conversion used by both hosts.
+material properties and do not change the result. When a referenced material
+has no usable alpha, one aggregate warning reports those properties. No
+material table or new GPU buffer is added. `get_palette` remains the raw RGBA
+conversion, while `get_effective_palette` is the fallible conversion used by
+both hosts.
 
 A non-default or malformed `IMAP` chunk rejects the world. The standard default
 map is accepted as a no-op. This keeps source-order palette and material lookup

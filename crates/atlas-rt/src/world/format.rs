@@ -601,6 +601,13 @@ mod tests {
     }
 
     #[test]
+    fn nested_default_imap_is_accepted_as_a_no_op() {
+        let bytes = vox_with_nested_imap(dot_vox::DEFAULT_INDEX_MAP);
+
+        assert!(open_bytes(&bytes).is_ok());
+    }
+
+    #[test]
     fn data_after_main_is_rejected() {
         let mut bytes = vox_with_imap(None);
         bytes.extend_from_slice(b"trailing");
