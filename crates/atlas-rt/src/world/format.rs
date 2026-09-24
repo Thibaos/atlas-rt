@@ -73,6 +73,7 @@ fn chunk_at(bytes: &[u8], offset: usize) -> anyhow::Result<Option<ChunkSlice>> {
     let header_end = offset
         .checked_add(12)
         .context("chunk header offset overflowed")?;
+
     if header_end > bytes.len() {
         bail!("chunk header ended at {header_end}");
     }
@@ -115,10 +116,15 @@ fn validate_child_chunks(bytes: &[u8], start: usize, end: usize) -> anyhow::Resu
         let chunk = chunk_at(bytes, offset)?.ok_or_else(|| anyhow!("missing child chunk"))?;
 
         if &chunk.kind == b"IMAP" {
+            if chunk.children_start != chunk.end {
+                bail!("IMAP must not contain child chunks");
+            }
+
             let map_length = chunk
                 .content_end
                 .checked_sub(chunk.content_start)
                 .context("IMAP content bounds were invalid")?;
+
             if map_length != dot_vox::DEFAULT_INDEX_MAP.len() {
                 bail!("IMAP length {map_length} is not 256");
             }
@@ -126,13 +132,10 @@ fn validate_child_chunks(bytes: &[u8], start: usize, end: usize) -> anyhow::Resu
             let map = bytes
                 .get(chunk.content_start..chunk.content_end)
                 .context("IMAP content was missing")?;
+
             if map != dot_vox::DEFAULT_INDEX_MAP {
                 bail!("non-default IMAP is unsupported");
             }
-        }
-
-        if chunk.children_start < chunk.end {
-            validate_child_chunks(bytes, chunk.children_start, chunk.end)?;
         }
 
         offset = chunk.end;
@@ -147,8 +150,13 @@ fn validate_child_chunks(bytes: &[u8], start: usize, end: usize) -> anyhow::Resu
 
 fn validate_imap(bytes: &[u8]) -> anyhow::Result<()> {
     let main = chunk_at(bytes, 8)?.ok_or_else(|| anyhow!("VOX file has no MAIN chunk"))?;
+
     if &main.kind != b"MAIN" {
         bail!("VOX file does not start with MAIN");
+    }
+
+    if main.end != bytes.len() {
+        bail!("VOX file has data after MAIN");
     }
 
     validate_child_chunks(bytes, main.children_start, main.end)
@@ -172,7 +180,8 @@ pub fn get_palette(data: &dot_vox::DotVoxData) -> [glam::Vec4; 256] {
 
 /// # Errors
 ///
-/// Returns an error when `MATL` contains duplicate material IDs.
+/// Returns an error when `MATL` contains duplicate material IDs or the world
+/// carries a non-default `IMAP` map.
 pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam::Vec4; 256]> {
     if data.index_map != dot_vox::DEFAULT_INDEX_MAP {
         bail!("non-default IMAP is unsupported");
@@ -197,6 +206,7 @@ pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam
 
         if let Some(alpha) = alpha {
             usable_alphas.insert(material.id, alpha);
+
             if let Some(color) = palette.get_mut(slot) {
                 color.w *= alpha;
             }
@@ -278,6 +288,7 @@ fn material_fallback_counts(
         let Ok(slot) = u32::try_from(slot) else {
             continue;
         };
+
         let Some(id) = slot.checked_add(1) else {
             continue;
         };
@@ -396,13 +407,19 @@ mod tests {
     }
 
     fn vox_with_imap(map: Option<&[u8]>) -> Vec<u8> {
+        vox_with_imap_children(map, &[])
+    }
+
+    fn vox_with_imap_children(map: Option<&[u8]>, imap_children: &[u8]) -> Vec<u8> {
         let size = chunk(*b"SIZE", &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], &[]);
         let voxel = chunk(*b"XYZI", &[1, 0, 0, 0, 0, 0, 0, 2], &[]);
         let palette = chunk(*b"RGBA", &[0; 1024], &[]);
         let mut children = [size, voxel, palette].concat();
+
         if let Some(map) = map {
-            children.extend_from_slice(&chunk(*b"IMAP", map, &[]));
+            children.extend_from_slice(&chunk(*b"IMAP", map, imap_children));
         }
+
         let main = chunk(*b"MAIN", &[], &children);
 
         let mut bytes = b"VOX ".to_vec();
@@ -484,9 +501,11 @@ mod tests {
     #[test]
     fn non_default_imap_is_rejected_by_effective_palette() {
         let mut data = data(vec![]);
+
         if let Some(first) = data.index_map.first_mut() {
             *first = 2;
         }
+
         let error = expect_error(get_effective_palette(&data), "non-default IMAP must reject");
 
         assert!(error.to_string().contains("non-default IMAP"));
@@ -495,9 +514,11 @@ mod tests {
     #[test]
     fn non_default_imap_is_rejected() {
         let mut map = dot_vox::DEFAULT_INDEX_MAP.to_vec();
+
         if let Some(first) = map.first_mut() {
             *first = 2;
         }
+
         let bytes = vox_with_imap(Some(&map));
         let error = expect_error(open_bytes(&bytes), "non-default IMAP must reject");
 
@@ -510,6 +531,28 @@ mod tests {
         let error = expect_error(open_bytes(&bytes), "malformed IMAP must reject");
 
         assert!(error.to_string().contains("IMAP length"));
+    }
+
+    #[test]
+    fn imap_with_child_chunks_is_rejected() {
+        let bytes =
+            vox_with_imap_children(Some(dot_vox::DEFAULT_INDEX_MAP), &chunk(*b"NOPE", &[], &[]));
+        let error = expect_error(open_bytes(&bytes), "IMAP child chunks must reject");
+
+        assert!(
+            error
+                .to_string()
+                .contains("IMAP must not contain child chunks")
+        );
+    }
+
+    #[test]
+    fn data_after_main_is_rejected() {
+        let mut bytes = vox_with_imap(None);
+        bytes.extend_from_slice(b"trailing");
+        let error = expect_error(open_bytes(&bytes), "trailing data must reject");
+
+        assert!(error.to_string().contains("data after MAIN"));
     }
 
     #[test]

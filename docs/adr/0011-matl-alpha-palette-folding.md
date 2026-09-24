@@ -50,8 +50,9 @@ paired without silently applying alpha to a remapped display slot.
 - Palette-only worlds keep their current output.
 - MagicaVoxel glass such as `nuke.vox` can use `_alpha` without a renderer shader
   change when its source-order palette is used.
-- A material ID is still a `u8` palette index in the World and voxel pool. The
-  material metadata is consumed only while constructing the uploaded palette.
+- A Material index is still a `u8` palette index in the World and voxel pool. The
+  one-based `MATL` ID is metadata and is consumed only while constructing the
+  uploaded palette.
 - The existing alpha-0 skip, transparent shadow behavior, single-layer retrace,
   and Voxel-only rule continue to apply to effective alpha.
 - Full `IMAP` remapping, physical glass, refraction, attenuation, and material

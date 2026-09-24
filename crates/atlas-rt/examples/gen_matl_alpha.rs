@@ -41,9 +41,11 @@ fn main() -> io::Result<()> {
     )?;
 
     let mut non_default = dot_vox::DEFAULT_INDEX_MAP.to_vec();
+
     if let Some(first) = non_default.first_mut() {
         *first = 2;
     }
+
     write_with_imap(
         &directory,
         "matl-alpha-imap.vox",
@@ -213,6 +215,7 @@ fn write_with_imap(directory: &Path, name: &str, data: &DotVoxData, map: &[u8]) 
     let header = bytes
         .get(8..12)
         .ok_or_else(|| io::Error::other("generated VOX file has no MAIN header"))?;
+
     if header != b"MAIN" {
         return Err(io::Error::other("generated VOX file has no MAIN header"));
     }

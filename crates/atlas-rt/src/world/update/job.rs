@@ -522,6 +522,7 @@ mod tests {
         }
 
         let mut rgba = [0u8; 1024];
+
         if let Some(slot) = rgba.get_mut(24..28) {
             slot.copy_from_slice(&[200, 100, 50, 128]);
         }

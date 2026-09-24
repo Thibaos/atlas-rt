@@ -141,7 +141,8 @@ impl RegionStore {
 
     /// # Errors
     ///
-    /// Returns an error if `Self::new_empty`, packing regions, or store rebuild failed
+    /// Returns an error if effective-palette construction, `Self::new_empty`,
+    /// packing regions, or store rebuild fails.
     pub fn new(
         gpu: &RenderContext,
         voxel_data: &DotVoxData,
