@@ -61,6 +61,10 @@ exported project does not have: worlds shipped inside a `.pck` are out of
 reach until the load moves to a res:// source that reads on the main
 thread.
 
+The material-alpha fixture is `crates/atlas-rt/assets/test/matl-alpha.vox`.
+The example project's `worlds/` directory is ignored, so copy that fixture
+there for a local Godot visual check.
+
 Loading screen. `scripts/loading_overlay.gd` is a full-rect Control that
 reads the view's status, progress, and error string each frame, and
 `main.gd` adds one above the pause UI. The world buttons tell it a load is

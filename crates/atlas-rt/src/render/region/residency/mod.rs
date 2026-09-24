@@ -36,7 +36,7 @@ use crate::{
         },
     },
     world::{
-        format::get_palette,
+        format::get_effective_palette,
         grid::{REGION_LENGTH, region_id},
     },
 };
@@ -147,9 +147,10 @@ impl RegionStore {
         voxel_data: &DotVoxData,
         input: &RendererInput,
     ) -> anyhow::Result<Self> {
+        let palette = get_effective_palette(voxel_data)?;
         let mut store = Self::new_empty(gpu)?;
 
-        store.upload_palette(gpu, get_palette(voxel_data).map(|color| color.to_array()))?;
+        store.upload_palette(gpu, palette.map(|color| color.to_array()))?;
 
         input.wait_until_idle()?;
 

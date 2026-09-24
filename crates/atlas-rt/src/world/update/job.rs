@@ -15,7 +15,7 @@ use crate::{
     render::image::display_gate::DisplayGate,
     world::{
         World,
-        format::{get_palette, open_bytes},
+        format::{get_effective_palette, open_bytes},
         load::progress::{Progress, Stage},
     },
 };
@@ -468,6 +468,9 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
 
     progress.end_stage(Stage::Parse);
 
+    let palette = get_effective_palette(&voxel_data)
+        .map_err(|error| format!("could not build palette for {name}: {error:#}"))?;
+
     let (world, clipped) = World::new_clipped(&voxel_data);
 
     progress.end_stage(Stage::Build);
@@ -482,7 +485,7 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
     Ok(RunResult::Loaded(Box::new(LoadedWorld {
         world,
         snapshots,
-        palette: get_palette(&voxel_data),
+        palette,
     })))
 }
 
@@ -497,7 +500,49 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::world::update::snapshot::emit_snapshots;
+    use crate::world::{format::get_palette, update::snapshot::emit_snapshots};
+
+    fn matl_paletted_world() -> Vec<u8> {
+        fn chunk(id: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            bytes.extend_from_slice(&id);
+            bytes.extend_from_slice(
+                &i32::try_from(content.len())
+                    .unwrap_or(i32::MAX)
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(
+                &i32::try_from(children.len())
+                    .unwrap_or(i32::MAX)
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(content);
+            bytes.extend_from_slice(children);
+            bytes
+        }
+
+        let mut rgba = [0u8; 1024];
+        if let Some(slot) = rgba.get_mut(24..28) {
+            slot.copy_from_slice(&[200, 100, 50, 128]);
+        }
+
+        let size = chunk(*b"SIZE", &[1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0], &[]);
+        let voxel = chunk(*b"XYZI", &[1, 0, 0, 0, 0, 0, 0, 7], &[]);
+        let palette = chunk(*b"RGBA", &rgba, &[]);
+        let mut material = 7u32.to_le_bytes().to_vec();
+        material.extend_from_slice(&1u32.to_le_bytes());
+        material.extend_from_slice(&6u32.to_le_bytes());
+        material.extend_from_slice(b"_alpha");
+        material.extend_from_slice(&3u32.to_le_bytes());
+        material.extend_from_slice(b"0.5");
+        let material = chunk(*b"MATL", &material, &[]);
+        let main = chunk(*b"MAIN", &[], &[size, voxel, palette, material].concat());
+
+        let mut bytes = b"VOX ".to_vec();
+        bytes.extend_from_slice(&150u32.to_le_bytes());
+        bytes.extend_from_slice(&main);
+        bytes
+    }
 
     /// A world's bytes, standing in for a file on disk.
     struct Bytes(Vec<u8>);
@@ -546,8 +591,16 @@ mod tests {
         fn chunk(id: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {
             let mut bytes = Vec::new();
             bytes.extend_from_slice(&id);
-            bytes.extend_from_slice(&(content.len() as i32).to_le_bytes());
-            bytes.extend_from_slice(&(children.len() as i32).to_le_bytes());
+            bytes.extend_from_slice(
+                &i32::try_from(content.len())
+                    .unwrap_or(i32::MAX)
+                    .to_le_bytes(),
+            );
+            bytes.extend_from_slice(
+                &i32::try_from(children.len())
+                    .unwrap_or(i32::MAX)
+                    .to_le_bytes(),
+            );
             bytes.extend_from_slice(content);
             bytes.extend_from_slice(children);
 
@@ -709,6 +762,47 @@ mod tests {
                 "entry {entry} does not carry its own colour"
             );
         }
+    }
+
+    #[test]
+    fn a_finished_load_hands_over_the_effective_palette() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.load(Box::new(source(matl_paletted_world())), 0)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        job.settle();
+
+        assert_eq!(job.poll(), Some(Finished::Loaded));
+
+        let loaded = job
+            .take_loaded()
+            .unwrap_or_else(|| panic!("the load must hand over its palette"));
+        let color = loaded
+            .palette
+            .get(6)
+            .unwrap_or_else(|| panic!("palette slot 6 must exist"));
+
+        assert!((color.w - ((128.0_f32 / 255.0_f32).mul_add(0.5, 0.0))).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn a_duplicate_matl_world_fails_before_it_becomes_ready() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+        let bytes = std::fs::read("assets/test/matl-alpha-duplicate.vox")
+            .unwrap_or_else(|error| panic!("could not read duplicate fixture: {error}"));
+
+        job.load(Box::new(source(bytes)), 0)
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        job.settle();
+
+        assert_eq!(poll_until(&mut job), Finished::Failed);
+        assert!(
+            job.error()
+                .is_some_and(|error| error.contains("duplicate MATL id")),
+            "the load error names the duplicate material"
+        );
     }
 
     #[test]

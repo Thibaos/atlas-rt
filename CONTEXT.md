@@ -24,22 +24,32 @@ of edits, out of scope)
 **Palette**:
 A 256-entry RGBA8 color table from the .vox file mapping material indices to
 display colors; kept sRGB-encoded end to end. The ray pass converts a hit's
-entry to linear for the display path. Alpha below 255 engages Transparency.
+entry to linear for the display path. The source RGBA alpha remains part of
+the Palette, and an optional material alpha can reduce it during loading.
 GPU-side: a bindless vec4[256] storage buffer.
 _Avoid_: Color table, LUT
 
 **Material index**:
 The per-voxel u8 the voxel pool carries beside the Occupancy mask: the
-Palette entry the voxel paints with. There is no surface property table, so
-the renderer shades from the Palette alone.
-_Avoid_: material id, MATL, material system
+Palette entry the voxel paints with. MagicaVoxel `MATL` IDs are one-based
+metadata over these entries. The renderer consumes only `MATL._alpha` and folds
+it into the effective Palette during loading. Other material properties are
+out of scope.
+_Avoid_: material property table, physical glass, material system
+
+**Material alpha**:
+An optional MagicaVoxel `MATL._alpha` value for a one-based material ID. It
+multiplies the Palette alpha to produce effective Transparency. Missing or
+invalid values fall back to the Palette alpha.
+_Avoid_: opacity (inverted), transparency (the effective result), refraction
 
 **Transparency**:
-A Palette property: alpha below 255. The nearest such surface (0 < a < 255)
-blends over the first opaque surface or the Background behind it, one layer
-deep, so a transparent surface further back never appears. Alpha 0 is
-fully see-through and never intersects. No transparent surface casts a
-shadow, whatever its alpha. Voxel mode only.
+The effective compositing coverage after combining Palette alpha with optional
+Material alpha. The nearest surface with `0 < coverage < 1` blends over the
+first opaque surface or the Background behind it, one layer deep, so a
+transparent surface further back never appears. Coverage 0 is fully
+see-through and never intersects. No transparent surface casts a shadow,
+whatever its coverage. Voxel mode only.
 _Avoid_: opacity (inverted), glass (a material), alpha blending (the blend
 equation, not the property)
 
