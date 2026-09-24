@@ -41,9 +41,9 @@ Headless is still the right way to parse-check a script:
 
 Issues, specs, and wayfinder maps are markdown files under `.scratch/`, one directory per feature. See `docs/agents/issue-tracker.md`.
 
-### Triage labels
+### Triage states
 
-Five canonical triage roles, written into each issue's `Status:` line. See `docs/agents/triage-labels.md`.
+Read `docs/agents/triage-labels.md` before changing an issue's `Status:` line. It distinguishes completed work (`resolved`) from rejected work (`wontfix`).
 
 ### Domain docs
 
