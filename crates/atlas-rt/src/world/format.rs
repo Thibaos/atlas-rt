@@ -215,6 +215,7 @@ pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam
     }
 
     let mut palette = get_palette(data);
+    let used_ids = used_material_ids(data);
     let mut seen_ids = HashSet::new();
     let mut usable_alphas = HashMap::new();
     let mut invalid_alpha = 0usize;
@@ -229,7 +230,12 @@ pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam
             continue;
         };
 
-        let alpha = material_alpha(material, &mut invalid_alpha, &mut unsupported_properties);
+        let alpha = material_alpha(
+            material,
+            used_ids.contains(&material.id),
+            &mut invalid_alpha,
+            &mut unsupported_properties,
+        );
 
         if let Some(alpha) = alpha {
             usable_alphas.insert(material.id, alpha);
@@ -243,7 +249,7 @@ pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam
     let (missing_materials, fallback_materials) = if data.materials.is_empty() {
         (0, 0)
     } else {
-        material_fallback_counts(data, &seen_ids, &usable_alphas)
+        material_fallback_counts(&used_ids, &seen_ids, &usable_alphas)
     };
 
     let warning_count = invalid_alpha
@@ -265,11 +271,12 @@ pub fn get_effective_palette(data: &dot_vox::DotVoxData) -> anyhow::Result<[glam
 
 fn material_alpha(
     material: &dot_vox::Material,
+    is_referenced: bool,
     invalid_alpha: &mut usize,
     unsupported_properties: &mut usize,
 ) -> Option<f32> {
     let Some(value) = material.properties.get("_alpha") else {
-        if has_unsupported_properties(&material.properties) {
+        if is_referenced && has_unsupported_properties(&material.properties) {
             *unsupported_properties = unsupported_properties.saturating_add(1);
         }
 
@@ -279,7 +286,10 @@ fn material_alpha(
     match value.parse::<f32>() {
         Ok(value) if value.is_finite() && (0.0..=1.0).contains(&value) => Some(value),
         _ => {
-            *invalid_alpha = invalid_alpha.saturating_add(1);
+            if is_referenced {
+                *invalid_alpha = invalid_alpha.saturating_add(1);
+            }
+
             None
         }
     }
@@ -300,29 +310,17 @@ fn has_unsupported_properties(properties: &dot_vox::Dict) -> bool {
 }
 
 fn material_fallback_counts(
-    data: &dot_vox::DotVoxData,
+    used_ids: &HashSet<u32>,
     seen_ids: &HashSet<u32>,
     usable_alphas: &HashMap<u32, f32>,
 ) -> (usize, usize) {
     let mut missing: usize = 0;
     let mut fallback: usize = 0;
 
-    for slot in used_material_slots(data) {
-        if slot >= 255 {
-            continue;
-        }
-
-        let Ok(slot) = u32::try_from(slot) else {
-            continue;
-        };
-
-        let Some(id) = slot.checked_add(1) else {
-            continue;
-        };
-
-        if !seen_ids.contains(&id) {
+    for id in used_ids {
+        if !seen_ids.contains(id) {
             missing = missing.saturating_add(1);
-        } else if !usable_alphas.contains_key(&id) {
+        } else if !usable_alphas.contains_key(id) {
             fallback = fallback.saturating_add(1);
         }
     }
@@ -330,10 +328,18 @@ fn material_fallback_counts(
     (missing, fallback)
 }
 
-fn used_material_slots(data: &dot_vox::DotVoxData) -> HashSet<usize> {
+fn used_material_ids(data: &dot_vox::DotVoxData) -> HashSet<u32> {
     data.models
         .iter()
-        .flat_map(|model| model.voxels.iter().map(|voxel| usize::from(voxel.i)))
+        .flat_map(|model| model.voxels.iter())
+        .filter_map(|voxel| {
+            let slot = u32::from(voxel.i);
+            if slot >= 255 {
+                return None;
+            }
+
+            slot.checked_add(1)
+        })
         .collect()
 }
 
