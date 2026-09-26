@@ -19,9 +19,12 @@ const TIMEOUT: Duration = Duration::from_secs(2);
 const SETTLE: Duration = Duration::from_millis(150);
 
 fn spawn_sim() -> (Arc<RwLock<World>>, Handle) {
+    spawn_sim_with(PlayerProfile::default())
+}
+
+fn spawn_sim_with(profile: PlayerProfile) -> (Arc<RwLock<World>>, Handle) {
     let world = Arc::new(RwLock::new(World::default()));
-    let handle =
-        sim::spawn(Arc::clone(&world), PlayerProfile::default()).expect("the sim must spawn");
+    let handle = sim::spawn(Arc::clone(&world), profile).expect("the sim must spawn");
 
     (world, handle)
 }
@@ -559,4 +562,123 @@ fn evaluation_takes_only_the_read_lock_and_pushes_while_the_host_reads() {
     assert!(tick.player.grounded);
 
     drop(held_lock);
+}
+
+#[test]
+fn pausing_stops_accumulation_and_resume_starts_from_an_empty_accumulator() {
+    let (_world, handle) = spawn_sim();
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    wait_ready(&handle);
+
+    feed(&handle, part(9, 10));
+    assert_silent(&handle);
+
+    handle.set_paused(true);
+
+    // six whole ticks and a half sit owed while paused, and none of it runs
+    feed(
+        &handle,
+        period().saturating_mul(6).saturating_add(part(1, 2)),
+    );
+    assert_silent(&handle);
+
+    handle.set_paused(false);
+
+    // the held ninth came back with the resume, so this frame would owe a
+    // full tick if the pause had kept it
+    feed(&handle, part(2, 10));
+    assert_silent(&handle);
+
+    feed(&handle, period());
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(
+        tick.report.ticks, 1,
+        "resume starts with an empty accumulator"
+    );
+    assert_eq!(tick.report.discarded, 0);
+    assert_eq!(tick.remainder, part(2, 10));
+    assert_silent(&handle);
+}
+
+#[test]
+fn time_owed_while_paused_is_neither_run_nor_reported_as_a_drop() {
+    let (_world, handle) = spawn_sim();
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    wait_ready(&handle);
+
+    handle.set_paused(true);
+    feed(&handle, period().saturating_mul(9));
+    assert_silent(&handle);
+    handle.set_paused(false);
+
+    feed(&handle, period().saturating_mul(12));
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 5, "catch-up is capped at five ticks");
+    assert_eq!(
+        tick.report.discarded, 7,
+        "the paused frames owed nothing to discard"
+    );
+    assert!(tick.remainder.is_zero());
+    assert_silent(&handle);
+}
+
+#[test]
+fn activation_while_paused_stays_paused_until_the_host_resumes() {
+    let (_world, handle) = spawn_sim();
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    wait_ready(&handle);
+
+    handle.set_paused(true);
+    handle.activate(activation_of(&[set(3, 3, 3, 1)]));
+
+    assert!(wait_ready(&handle).grounded);
+
+    feed(&handle, period().saturating_mul(4));
+    assert_silent(&handle);
+
+    handle.set_paused(false);
+    feed(&handle, period());
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 1, "the activation kept the pause");
+}
+
+#[test]
+fn the_profile_survives_activation_and_a_different_profile_needs_a_new_sim() {
+    let profile = PlayerProfile::new(0.5, 0.5, 2.0, 1.7, 3.5, 18.0, 7.0, 1.0, 0.1, 60.0)
+        .unwrap_or_else(|error| panic!("{error}"));
+    let (_world, handle) = spawn_sim_with(profile);
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    wait_ready(&handle);
+
+    // one 60 Hz period owes one tick; a sim that fell back to the 30 Hz
+    // default would owe none
+    handle.frame(profile.tick_period(), InputSample::default());
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 1);
+    assert!(tick.remainder.is_zero());
+
+    handle.activate(activation_of(&[set(2, 2, 2, 1)]));
+    wait_ready(&handle);
+
+    handle.frame(profile.tick_period(), InputSample::default());
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(
+        tick.report.ticks, 1,
+        "the swap left the controller's profile in place"
+    );
+    assert!(tick.remainder.is_zero());
 }

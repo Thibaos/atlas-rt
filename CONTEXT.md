@@ -351,6 +351,13 @@ the simulation between Simulation ticks. A Simulation tick consumes the pending
 edge at most once.
 _Avoid_: raw input event, key state, input frame
 
+**Pause**:
+The host-held state that freezes Simulation time: accumulation stops, the
+sub-tick remainder and the pending jump edge are dropped, and frames owe no
+ticks until the host resumes. It survives Activation, which resets timing while
+the pause holds.
+_Avoid_: freeze, halt, suspend
+
 **Player collider**:
 The unrotated axis-aligned box used to move the player through the World. Its
 position is the center of its feet, and its full height participates in floor,

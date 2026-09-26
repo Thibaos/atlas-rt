@@ -20,13 +20,14 @@ use super::profile::PlayerProfile;
 use super::scheduler::Scheduler;
 use super::spawn::{floor_pose, grounded, pose};
 
-/// One frame of host time and buffered input, one edit command, one World
-/// handover, or the shutdown that ends the loop.
+/// One frame of host time and buffered input, one pause change, one edit
+/// command, one World handover, or the shutdown that ends the loop.
 enum Message {
     Frame {
         elapsed: Duration,
         sample: InputSample,
     },
+    Paused(bool),
     Command(Command),
     Activation(Box<Activation>),
     Shutdown,
@@ -101,9 +102,9 @@ pub fn spawn(world: Arc<RwLock<World>>, profile: PlayerProfile) -> Result<Handle
     Ok(Handle::new(world, host, outbox, thread))
 }
 
-/// The host's end of the boundary: the shared World, frames, commands and
-/// activations in, readiness and tick-end pushes out. Dropping it shuts the
-/// sim thread down and waits for it.
+/// The host's end of the boundary: the shared World, frames, pause changes,
+/// commands and activations in, readiness and tick-end pushes out. Dropping it
+/// shuts the sim thread down and waits for it.
 pub struct Handle {
     world: Arc<RwLock<World>>,
     host: mpsc::Sender<Message>,
@@ -123,6 +124,13 @@ impl Handle {
     /// only while frames arrive.
     pub fn frame(&self, elapsed: Duration, sample: InputSample) {
         self.send(Message::Frame { elapsed, sample });
+    }
+
+    /// Freezes or resumes the sim's clock. A pause drops the owed time and
+    /// the buffered jump edge; frames owe nothing while it holds, and the
+    /// resume starts from no accumulated time.
+    pub fn set_paused(&self, paused: bool) {
+        self.send(Message::Paused(paused));
     }
 
     /// Queues an edit command for the next commit.
@@ -200,8 +208,10 @@ struct Runtime {
     commands: Vec<Vec<VoxelEdit>>,
     scheduler: Scheduler,
     player: PlayerState,
+    pending_jump: Option<Instant>,
     pushes: mpsc::Sender<Push>,
     active: bool,
+    paused: bool,
     snap_pending: bool,
 }
 
@@ -217,8 +227,10 @@ impl Runtime {
             commands: Vec::new(),
             scheduler,
             player: floor_pose(),
+            pending_jump: None,
             pushes,
             active: false,
+            paused: false,
             snap_pending: false,
         }
     }
@@ -227,6 +239,7 @@ impl Runtime {
         while let Ok(message) = inbox.recv() {
             match message {
                 Message::Frame { elapsed, sample } => self.on_frame(elapsed, sample),
+                Message::Paused(paused) => self.on_paused(paused),
                 Message::Command(command) => self.on_command(command),
                 Message::Activation(activation) => self.on_activation(*activation),
                 Message::Shutdown => break,
@@ -234,9 +247,22 @@ impl Runtime {
         }
     }
 
-    fn on_frame(&mut self, elapsed: Duration, _sample: InputSample) {
-        if !self.active {
+    const fn on_paused(&mut self, paused: bool) {
+        self.paused = paused;
+
+        if paused {
+            self.scheduler.reset();
+            self.pending_jump = None;
+        }
+    }
+
+    fn on_frame(&mut self, elapsed: Duration, sample: InputSample) {
+        if !self.active || self.paused {
             return;
+        }
+
+        if let Some(edge) = sample.jump_edge {
+            self.pending_jump = Some(self.pending_jump.map_or(edge, |held| held.max(edge)));
         }
 
         self.scheduler.advance(elapsed);
@@ -257,16 +283,7 @@ impl Runtime {
         };
 
         for _ in 0..ticks {
-            let (grounded, evaluated) = self.evaluate();
-            let (committed, batch) = self.commit();
-
-            report.tick_time = report.tick_time.saturating_add(evaluated);
-            report.commit_time = report.commit_time.saturating_add(committed);
-            self.player.grounded = grounded;
-
-            if let Some(snapshots) = batch {
-                report.batches.push(snapshots);
-            }
+            self.tick(&mut report);
         }
 
         let push = Push::Tick(TickEnd {
@@ -277,6 +294,21 @@ impl Runtime {
         });
 
         let _ = self.pushes.send(push);
+    }
+
+    /// One tick: the player resolves under the read lock first, then the
+    /// queued voxel edits commit under the write lock.
+    fn tick(&mut self, report: &mut UpdateReport) {
+        let (grounded, evaluated) = self.evaluate();
+        let (committed, batch) = self.commit();
+
+        report.tick_time = report.tick_time.saturating_add(evaluated);
+        report.commit_time = report.commit_time.saturating_add(committed);
+        self.player.grounded = grounded;
+
+        if let Some(snapshots) = batch {
+            report.batches.push(snapshots);
+        }
     }
 
     fn on_command(&mut self, command: Command) {
@@ -314,6 +346,7 @@ impl Runtime {
         self.materials = materials;
         self.player = player;
         self.scheduler.reset();
+        self.pending_jump = None;
         self.active = true;
         self.snap_pending = true;
 
