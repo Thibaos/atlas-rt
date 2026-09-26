@@ -3,6 +3,7 @@ pub mod internal;
 
 use atlas_rt::world::update::job::WorldSource;
 use godot::prelude::*;
+use std::path::PathBuf;
 
 const REJECT: &str = "atlas_rt: rejected input: ";
 const ATLAS_MODE_UNIFORM: &str = "mode";
@@ -21,6 +22,10 @@ impl WorldSource for VoxFile {
 
     fn read(&self) -> Result<Vec<u8>, String> {
         std::fs::read(&self.path).map_err(|error| error.to_string())
+    }
+
+    fn filesystem_path(&self) -> Option<PathBuf> {
+        Some(PathBuf::from(&self.path))
     }
 }
 

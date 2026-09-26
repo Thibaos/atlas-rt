@@ -1,5 +1,6 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU8, Ordering},
@@ -17,6 +18,7 @@ use crate::{
         World,
         format::{get_effective_palette, open_bytes},
         load::progress::{Progress, Stage},
+        material::{PhysicalMaterialTable, load_table},
     },
 };
 
@@ -74,13 +76,14 @@ impl Status {
     }
 }
 
-/// A finished load's world, its snapshots, and its palette, ready for the main
-/// thread.
+/// A finished load's world, its snapshots, its palette, and its Physical
+/// material table, ready for the main thread.
 #[derive(Debug)]
 pub struct LoadedWorld {
     pub world: World,
     pub snapshots: Vec<MicroChunkSnapshot>,
     pub palette: [Vec4; 256],
+    pub materials: PhysicalMaterialTable,
 }
 
 /// The result of a completed background job.
@@ -99,6 +102,13 @@ pub trait WorldSource: Send {
     ///
     /// Returns a reason the world could not be read.
     fn read(&self) -> Result<Vec<u8>, String>;
+
+    /// The world file's real path, whose sibling `<path>_mat` holds its
+    /// Physical material override. `None` for a source with no path, which
+    /// reads as an absent override.
+    fn filesystem_path(&self) -> Option<PathBuf> {
+        None
+    }
 }
 
 /// The renderer generation a frame must reach to include a submitted batch.
@@ -471,6 +481,8 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
     let palette = get_effective_palette(&voxel_data)
         .map_err(|error| format!("could not build palette for {name}: {error:#}"))?;
 
+    let materials = load_table(source.filesystem_path().as_deref());
+
     let (world, clipped) = World::new_clipped(&voxel_data);
 
     progress.end_stage(Stage::Build);
@@ -486,6 +498,7 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
         world,
         snapshots,
         palette,
+        materials,
     })))
 }
 
