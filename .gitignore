@@ -38,3 +38,4 @@ crates/atlas-rt-godot/examples/project/lib/
 crates/atlas-rt-godot/examples/project/worlds/
 crates/atlas-rt-godot/examples/project/*.uid
 ps-scripts
+prototypes

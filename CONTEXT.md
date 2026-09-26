@@ -13,6 +13,12 @@ a load constructs one, the Voxel edit path is the only later mutation, and the
 renderer holds only packed regions built from its Snapshots.
 _Avoid_: Scene, level, map
 
+**Lattice**:
+The bounded coordinate space the World lives in: half-open, ±2048 per axis.
+A load clips to it, and outside it the player is blocked while a voxel-rule
+destination counts as unavailable.
+_Avoid_: bounds, world extent
+
 **Voxel edit**:
 A caller's unit of change: a position and a change, `Set` with a u8 material
 index or `Clear`. A batch is validated first and all-or-nothing, applied to the
@@ -305,3 +311,72 @@ geometric Normal, -1..1 mapped to 0..1 per channel, voxel faces paint by
 their axis (x red, y green, z blue; + side bright, - side dark), background
 gray. Traces the DDA hit group like Voxel; the normal rides the payload.
 _Avoid_: normal map visualization (a texture-space concept)
+
+## Physics
+
+**Physical material table**:
+The mapping from Material index to simulation behavior and player solidity. It
+is separate from the Palette and may be replaced for a World load.
+_Avoid_: physics palette, render material, physical material property table
+
+**Physical material override**:
+The optional replacement for a World's Physical material table, supplied
+alongside the world source. Presence decides it: an absent override is the
+normal case, one invalid record discards the whole file back to the built-in
+table, and it never touches the Palette. It is invisible to the player, who
+sees the fallback as the world loading normally.
+_Avoid_: sidecar (generic), material mod, override file
+
+**Falling granular**:
+A voxel rule in which an occupied cell attempts to move into the cell below,
+then one downward diagonal cell, when the destination is available. A cell with
+no accepted move for a simulation tick is settled and blocks the player.
+_Avoid_: sand entity, velocity voxel
+
+**Activation**:
+The handover of a World to the Simulation: the sim takes the new World, re-seeds,
+places the player, resets timing, and replies readiness. The only reset the
+Simulation has.
+_Avoid_: world swap, respawn, restart
+
+**Simulation tick**:
+One fixed-rate advance of the voxel rules and player movement. Player movement
+resolves first, then voxel rules. Input is sampled outside the tick and consumed
+by the controller during the tick.
+_Avoid_: physics frame, render frame
+
+**Input sample**:
+The host-captured movement state and at most one pending jump edge supplied to
+the simulation between Simulation ticks. A Simulation tick consumes the pending
+edge at most once.
+_Avoid_: raw input event, key state, input frame
+
+**Player collider**:
+The unrotated axis-aligned box used to move the player through the World. Its
+position is the center of its feet, and its full height participates in floor,
+ceiling, and step checks.
+_Avoid_: hitbox, capsule, Godot body
+
+**Player profile**:
+The immutable set of physical dimensions and motion values that defines one
+controller's behavior. It is independent of the World and remains selected for
+the controller's lifetime.
+_Avoid_: Player settings, character config
+
+**Step height**:
+The whole number of voxel heights the controller may rise during an automatic
+grounded step. A step height of zero disables automatic stepping.
+_Avoid_: Step size, jump height
+
+**Grounded**:
+The controller state that permits a jump or an automatic step: blocking cells
+rest the feet under any part of the Player collider, and a gap under the
+footprint one cell wide counts as ground.
+_Avoid_: on floor, supported, landed (the arrival, not the state)
+
+**Automatic step**:
+The rise a Grounded controller makes over the obstacle it walks into, up to the
+Step height, when the rise box above the head and the body box at the destination
+are both clear. It needs horizontal contact to fire, and a Falling granular cell
+that is settled counts as its surface.
+_Avoid_: step-up assist, mantle, vault
