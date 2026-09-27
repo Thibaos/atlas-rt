@@ -1,9 +1,11 @@
 mod input;
 mod player;
 mod schedule;
+mod sim_host;
 
 use std::{
-    sync::Arc,
+    path::Path,
+    sync::{Arc, PoisonError, RwLock},
     time::{Duration, Instant},
 };
 
@@ -26,14 +28,17 @@ use atlas_rt::{
         context::RenderContext,
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR, task::RenderMode},
     },
+    sim::{Command, PlayerProfile},
     world::{
         World,
         format::open_file,
         grid::LATTICE_HALF_EXTENT,
-        raycast::screen_center_ray,
+        material::load_table,
+        raycast::{VoxelHit, screen_center_ray},
         update::{
             batch::TrackedCoords,
-            edit::{self, VoxelEdit, edit_world},
+            edit::{VoxelChange, VoxelEdit, edit_world},
+            snapshot::emit_snapshots,
         },
     },
 };
@@ -41,6 +46,7 @@ use atlas_rt::{
 use input::{Input, InputButton, InputKey};
 use player::PlayerController;
 use schedule::ScheduleController;
+use sim_host::SimHost;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {
@@ -52,8 +58,10 @@ pub struct App {
     focused: bool,
 
     pub voxel_data: dot_vox::DotVoxData,
-    world: World,
-    last_edit_tracked_coords: TrackedCoords,
+    world: Arc<RwLock<World>>,
+    tracked: TrackedCoords,
+    profile: PlayerProfile,
+    sim: Option<SimHost>,
 
     player_controller: PlayerController,
     player_input: Input,
@@ -75,15 +83,18 @@ pub struct App {
 impl App {
     /// # Errors
     ///
-    /// Returns an error if the GPU could not be initialized.
+    /// Returns an error if the GPU could not be initialized or the loaded
+    /// World's snapshots cannot be emitted.
     pub fn new(
         event_loop: &EventLoop<()>,
         world_path: &str,
         clip_oob: bool,
+        fly: bool,
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let voxel_data = open_file(&format!("crates/atlas-rt/assets/{world_path}"));
+        let asset_path = format!("crates/atlas-rt/assets/{world_path}");
+        let voxel_data = open_file(&asset_path);
         let (world, clipped) = if clip_oob {
             World::new_clipped(&voxel_data)
         } else {
@@ -92,6 +103,39 @@ impl App {
         if clipped > 0 {
             warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
         }
+
+        let world = Arc::new(RwLock::new(world));
+
+        let (snapshots, tracked) = {
+            let guard = world.read().unwrap_or_else(PoisonError::into_inner);
+
+            let snapshots = emit_snapshots(&guard)?;
+            drop(guard);
+
+            let tracked: TrackedCoords = snapshots
+                .iter()
+                .filter(|snapshot| snapshot.occupied_count() > 0)
+                .map(|snapshot| snapshot.global_coords)
+                .collect();
+
+            (snapshots, tracked)
+        };
+
+        let profile = PlayerProfile::default();
+        let materials = load_table(Some(Path::new(&asset_path)));
+
+        let sim = if fly {
+            info!("fly mode: free camera, no simulation thread");
+            None
+        } else {
+            Some(SimHost::spawn(
+                Arc::clone(&world),
+                profile,
+                snapshots,
+                tracked.clone(),
+                &materials,
+            )?)
+        };
 
         let mut schedule_controller = ScheduleController::new();
         schedule_controller.add_schedule_frames("delta", 1);
@@ -116,7 +160,9 @@ impl App {
 
             voxel_data,
             world,
-            last_edit_tracked_coords: TrackedCoords::default(),
+            tracked,
+            profile,
+            sim,
 
             window: None,
             pipeline: None,
@@ -181,38 +227,123 @@ impl App {
         }
     }
 
+    /// Sends one frame of elapsed time and sampled input to the simulation
+    /// and forwards what it pushed to the renderer. The first frame waits for
+    /// readiness; later frames take what is queued without waiting.
+    fn drive_simulation(&mut self) {
+        let elapsed = self.delta_time;
+
+        let Self {
+            sim,
+            pipeline,
+            player_controller,
+            player_input,
+            ..
+        } = self;
+
+        let Some(sim) = sim.as_mut() else {
+            return;
+        };
+
+        let sample = input::sample(player_controller.yaw(), player_input);
+
+        let mut forward = |batch| {
+            pipeline
+                .as_ref()
+                .context("app pipeline is none")
+                .and_then(|pipeline| pipeline.input().submit_batch(batch))
+        };
+
+        if let Err(e) = sim.drive(elapsed, sample, &mut forward) {
+            error!("{e:?}");
+        }
+    }
+
     fn next_player_view(&mut self) -> Mat4 {
         if self.focused {
             self.player_controller
                 .rotate(self.player_input.mouse_motion);
         }
 
-        self.player_controller
-            .fly_movement(self.delta_time, &self.player_input);
+        match self
+            .sim
+            .as_ref()
+            .filter(|sim| sim.ready())
+            .map(SimHost::player)
+        {
+            Some(player) => self
+                .player_controller
+                .place_eye(player.feet, self.profile.eye_offset),
+            None => self
+                .player_controller
+                .fly_movement(self.delta_time, &self.player_input),
+        }
 
         self.player_controller.view()
     }
 
-    fn destroy_ray(&mut self, proj: Mat4, view: Mat4) -> anyhow::Result<()> {
-        let ray = screen_center_ray(proj.inverse(), view.inverse());
-        let raycast = self.world.raycast(ray);
+    /// Fires the center ray and turns the hit into a cell clear: a command
+    /// the simulation commits when one is running, a direct write under the
+    /// World's lock in fly mode.
+    fn dig(&mut self) {
+        let Some(hit) = self.center_hit() else {
+            return;
+        };
 
-        if let Some(hit) = raycast {
-            let edit = VoxelEdit {
-                position: hit.voxel,
-                change: edit::VoxelChange::Clear,
-            };
+        let edit = VoxelEdit {
+            position: hit.voxel,
+            change: VoxelChange::Clear,
+        };
 
-            let batch = edit_world(&mut self.world, &[edit], &self.last_edit_tracked_coords)?;
+        if self.sim.is_none() {
+            self.apply_fly_edit(edit);
 
-            let input = self.pipeline.as_ref().context("pipeline is none")?.input();
-            input.submit_batch(batch.snapshots)?;
-            input.wait_until_idle()?;
-
-            self.last_edit_tracked_coords = batch.tracked;
+            return;
         }
 
-        Ok(())
+        if let Some(sim) = self.sim.as_ref() {
+            sim.command(Command::Cell(edit));
+        }
+    }
+
+    fn center_hit(&mut self) -> Option<VoxelHit> {
+        let extent = self.window.as_ref()?.inner_size();
+
+        if extent.width == 0 || extent.height == 0 {
+            return None;
+        }
+
+        let aspect = extent.width as f32 / extent.height as f32;
+        let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
+        let view = self.player_controller.view();
+        let ray = screen_center_ray(proj.inverse(), view.inverse());
+
+        self.world
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .raycast(ray)
+    }
+
+    fn apply_fly_edit(&mut self, edit: VoxelEdit) {
+        let batch = {
+            let mut world = self.world.write().unwrap_or_else(PoisonError::into_inner);
+
+            match edit_world(&mut world, &[edit], &self.tracked) {
+                Ok(batch) => batch,
+                Err(e) => {
+                    error!("{e:?}");
+                    return;
+                }
+            }
+        };
+
+        self.tracked = batch.tracked;
+
+        if let Some(pipeline) = self.pipeline.as_ref()
+            && let Err(e) = pipeline.input().submit_batch(batch.snapshots)
+        {
+            error!("{e:?}");
+        }
     }
 }
 
@@ -225,9 +356,19 @@ impl ApplicationHandler for App {
             Ok(win) => {
                 let window = Arc::new(win);
 
-                match FramePipeline::new(&self.gpu, window.clone(), &self.voxel_data, &self.world) {
+                let pipeline = {
+                    let guard = self.world.read().unwrap_or_else(PoisonError::into_inner);
+
+                    FramePipeline::new(&self.gpu, window.clone(), &self.voxel_data, &guard)
+                };
+
+                match pipeline {
                     Ok(pipeline) => {
                         self.pipeline = Some(pipeline);
+
+                        if let Some(sim) = self.sim.as_mut() {
+                            sim.start();
+                        }
                     }
                     Err(e) => error!("{e:?}"),
                 }
@@ -270,13 +411,9 @@ impl ApplicationHandler for App {
                 let view_extent: [u32; 2] =
                     extent.map_or([0, 0], |extent| [extent.width, extent.height]);
 
-                let aspect = extent.map_or(16.0 / 9.0, |e| e.width as f32 / e.height as f32);
-                let view = self.next_player_view();
-                let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
+                self.drive_simulation();
 
-                // if let Err(e) = self.destroy_ray(proj, view) {
-                //     error!("{e:?}");
-                // }
+                let view = self.next_player_view();
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(
@@ -305,6 +442,11 @@ impl ApplicationHandler for App {
                             {
                                 error!("{e:?}");
                             }
+
+                            if mapped == InputButton::Left && self.focused {
+                                self.dig();
+                            }
+
                             self.player_input.buttons_down.insert(mapped);
                         }
                         ElementState::Released => {

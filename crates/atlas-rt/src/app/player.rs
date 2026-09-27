@@ -100,6 +100,19 @@ impl PlayerController {
     }
 
     #[allow(clippy::cast_possible_truncation)]
+    #[must_use]
+    pub const fn yaw(&self) -> f32 {
+        self.yaw as f32
+    }
+
+    /// Puts the view on the reported feet plus the profile's eye offset,
+    /// leaving yaw and pitch as the host turned them.
+    pub fn place_eye(&mut self, feet: Vec3, eye_offset: f32) {
+        self.translation = feet.add(Vec3::Y.mul(eye_offset));
+        self.needs_view_update = true;
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
     fn orientation(&self) -> Quat {
         let yaw_q = Quat::from_rotation_y(self.yaw as f32);
         let pitch_q = Quat::from_rotation_x(self.pitch as f32);
@@ -171,6 +184,34 @@ mod tests {
                 "holding {key:?} should move {direction:?} * speed"
             );
         }
+    }
+
+    #[test]
+    fn place_eye_composes_the_view_from_feet_plus_the_offset() {
+        let mut player = PlayerController::default();
+        let feet = Vec3::new(4.0, 10.0, -6.0);
+
+        player.place_eye(feet, 1.62);
+
+        let eye = player.view().inverse().transform_point3(Vec3::ZERO);
+
+        assert!(
+            (eye - feet.add(Vec3::Y * 1.62)).length() < 1.0e-6,
+            "the view origin sits on feet plus the eye offset: {eye:?}"
+        );
+    }
+
+    #[test]
+    fn yaw_follows_the_mouse_turn() {
+        let mut player = PlayerController::default();
+
+        player.rotate((0.5, 0.0));
+
+        assert!(
+            (f64::from(player.yaw()) - 0.5 * player.sensitivity).abs() < 1.0e-9,
+            "yaw reports the angle rotate stored: {}",
+            player.yaw()
+        );
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use std::collections::HashSet;
+use std::time::Instant;
 
+use atlas_rt::sim::InputSample;
 use winit::{
     event::MouseButton,
     keyboard::{Key, NamedKey},
@@ -41,6 +43,37 @@ impl Input {
     }
 }
 
+/// One frame's movement keys rotated into world space by `yaw`, with a Space
+/// press this frame stamped as the sample's jump edge.
+pub fn sample(yaw: f32, input: &Input) -> InputSample {
+    let mut strafe = 0.0;
+
+    if input.down.contains(&InputKey::Right) {
+        strafe += 1.0;
+    }
+
+    if input.down.contains(&InputKey::Left) {
+        strafe -= 1.0;
+    }
+
+    let mut forward = 0.0;
+
+    if input.down.contains(&InputKey::Forward) {
+        forward += 1.0;
+    }
+
+    if input.down.contains(&InputKey::Backward) {
+        forward -= 1.0;
+    }
+
+    let jump_edge = input
+        .just_pressed
+        .contains(&InputKey::Up)
+        .then(Instant::now);
+
+    InputSample::from_local(yaw, strafe, forward, jump_edge)
+}
+
 pub fn map_key(key: &Key) -> Option<InputKey> {
     match key {
         Key::Character(ch) => match ch.as_str() {
@@ -70,6 +103,7 @@ pub const fn map_mouse_button(button: MouseButton) -> Option<InputButton> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use glam::Vec2;
     use winit::keyboard::SmolStr;
 
     const EPSILON: f32 = 0.00001;
@@ -108,6 +142,44 @@ mod tests {
 
         assert!(input.down.contains(&InputKey::Forward));
         assert!(input.buttons_down.contains(&InputButton::Right));
+    }
+
+    #[test]
+    fn sample_rotates_the_keys_by_yaw() {
+        let mut input = Input::default();
+        input.down.insert(InputKey::Right);
+        input.down.insert(InputKey::Forward);
+
+        assert_eq!(sample(0.0, &input).movement, Vec2::new(-1.0, -1.0));
+
+        input.down.remove(&InputKey::Forward);
+
+        let right = sample(std::f32::consts::FRAC_PI_2, &input).movement;
+
+        assert!(
+            right.x.abs() < 1.0e-6 && (right.y - 1.0).abs() < 1.0e-6,
+            "strafe right turns with yaw: {right:?}"
+        );
+    }
+
+    #[test]
+    fn sample_sums_opposing_keys_to_zero_and_stamps_jump_once() {
+        let mut input = Input::default();
+        input.down.insert(InputKey::Left);
+        input.down.insert(InputKey::Right);
+        input.just_pressed.insert(InputKey::Up);
+
+        let pressed = sample(0.0, &input);
+
+        assert_eq!(pressed.movement, Vec2::ZERO);
+        assert!(pressed.jump_edge.is_some());
+
+        input.clear();
+
+        let idle = sample(0.0, &input);
+
+        assert_eq!(idle.movement, Vec2::ZERO);
+        assert!(idle.jump_edge.is_none());
     }
 
     #[test]
