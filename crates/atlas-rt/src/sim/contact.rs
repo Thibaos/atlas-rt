@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use glam::{IVec3, Vec3};
 
 use crate::world::{World, grid::in_lattice, material::PhysicalMaterialTable};
@@ -8,6 +10,11 @@ use super::profile::PlayerProfile;
 /// integer face it stopped at, so this is also the most an overlap can be off
 /// by at the lattice's 2048-unit edge, where an f32 has a 2.44e-4 ULP.
 const EPSILON: f32 = 1.0e-3;
+
+/// How close to a cell top the feet must sit to rest on it. One gravity
+/// step of a resting player is 2.67e-2, so a moving player never reads
+/// Grounded and only rests, bridges, and landed sweeps do.
+const CONTACT: f32 = 1.1e-2;
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Axis {
@@ -94,7 +101,8 @@ pub(super) fn bounds(feet: Vec3, profile: PlayerProfile) -> (Vec3, Vec3) {
 }
 
 /// Moves the feet `delta` along `axis` and stops on the first blocking face
-/// the box sweeps into, with the feet left exactly on it.
+/// the box sweeps into, with the feet left exactly on it, reported as the
+/// cell that owns the face.
 pub(super) fn sweep(
     world: &World,
     feet: Vec3,
@@ -102,9 +110,9 @@ pub(super) fn sweep(
     table: &PhysicalMaterialTable,
     axis: Axis,
     delta: f32,
-) -> (Vec3, bool) {
+) -> (Vec3, Option<IVec3>) {
     if delta == 0.0 {
-        return (feet, false);
+        return (feet, None);
     }
 
     let lo = axis.min(feet, profile);
@@ -137,7 +145,7 @@ pub(super) fn sweep(
 
     let positive = delta > 0.0;
     let mut limit = if positive { hi + delta } else { lo + delta };
-    let mut contact = false;
+    let mut contact: Option<IVec3> = None;
 
     for cell in cells(region_min, region_max) {
         if !blocks(world, &cell, table) {
@@ -158,11 +166,11 @@ pub(super) fn sweep(
 
         if reachable {
             limit = stop;
-            contact = true;
+            contact = Some(cell);
         }
     }
 
-    let feet = if !contact {
+    let feet = if contact.is_none() {
         axis.set(feet, axis.get(feet) + delta)
     } else if positive {
         axis.set(feet, limit - axis.ahead(profile))
@@ -183,18 +191,130 @@ pub(super) fn overlapping<'a>(
 ) -> impl Iterator<Item = IVec3> + 'a {
     let (min, max) = bounds(feet, profile);
 
+    hits(world, min, max, table)
+}
+
+/// The blocking cells inside the box, with the same face slack.
+fn hits<'a>(
+    world: &'a World,
+    min: Vec3,
+    max: Vec3,
+    table: &'a PhysicalMaterialTable,
+) -> impl Iterator<Item = IVec3> + 'a {
     cells(min, max).filter(move |cell| inside(*cell, min, max) && blocks(world, cell, table))
 }
 
-/// Whether blocking cells rest the feet under any part of the player
-/// collider, one cell below them.
+/// Whether any blocking cell sits inside the box, with the same face slack.
+pub(super) fn blocked(world: &World, min: Vec3, max: Vec3, table: &PhysicalMaterialTable) -> bool {
+    hits(world, min, max, table).next().is_some()
+}
+
+/// Whether blocking cells hold the feet: any cell under the footprint whose
+/// top sits within contact tolerance, or a one cell crack the footprint
+/// bridges across.
 pub(super) fn grounded(
     world: &World,
     feet: Vec3,
     profile: PlayerProfile,
     table: &PhysicalMaterialTable,
 ) -> bool {
-    footprint(feet, profile, 1.0, 0.0).any(|cell| blocks(world, &cell, table))
+    let face = feet.y.round();
+
+    if (face - feet.y).abs() >= CONTACT {
+        return false;
+    }
+
+    let (min, max) = bounds(feet, profile);
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // the face is whole
+    let row = (face - 1.0) as i32;
+    let xs = span(min.x, max.x);
+    let zs = span(min.z, max.z);
+
+    let held = xs.clone().any(|x| {
+        zs.clone()
+            .any(|z| blocks(world, &IVec3::new(x, row, z), table))
+    });
+
+    held || bridged(world, row, &xs, &zs, table)
+}
+
+/// Whether the empty footprint sits over a one cell crack: the span on one
+/// axis is a single cell and both neighbor lines over the other axis block.
+fn bridged(
+    world: &World,
+    row: i32,
+    xs: &RangeInclusive<i32>,
+    zs: &RangeInclusive<i32>,
+    table: &PhysicalMaterialTable,
+) -> bool {
+    let over_z = |x: i32| {
+        zs.clone()
+            .all(|z| blocks(world, &IVec3::new(x, row, z), table))
+    };
+    let over_x = |z: i32| {
+        xs.clone()
+            .all(|x| blocks(world, &IVec3::new(x, row, z), table))
+    };
+
+    let gap_x = xs.start() == xs.end()
+        && over_z(xs.start().saturating_sub(1))
+        && over_z(xs.end().saturating_add(1));
+    let gap_z = zs.start() == zs.end()
+        && over_x(zs.start().saturating_sub(1))
+        && over_x(zs.end().saturating_add(1));
+
+    gap_x || gap_z
+}
+
+/// The cells a box face spans, slack pulled in from both ends so a face
+/// sitting exactly on an integer stays inside the cell it rests on.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // lattice faces are whole numbers
+fn span(min: f32, max: f32) -> RangeInclusive<i32> {
+    ((min + EPSILON).floor() as i32)..=((max - EPSILON).floor() as i32)
+}
+
+/// The height a step would climb in the contacted column: the top of the
+/// blocking stack the feet run into, within the step height, or no step.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // feet and step heights sit in the lattice
+pub(super) fn step_rise(
+    world: &World,
+    feet: Vec3,
+    profile: PlayerProfile,
+    table: &PhysicalMaterialTable,
+    contact: IVec3,
+) -> Option<f32> {
+    if profile.step_height < 1 {
+        return None;
+    }
+
+    let column = IVec3::new(contact.x, 0, contact.z);
+    let lo = feet.y.round() as i32;
+    let hi = (feet.y + profile.step_height as f32 - 1.0 + EPSILON).floor() as i32;
+
+    let mut bottom = lo;
+
+    while bottom <= hi && !blocks(world, &column.with_y(bottom), table) {
+        bottom = bottom.saturating_add(1);
+    }
+
+    if bottom > hi {
+        return None;
+    }
+
+    let mut top = bottom.saturating_add(1);
+
+    while in_lattice(column.with_y(top)) && blocks(world, &column.with_y(top), table) {
+        top = top.saturating_add(1);
+    }
+
+    let rise = top as f32 - feet.y;
+
+    if rise < EPSILON || rise > profile.step_height as f32 + EPSILON {
+        return None;
+    }
+
+    Some(rise)
 }
 
 fn padded(axis: Axis, feet: Vec3, profile: PlayerProfile) -> (f32, f32) {

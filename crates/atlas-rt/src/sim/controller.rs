@@ -42,8 +42,10 @@ impl Controller {
         self.pending_jump = Some(self.pending_jump.map_or(edge, |held| held.max(edge)));
     }
 
-    /// Resolves one tick: depenetrate, launch or fall, then sweep x, z and y
-    /// in that order, and report the grounded state the sweeps left behind.
+    /// Resolves one tick: depenetrate, launch or fall, sweep x and z with a
+    /// step on grounded contact, then hold or sweep y, and report the
+    /// grounded state the sweeps left behind. The y hold rounds the feet
+    /// onto the face, the same snap a landing sweep performs.
     pub(super) fn advance(
         &mut self,
         world: &World,
@@ -64,15 +66,23 @@ impl Controller {
         }
 
         let (dx, dz) = stride(movement, profile, dt);
-        let (moved, _) = contact::sweep(world, feet, profile, table, Axis::X, dx);
-        let (moved, _) = contact::sweep(world, moved, profile, table, Axis::Z, dz);
-        let (moved, landed) =
-            contact::sweep(world, moved, profile, table, Axis::Y, self.velocity_y * dt);
 
-        feet = moved;
+        feet = sweep_and_step(world, feet, profile, table, Axis::X, dx, grounded);
+        feet = sweep_and_step(world, feet, profile, table, Axis::Z, dz, grounded);
 
-        if landed {
+        let dy = self.velocity_y * dt;
+
+        if dy < 0.0 && contact::grounded(world, feet, profile, table) {
             self.velocity_y = 0.0;
+            feet.y = feet.y.round();
+        } else {
+            let (moved, landed) = contact::sweep(world, feet, profile, table, Axis::Y, dy);
+
+            feet = moved;
+
+            if landed.is_some() {
+                self.velocity_y = 0.0;
+            }
         }
 
         player.feet = feet;
@@ -116,6 +126,68 @@ fn stride(movement: Vec2, profile: PlayerProfile, dt: f32) -> (f32, f32) {
     let scale = profile.move_speed * dt;
 
     (clamped.x * scale, clamped.y * scale)
+}
+
+/// Sweeps `axis` by `delta`, then climbs the contact when the tick started
+/// grounded: the raised sweep when both refusal boxes stay clear, the sweep
+/// alone when any of them refuses.
+fn sweep_and_step(
+    world: &World,
+    feet: Vec3,
+    profile: PlayerProfile,
+    table: &PhysicalMaterialTable,
+    axis: Axis,
+    delta: f32,
+    grounded: bool,
+) -> Vec3 {
+    let (swept, contact) = contact::sweep(world, feet, profile, table, axis, delta);
+
+    if !grounded {
+        return swept;
+    }
+
+    let Some(cell) = contact else {
+        return swept;
+    };
+
+    step(world, feet, profile, table, axis, delta, cell).unwrap_or(swept)
+}
+
+/// The whole step: refused outright, never committed and cleaned up, when
+/// the rise box or the destination body box blocks, or when the raised
+/// sweep does not land resting. The rise box is the footprint as tall as
+/// this step's actual rise on the head at the current position, and the
+/// destination box is the full body at the advanced feet.
+fn step(
+    world: &World,
+    feet: Vec3,
+    profile: PlayerProfile,
+    table: &PhysicalMaterialTable,
+    axis: Axis,
+    delta: f32,
+    cell: IVec3,
+) -> Option<Vec3> {
+    let rise = contact::step_rise(world, feet, profile, table, cell)?;
+    let (min, max) = contact::bounds(feet, profile);
+    let rise_min = Vec3::new(min.x, max.y, min.z);
+    let rise_max = Vec3::new(max.x, max.y + rise, max.z);
+
+    if contact::blocked(world, rise_min, rise_max, table) {
+        return None;
+    }
+
+    let raised = Axis::Y.set(feet, feet.y + rise);
+    let (dest_min, dest_max) = contact::bounds(raised, profile);
+    let dest_min = axis.set(dest_min, axis.get(dest_min) + delta);
+    let dest_max = axis.set(dest_max, axis.get(dest_max) + delta);
+
+    if contact::blocked(world, dest_min, dest_max, table) {
+        return None;
+    }
+
+    let (advanced, _) = contact::sweep(world, raised, profile, table, axis, delta);
+
+    contact::grounded(world, advanced, profile, table).then_some(advanced)
 }
 
 /// The nearest clear position the overlapping cells allow, up first and the

@@ -233,7 +233,10 @@ fn a_spawn_with_no_clear_position_stays_buried() {
     );
     assert_eq!(player.feet.x, 0.5);
     assert_eq!(player.feet.z, 0.5);
-    assert!(player.grounded, "a buried player still rests on content");
+    assert!(
+        !player.grounded,
+        "the buried feet hang past contact tolerance above the top"
+    );
 }
 
 #[test]

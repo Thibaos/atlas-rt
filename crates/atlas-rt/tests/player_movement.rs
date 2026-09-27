@@ -89,11 +89,13 @@ fn open_floor() -> Vec<VoxelEdit> {
     floor(0, 7, 0, 4)
 }
 
+/// A floor room walled three cells high: taller than the step height, so
+/// the walk slides along the walls instead of climbing them.
 fn wall_room() -> Vec<VoxelEdit> {
     let mut edits = floor(0, 7, 0, 4);
 
-    edits.extend((0..=4).map(|z| set(5, 1, z, 1)));
-    edits.extend((3..=6).map(|x| set(x, 1, 4, 1)));
+    edits.extend((1..=3).flat_map(|y| (0..=4).map(move |z| set(5, y, z, 1))));
+    edits.extend((1..=3).flat_map(|y| (3..=6).map(move |x| set(x, y, 4, 1))));
 
     edits
 }
@@ -216,7 +218,10 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
         "the climb stops at the ceiling, feet.y {}",
         spawn.feet.y
     );
-    assert!(spawn.grounded);
+    assert!(
+        !spawn.grounded,
+        "the feet hang above the cell top, past contact tolerance"
+    );
 
     feed(&handle, period());
 
@@ -230,8 +235,8 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
         sunk.feet.y
     );
     assert!(
-        sunk.grounded,
-        "the cell under the box still reports support"
+        !sunk.grounded,
+        "the fall moved the feet below contact tolerance of the top"
     );
 
     handle.frame(period(), keys(Vec2::X));
@@ -683,13 +688,34 @@ fn a_jump_edge_held_through_the_fall_fires_on_the_grounded_tick() {
         held.feet.y
     );
 
+    let mut falling = held;
+
+    for _ in 0..2 {
+        feed(&handle, period());
+        falling = expect_tick(recv_push(&handle)).player;
+    }
+
+    assert!(
+        near(falling.feet.y, 1.2),
+        "the edge waits through the whole fall: {}",
+        falling.feet.y
+    );
+    assert!(!falling.grounded, "the feet still hang above contact");
+
+    feed(&handle, period());
+
+    let landed = expect_tick(recv_push(&handle)).player;
+
+    assert_eq!(landed.feet.y, 1.0, "the sweep lands the feet on the floor");
+    assert!(landed.grounded, "the landing reports grounded");
+
     feed(&handle, period());
 
     let launched = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(launched.feet.y, 2.18667),
-        "the next tick starts grounded and fires the buffered edge: {}",
+        near(launched.feet.y, 1.26667),
+        "the grounded tick fires the buffered edge: {}",
         launched.feet.y
     );
 }
@@ -740,12 +766,32 @@ fn the_newest_edge_of_an_update_survives_the_sticky_merge() {
 
     assert!(near(held.feet.y, 1.92), "feet.y {}", held.feet.y);
 
+    let mut falling = held;
+
+    for _ in 0..2 {
+        feed(&handle, period());
+        falling = expect_tick(recv_push(&handle)).player;
+    }
+
+    assert!(
+        near(falling.feet.y, 1.2),
+        "the fresh edge waits through the whole fall: {}",
+        falling.feet.y
+    );
+
+    feed(&handle, period());
+
+    let landed = expect_tick(recv_push(&handle)).player;
+
+    assert_eq!(landed.feet.y, 1.0, "the sweep lands the feet on the floor");
+    assert!(landed.grounded);
+
     feed(&handle, period());
 
     let launched = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(launched.feet.y, 2.18667),
+        near(launched.feet.y, 1.26667),
         "the fresh edge replaced the stale one and fired: {}",
         launched.feet.y
     );
@@ -772,8 +818,27 @@ fn pausing_discards_the_pending_jump_edge() {
 
     assert!(
         near(fallen.feet.y, 1.57333),
-        "the paused edge is gone, so the grounded tick only falls: {}",
+        "the paused edge is gone, so the fall keeps running: {}",
         fallen.feet.y
+    );
+
+    let mut falling = fallen;
+
+    for _ in 0..2 {
+        feed(&handle, period());
+        falling = expect_tick(recv_push(&handle)).player;
+    }
+
+    assert_eq!(falling.feet.y, 1.0, "the sweep lands the feet on the floor");
+    assert!(falling.grounded);
+
+    feed(&handle, period());
+
+    let rested = expect_tick(recv_push(&handle)).player;
+
+    assert_eq!(
+        rested.feet.y, 1.0,
+        "the discarded edge never launches: a live one would read 1.26667"
     );
 }
 
@@ -797,8 +862,27 @@ fn a_pause_ignores_a_jump_edge_pressed_while_it_holds() {
 
     assert!(
         near(fallen.feet.y, 1.57333),
-        "the paused press never reached the buffer, so the grounded tick only falls: {}",
+        "the paused press never reached the buffer, so the fall keeps running: {}",
         fallen.feet.y
+    );
+
+    let mut falling = fallen;
+
+    for _ in 0..2 {
+        feed(&handle, period());
+        falling = expect_tick(recv_push(&handle)).player;
+    }
+
+    assert_eq!(falling.feet.y, 1.0, "the sweep lands the feet on the floor");
+    assert!(falling.grounded);
+
+    feed(&handle, period());
+
+    let rested = expect_tick(recv_push(&handle)).player;
+
+    assert_eq!(
+        rested.feet.y, 1.0,
+        "the ignored press never launches: a live one would read 1.26667"
     );
 }
 

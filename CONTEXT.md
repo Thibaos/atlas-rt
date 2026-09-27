@@ -376,9 +376,10 @@ grounded step. A step height of zero disables automatic stepping.
 _Avoid_: Step size, jump height
 
 **Grounded**:
-The controller state that permits a jump or an automatic step: blocking cells
-rest the feet under any part of the Player collider, and a gap under the
-footprint one cell wide counts as ground.
+The controller state that permits a jump or an automatic step: any blocking
+cell under the Player collider footprint whose top is within contact
+tolerance of the feet rests them, and a one cell gap under the footprint
+counts as ground while a two cell gap drops.
 _Avoid_: on floor, supported, landed (the arrival, not the state)
 
 **Automatic step**:
