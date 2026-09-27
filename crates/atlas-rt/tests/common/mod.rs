@@ -27,6 +27,10 @@ pub const SETTLE: Duration = Duration::from_millis(150);
 /// The material every falling-granular test writes.
 pub const GRAIN: u8 = 2;
 
+/// The material a falling-granular test writes for a cell that is occupied
+/// without blocking the player.
+pub const NON_BLOCKING: u8 = 3;
+
 pub fn spawn_sim() -> (Arc<RwLock<World>>, Handle) {
     spawn_sim_with(PlayerProfile::default())
 }
@@ -88,14 +92,16 @@ pub fn activation_with(edits: &[VoxelEdit], materials: PhysicalMaterialTable) ->
 }
 
 /// An activation on the falling-granular table: [`GRAIN`] holds and blocks,
-/// and material 3 is occupied without blocking the player.
+/// and [`NON_BLOCKING`] is occupied without blocking the player.
 pub fn granular_activation_of(edits: &[VoxelEdit]) -> Activation {
     activation_with(edits, granular_table())
 }
 
 pub fn granular_table() -> PhysicalMaterialTable {
-    parse_override("material 2 falling_granular solid=true\nmaterial 3 solid solid=false")
-        .expect("the table must parse")
+    parse_override(&format!(
+        "material {GRAIN} falling_granular solid=true\nmaterial {NON_BLOCKING} solid solid=false"
+    ))
+    .expect("the table must parse")
 }
 
 /// Waits for readiness, taking the activation batch that comes first.

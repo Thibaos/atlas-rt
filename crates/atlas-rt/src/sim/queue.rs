@@ -4,7 +4,7 @@ use rustc_hash::FxHashSet;
 use crate::world::World;
 use crate::world::material::{PhysicalMaterialTable, Rule};
 
-/// The voxel coordinates the voxel rules still owe a decision to, held as
+/// The voxel coordinates the voxel rules have not evaluated yet, held as
 /// single coordinates rather than regions and never as World state. Settled
 /// means absent, so a Falling granular cell blocks the player only while this
 /// holds it.

@@ -80,5 +80,5 @@ fn depenetrate(field: &Field, feet: Vec3, profile: PlayerProfile) -> Vec3 {
 }
 
 fn blocked(field: &Field, feet: Vec3, profile: PlayerProfile) -> bool {
-    footprint(feet, profile, 0.0, profile.body_height).any(|cell| field.blocks(&cell))
+    footprint(feet, profile, 0.0, profile.body_height).any(|cell| field.blocks(cell))
 }

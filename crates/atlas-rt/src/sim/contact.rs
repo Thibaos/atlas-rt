@@ -43,7 +43,7 @@ impl<'a> Field<'a> {
         }
     }
 
-    /// The coordinates the rules still owe a decision to, in no order.
+    /// The coordinates the voxel rules have not evaluated yet, in no order.
     pub(super) fn queued_cells(&self) -> impl Iterator<Item = &IVec3> {
         self.queued.iter()
     }
@@ -94,16 +94,16 @@ impl<'a> Field<'a> {
 
     /// Whether the cell blocks the player: outside the lattice, or held by a
     /// player-blocking material the queue has left settled.
-    pub(super) fn blocks(&self, cell: &IVec3) -> bool {
-        if !in_lattice(*cell) {
+    pub(super) fn blocks(&self, cell: IVec3) -> bool {
+        if !in_lattice(cell) {
             return true;
         }
 
-        self.world.material_at(cell).is_some_and(|material| {
+        self.world.material_at(&cell).is_some_and(|material| {
             let physical = self.table.get(material);
 
             physical.solid
-                && !(physical.rule == Rule::FallingGranular && self.queued.contains(*cell))
+                && !(physical.rule == Rule::FallingGranular && self.queued.contains(cell))
         })
     }
 }
@@ -239,7 +239,7 @@ pub(super) fn sweep(
     let mut contact: Option<IVec3> = None;
 
     for cell in cells(region_min, region_max) {
-        if !field.blocks(&cell) {
+        if !field.blocks(cell) {
             continue;
         }
 
@@ -286,7 +286,7 @@ pub(super) fn overlapping<'a>(
 
 /// The blocking cells inside the box, with the same face slack.
 fn hits<'a>(field: &'a Field<'a>, min: Vec3, max: Vec3) -> impl Iterator<Item = IVec3> + 'a {
-    cells(min, max).filter(move |cell| inside(*cell, min, max) && field.blocks(cell))
+    cells(min, max).filter(move |cell| inside(*cell, min, max) && field.blocks(*cell))
 }
 
 /// Whether any blocking cell sits inside the box, with the same face slack.
@@ -313,7 +313,7 @@ pub(super) fn grounded(field: &Field, feet: Vec3, profile: PlayerProfile) -> boo
 
     let held = xs
         .clone()
-        .any(|x| zs.clone().any(|z| field.blocks(&IVec3::new(x, row, z))));
+        .any(|x| zs.clone().any(|z| field.blocks(IVec3::new(x, row, z))));
 
     held || bridged(field, row, &xs, &zs)
 }
@@ -321,8 +321,8 @@ pub(super) fn grounded(field: &Field, feet: Vec3, profile: PlayerProfile) -> boo
 /// Whether the empty footprint sits over a one cell crack: the span on one
 /// axis is a single cell and both neighbor lines over the other axis block.
 fn bridged(field: &Field, row: i32, xs: &RangeInclusive<i32>, zs: &RangeInclusive<i32>) -> bool {
-    let over_z = |x: i32| zs.clone().all(|z| field.blocks(&IVec3::new(x, row, z)));
-    let over_x = |z: i32| xs.clone().all(|x| field.blocks(&IVec3::new(x, row, z)));
+    let over_z = |x: i32| zs.clone().all(|z| field.blocks(IVec3::new(x, row, z)));
+    let over_x = |z: i32| xs.clone().all(|x| field.blocks(IVec3::new(x, row, z)));
 
     let gap_x = xs.start() == xs.end()
         && over_z(xs.start().saturating_sub(1))
@@ -360,7 +360,7 @@ pub(super) fn step_rise(
 
     let mut bottom = lo;
 
-    while bottom <= hi && !field.blocks(&column.with_y(bottom)) {
+    while bottom <= hi && !field.blocks(column.with_y(bottom)) {
         bottom = bottom.saturating_add(1);
     }
 
@@ -370,7 +370,7 @@ pub(super) fn step_rise(
 
     let mut top = bottom.saturating_add(1);
 
-    while in_lattice(column.with_y(top)) && field.blocks(&column.with_y(top)) {
+    while in_lattice(column.with_y(top)) && field.blocks(column.with_y(top)) {
         top = top.saturating_add(1);
     }
 

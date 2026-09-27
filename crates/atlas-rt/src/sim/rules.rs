@@ -22,9 +22,9 @@ pub(super) struct Outcome {
     pub(super) queue: UpdateQueue,
 }
 
-/// Drains the queued cells in ascending y then x against `field`, records one
-/// claim per destination in emission order, and rebuilds the queue from the
-/// moves and their wakes. Nothing here writes to the World.
+/// Drains the queued cells in ascending y, then x, then z against `field`,
+/// records one claim per destination in emission order, and rebuilds the queue
+/// from the moves and their wakes. Nothing here writes to the World.
 pub(super) fn drain(field: &Field, parity: ParityPolicy) -> Outcome {
     let mut order: Vec<IVec3> = field.queued_cells().copied().collect();
     order.sort_unstable_by_key(|cell| (cell.y, cell.x, cell.z));

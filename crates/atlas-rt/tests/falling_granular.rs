@@ -133,6 +133,38 @@ fn a_grain_falls_straight_down_while_the_column_under_it_is_open() {
 }
 
 #[test]
+fn two_due_ticks_submit_two_batches_in_tick_order() {
+    let (_world, handle) = spawn_sim();
+    let mut edits = floor();
+
+    edits.push(set(6, 6, 6, GRAIN));
+    handle.activate(granular_activation_of(&edits));
+    wait_ready(&handle);
+
+    let input = seeded(&handle);
+
+    feed(&handle, part(9, 4));
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 2, "two whole periods are owed two ticks");
+    assert_eq!(tick.report.batches.len(), 2, "one batch per due tick");
+
+    for batch in &tick.report.batches {
+        submit(&input, batch);
+    }
+
+    let after = emit_snapshots(&handle.world().read().unwrap()).unwrap();
+
+    assert_geometry(&input.packed_regions().unwrap(), &after);
+    assert_eq!(
+        grains(&handle),
+        vec![IVec3::new(6, 4, 6)],
+        "the grain fell one cell per tick"
+    );
+}
+
+#[test]
 fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
@@ -304,6 +336,37 @@ fn diagonal_ties_follow_the_parity_policy() {
 }
 
 #[test]
+fn a_diagonal_on_the_z_axis_follows_the_same_parity_ties() {
+    for (parity, expected) in [
+        (ParityPolicy::Alternate, IVec3::new(7, 1, 7)),
+        (ParityPolicy::AlwaysNegative, IVec3::new(7, 1, 5)),
+    ] {
+        let (_world, handle) = spawn_sim_parity(parity);
+        let mut edits = floor();
+
+        edits.push(set(7, 1, 6, 1));
+        edits.push(set(7, 2, 6, GRAIN));
+        handle.activate(granular_activation_of(&edits));
+        wait_ready(&handle);
+
+        one_tick(&handle);
+
+        assert_eq!(
+            grains(&handle),
+            vec![expected],
+            "x plus z is odd here, so z leads and ties on z"
+        );
+
+        let tick = run_tick(&handle);
+
+        assert!(
+            tick.report.batches.is_empty(),
+            "the grain has settled on the floor"
+        );
+    }
+}
+
+#[test]
 fn the_first_claim_wins_and_the_loser_retries_the_next_tick() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
@@ -415,11 +478,10 @@ fn blocking_derives_from_queue_membership() {
         "the queued grain under the feet does not hold the player"
     );
 
-    let mut tick = run_tick(&handle);
-
-    for _ in 0..19 {
-        tick = run_tick(&handle);
-    }
+    let tick = (0..20)
+        .map(|_| run_tick(&handle))
+        .last()
+        .expect("twenty ticks run");
 
     assert_eq!(grains(&handle), vec![IVec3::new(4, 1, 4)]);
     assert_eq!(
@@ -435,7 +497,7 @@ fn a_grain_settles_on_an_occupied_cell_that_is_not_solid() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
 
-    edits.push(set(6, 1, 6, 3));
+    edits.push(set(6, 1, 6, NON_BLOCKING));
     edits.push(set(6, 2, 6, GRAIN));
     handle.activate(granular_activation_of(&edits));
     wait_ready(&handle);
@@ -547,30 +609,29 @@ fn two_identical_90_tick_sequences_hash_the_same_under_both_parity_policies() {
     };
 
     for parity in [ParityPolicy::Alternate, ParityPolicy::AlwaysNegative] {
-        let runs: Vec<u64> = [0, 1]
-            .iter()
-            .map(|_| {
-                let (_world, handle) = spawn_sim_parity(parity);
+        let mut runs = [0u64; 2];
 
-                handle.activate(scene());
-                wait_ready(&handle);
+        for run in &mut runs {
+            let (_world, handle) = spawn_sim_parity(parity);
 
-                let rested = world_hash(&handle);
+            handle.activate(scene());
+            wait_ready(&handle);
 
-                for _ in 0..90 {
-                    one_tick(&handle);
-                }
+            let rested = world_hash(&handle);
 
-                let settled = world_hash(&handle);
+            for _ in 0..90 {
+                one_tick(&handle);
+            }
 
-                assert_ne!(
-                    settled, rested,
-                    "the scene has to churn for a hash match to mean anything"
-                );
+            let settled = world_hash(&handle);
 
-                settled
-            })
-            .collect();
+            assert_ne!(
+                settled, rested,
+                "the scene has to churn for a hash match to mean anything"
+            );
+
+            *run = settled;
+        }
 
         assert_eq!(
             runs[0], runs[1],
