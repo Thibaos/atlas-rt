@@ -274,9 +274,9 @@ impl ApplicationHandler for App {
                 let view = self.next_player_view();
                 let proj = perspective(DEFAULT_FOV, aspect, PROJ_NEAR, PROJ_FAR);
 
-                if let Err(e) = self.destroy_ray(proj, view) {
-                    error!("{e:?}");
-                }
+                // if let Err(e) = self.destroy_ray(proj, view) {
+                //     error!("{e:?}");
+                // }
 
                 if let Some(pipeline) = self.pipeline.as_mut() {
                     if let Err(e) = pipeline.run_frame(
