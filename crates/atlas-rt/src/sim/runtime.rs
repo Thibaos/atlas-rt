@@ -16,9 +16,12 @@ use crate::world::update::{
     snapshot::MicroChunkSnapshot,
 };
 
+use super::contact::Field;
 use super::controller::Controller;
 use super::input::{InputSample, PlayerState};
 use super::profile::PlayerProfile;
+use super::queue::UpdateQueue;
+use super::rules::{self, ParityPolicy};
 use super::scheduler::Scheduler;
 use super::spawn::{floor_pose, pose};
 
@@ -86,15 +89,22 @@ pub struct UpdateReport {
 /// Spawns the sim thread against `world` and returns the host's handle to it.
 /// The sim takes no ticks until an activation arrives.
 ///
+/// The parity policy fixes how a grain breaks a diagonal tie for the life of
+/// the sim.
+///
 /// # Errors
 ///
 /// Returns an error when the operating system refuses the thread.
-pub fn spawn(world: Arc<RwLock<World>>, profile: PlayerProfile) -> Result<Handle> {
+pub fn spawn(
+    world: Arc<RwLock<World>>,
+    profile: PlayerProfile,
+    parity: ParityPolicy,
+) -> Result<Handle> {
     let (host, inbox) = mpsc::channel();
     let (pushes, outbox) = mpsc::channel();
 
     let shared = Arc::clone(&world);
-    let runtime = Runtime::new(shared, profile, pushes);
+    let runtime = Runtime::new(shared, profile, parity, pushes);
 
     let thread = thread::Builder::new()
         .name(String::from("atlas-sim"))
@@ -205,9 +215,12 @@ impl Drop for Handle {
 struct Runtime {
     world: Arc<RwLock<World>>,
     profile: PlayerProfile,
+    parity: ParityPolicy,
     materials: PhysicalMaterialTable,
+    queue: UpdateQueue,
     tracked: TrackedCoords,
     commands: Vec<Vec<VoxelEdit>>,
+    rule_edits: Vec<VoxelEdit>,
     scheduler: Scheduler,
     player: PlayerState,
     controller: Controller,
@@ -219,15 +232,23 @@ struct Runtime {
 }
 
 impl Runtime {
-    fn new(world: Arc<RwLock<World>>, profile: PlayerProfile, pushes: mpsc::Sender<Push>) -> Self {
+    fn new(
+        world: Arc<RwLock<World>>,
+        profile: PlayerProfile,
+        parity: ParityPolicy,
+        pushes: mpsc::Sender<Push>,
+    ) -> Self {
         let scheduler = Scheduler::new(profile.tick_period());
 
         Self {
             world,
             profile,
+            parity,
             materials: PhysicalMaterialTable::default(),
+            queue: UpdateQueue::default(),
             tracked: TrackedCoords::default(),
             commands: Vec::new(),
+            rule_edits: Vec::new(),
             scheduler,
             player: floor_pose(),
             controller: Controller::new(),
@@ -303,8 +324,8 @@ impl Runtime {
         let _ = self.pushes.send(push);
     }
 
-    /// One tick: the player moves under the read lock first, then the
-    /// queued voxel edits commit under the write lock.
+    /// One tick: the player moves and the voxel rules drain the queue under
+    /// the read lock, then the pending edits commit under the write lock.
     fn tick(&mut self, report: &mut UpdateReport) {
         let evaluated = self.evaluate();
         let (committed, batch) = self.commit();
@@ -334,13 +355,17 @@ impl Runtime {
         let outgoing = mem::take(&mut self.tracked);
         let shared = Arc::clone(&self.world);
 
+        self.materials = materials;
+
         let (planned, player) = {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
 
             *guard = world;
 
+            self.queue.seed(&guard, &self.materials);
+
             let planned = plan_load(snapshots, &outgoing);
-            let player = pose(&guard, self.profile, &materials);
+            let player = pose(&guard, self.profile, &self.materials, &self.queue);
 
             drop(guard);
 
@@ -349,7 +374,6 @@ impl Runtime {
 
         self.tracked = planned.tracked;
         self.tracked.extend(tracked);
-        self.materials = materials;
         self.player = player;
         self.scheduler.reset();
         self.controller.reset();
@@ -360,7 +384,9 @@ impl Runtime {
         let _ = self.pushes.send(Push::Ready { player });
     }
 
-    /// Runs one tick's movement on the player under the read lock alone. The
+    /// Runs one tick's movement on the player and one drain of the rule
+    /// queue on the same read lock, so the rules read one immutable view of
+    /// the World for the whole tick and hand back a pending edit list. The
     /// window starts before the lock is taken, so it carries any wait for a
     /// host reader and stamps the jump deadline.
     fn evaluate(&mut self) -> Duration {
@@ -369,36 +395,57 @@ impl Runtime {
 
         let guard = shared.read().unwrap_or_else(PoisonError::into_inner);
 
+        let field = Field::new(&guard, &self.materials, &self.queue);
+
         self.controller.advance(
-            &guard,
+            &field,
             &mut self.player,
             self.profile,
-            &self.materials,
             self.movement,
             started,
         );
 
+        let outcome = rules::drain(&field, self.parity);
+
+        drop(guard);
+
+        self.queue = outcome.queue;
+        self.rule_edits = outcome.edits;
+
         started.elapsed()
     }
 
-    /// Applies the queued commands under the write lock and emits their
-    /// snapshots. The measured window starts before the lock is taken, so it
-    /// carries any wait for a host reader.
+    /// Applies the rule edits and then the queued commands under the write
+    /// lock, so a command that lands on a cell a rule also edited wins, and
+    /// emits their snapshots. A failed batch leaves the World as it was, so
+    /// the queue reseeds from that World instead of holding the moves the
+    /// batch dropped. The measured window starts before the lock is taken,
+    /// so it carries any wait for a host reader.
     fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>) {
-        if self.commands.is_empty() {
-            return (Duration::ZERO, None);
+        let mut edits: Vec<VoxelEdit> = mem::take(&mut self.rule_edits);
+
+        for command in mem::take(&mut self.commands) {
+            edits.extend(command);
         }
 
-        let edits: Vec<VoxelEdit> = self.commands.iter().flatten().copied().collect();
-        self.commands.clear();
+        if edits.is_empty() {
+            return (Duration::ZERO, None);
+        }
 
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
 
         let outcome = {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
+            let outcome = edit_world(&mut guard, &edits, &self.tracked);
 
-            edit_world(&mut guard, &edits, &self.tracked)
+            if outcome.is_err() {
+                self.queue.seed(&guard, &self.materials);
+            }
+
+            drop(guard);
+
+            outcome
         };
 
         let elapsed = started.elapsed();

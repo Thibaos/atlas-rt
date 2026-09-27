@@ -6,10 +6,13 @@ mod contact;
 mod controller;
 mod input;
 mod profile;
+mod queue;
+mod rules;
 mod runtime;
 mod scheduler;
 mod spawn;
 
 pub use input::{InputSample, PlayerState};
 pub use profile::{PlayerProfile, ProfileError};
+pub use rules::ParityPolicy;
 pub use runtime::{Activation, Command, Handle, Push, TickEnd, UpdateReport, spawn};

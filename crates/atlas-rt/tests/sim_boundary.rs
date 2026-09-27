@@ -4,61 +4,11 @@ use std::thread;
 use std::time::Duration;
 
 use atlas_rt::render::region::feed::RendererInput;
-use atlas_rt::render::region::pack::{RegionData, pack_regions};
-use atlas_rt::sim::{Command, Handle, InputSample, PlayerProfile, PlayerState, Push};
+use atlas_rt::sim::{Command, InputSample, PlayerProfile, PlayerState};
 use atlas_rt::world::update::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use glam::{IVec3, Vec3};
 
 use common::*;
-
-fn held(handle: &Handle, position: IVec3) -> Option<u32> {
-    let guard = handle.world().read().unwrap();
-
-    guard.get_voxel(&position).copied()
-}
-
-fn expect_batch(push: Push) -> Vec<MicroChunkSnapshot> {
-    match push {
-        Push::ActivationBatch(batch) => batch,
-        push => panic!("expected an activation batch, got {push:?}"),
-    }
-}
-
-fn assert_geometry(actual: &[RegionData], expected: &[MicroChunkSnapshot]) {
-    let want = pack_regions(expected).unwrap();
-
-    assert_eq!(actual.len(), want.len(), "resident region count");
-
-    for (got, want) in actual.iter().zip(&want) {
-        assert_eq!(got.region_index, want.region_index);
-        assert_eq!(
-            got.blocks.len(),
-            want.blocks.len(),
-            "region {} block byte count",
-            got.region_index
-        );
-        assert!(
-            got.blocks == want.blocks,
-            "region {} blocks differ from the direct pack of the expected snapshots",
-            got.region_index
-        );
-        assert_eq!(got.aabbs, want.aabbs, "region {} aabbs", got.region_index);
-    }
-}
-
-/// Forwards one report batch through the renderer input and requires the
-/// regions it packs to equal what the held World emits.
-fn forward(handle: &Handle, batch: &[MicroChunkSnapshot]) {
-    let input = RendererInput::new().unwrap();
-
-    input.submit_batch(batch.iter().cloned()).unwrap();
-    input.wait_until_idle().unwrap();
-
-    let guard = handle.world().read().unwrap();
-    let expected = emit_snapshots(&guard).unwrap();
-
-    assert_geometry(&input.packed_regions().unwrap(), &expected);
-}
 
 #[test]
 fn frames_before_the_first_activation_run_no_ticks() {

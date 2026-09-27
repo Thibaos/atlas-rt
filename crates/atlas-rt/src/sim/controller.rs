@@ -2,9 +2,7 @@ use std::time::Instant;
 
 use glam::{IVec3, Vec2, Vec3};
 
-use crate::world::{World, material::PhysicalMaterialTable};
-
-use super::contact::{self, Axis};
+use super::contact::{self, Axis, Field};
 use super::input::PlayerState;
 use super::profile::PlayerProfile;
 
@@ -48,18 +46,17 @@ impl Controller {
     /// onto the face, the same snap a landing sweep performs.
     pub(super) fn advance(
         &mut self,
-        world: &World,
+        field: &Field,
         player: &mut PlayerState,
         profile: PlayerProfile,
-        table: &PhysicalMaterialTable,
         movement: Vec2,
         now: Instant,
     ) {
         let dt = 1.0 / profile.tick_rate as f32;
         let fall = profile.gravity * dt;
-        let mut feet = escape(world, player.feet, profile, table);
+        let mut feet = escape(field, player.feet, profile);
 
-        let grounded = contact::grounded(world, feet, profile, table);
+        let grounded = contact::grounded(field, feet, profile);
 
         if !self.launch(profile, grounded, now) {
             self.velocity_y -= fall;
@@ -67,16 +64,16 @@ impl Controller {
 
         let (dx, dz) = stride(movement, profile, dt);
 
-        feet = sweep_and_step(world, feet, profile, table, Axis::X, dx, grounded);
-        feet = sweep_and_step(world, feet, profile, table, Axis::Z, dz, grounded);
+        feet = sweep_and_step(field, feet, profile, Axis::X, dx, grounded);
+        feet = sweep_and_step(field, feet, profile, Axis::Z, dz, grounded);
 
         let dy = self.velocity_y * dt;
 
-        if dy < 0.0 && contact::grounded(world, feet, profile, table) {
+        if dy < 0.0 && contact::grounded(field, feet, profile) {
             self.velocity_y = 0.0;
             feet.y = feet.y.round();
         } else {
-            let (moved, landed) = contact::sweep(world, feet, profile, table, Axis::Y, dy);
+            let (moved, landed) = contact::sweep(field, feet, profile, Axis::Y, dy);
 
             feet = moved;
 
@@ -86,7 +83,7 @@ impl Controller {
         }
 
         player.feet = feet;
-        player.grounded = contact::grounded(world, feet, profile, table);
+        player.grounded = contact::grounded(field, feet, profile);
     }
 
     /// Consumes the buffered edge on the first grounded tick that runs it
@@ -132,15 +129,14 @@ fn stride(movement: Vec2, profile: PlayerProfile, dt: f32) -> (f32, f32) {
 /// grounded: the raised sweep when both refusal boxes stay clear, the sweep
 /// alone when any of them refuses.
 fn sweep_and_step(
-    world: &World,
+    field: &Field,
     feet: Vec3,
     profile: PlayerProfile,
-    table: &PhysicalMaterialTable,
     axis: Axis,
     delta: f32,
     grounded: bool,
 ) -> Vec3 {
-    let (swept, contact) = contact::sweep(world, feet, profile, table, axis, delta);
+    let (swept, contact) = contact::sweep(field, feet, profile, axis, delta);
 
     if !grounded {
         return swept;
@@ -150,7 +146,7 @@ fn sweep_and_step(
         return swept;
     };
 
-    step(world, feet, profile, table, axis, delta, cell).unwrap_or(swept)
+    step(field, feet, profile, axis, delta, cell).unwrap_or(swept)
 }
 
 /// The whole step: refused outright, never committed and cleaned up, when
@@ -159,20 +155,19 @@ fn sweep_and_step(
 /// this step's actual rise on the head at the current position, and the
 /// destination box is the full body at the advanced feet.
 fn step(
-    world: &World,
+    field: &Field,
     feet: Vec3,
     profile: PlayerProfile,
-    table: &PhysicalMaterialTable,
     axis: Axis,
     delta: f32,
     cell: IVec3,
 ) -> Option<Vec3> {
-    let rise = contact::step_rise(world, feet, profile, table, cell)?;
+    let rise = contact::step_rise(field, feet, profile, cell)?;
     let (min, max) = contact::bounds(feet, profile);
     let rise_min = Vec3::new(min.x, max.y, min.z);
     let rise_max = Vec3::new(max.x, max.y + rise, max.z);
 
-    if contact::blocked(world, rise_min, rise_max, table) {
+    if contact::blocked(field, rise_min, rise_max) {
         return None;
     }
 
@@ -181,24 +176,19 @@ fn step(
     let dest_min = axis.set(dest_min, axis.get(dest_min) + delta);
     let dest_max = axis.set(dest_max, axis.get(dest_max) + delta);
 
-    if contact::blocked(world, dest_min, dest_max, table) {
+    if contact::blocked(field, dest_min, dest_max) {
         return None;
     }
 
-    let (advanced, _) = contact::sweep(world, raised, profile, table, axis, delta);
+    let (advanced, _) = contact::sweep(field, raised, profile, axis, delta);
 
-    contact::grounded(world, advanced, profile, table).then_some(advanced)
+    contact::grounded(field, advanced, profile).then_some(advanced)
 }
 
 /// The nearest clear position the overlapping cells allow, up first and the
 /// five remaining exits ordered by distance. No clear exit keeps the overlap.
-fn escape(
-    world: &World,
-    feet: Vec3,
-    profile: PlayerProfile,
-    table: &PhysicalMaterialTable,
-) -> Vec3 {
-    let hits: Vec<IVec3> = contact::overlapping(world, feet, profile, table).collect();
+fn escape(field: &Field, feet: Vec3, profile: PlayerProfile) -> Vec3 {
+    let hits: Vec<IVec3> = contact::overlapping(field, feet, profile).collect();
 
     if hits.is_empty() {
         return feet;
@@ -219,10 +209,7 @@ fn escape(
     for candidate in std::iter::once(up).chain(sides) {
         let moved = candidate.apply(feet);
 
-        if contact::overlapping(world, moved, profile, table)
-            .next()
-            .is_none()
-        {
+        if contact::overlapping(field, moved, profile).next().is_none() {
             return moved;
         }
     }
