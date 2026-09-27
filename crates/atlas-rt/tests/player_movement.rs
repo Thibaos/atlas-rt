@@ -186,7 +186,7 @@ fn falling_player() -> Handle {
     handle.activate(activation_of(&floor_and_pillar()));
     let mut last = wait_ready(&handle);
 
-    handle.command(Command::Edits(vec![clear(2, 3, 2)]));
+    handle.command(Command::Cell(clear(2, 3, 2)));
 
     for _ in 0..12 {
         feed(&handle, period());
@@ -294,7 +294,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
 
     handle.activate(activation_of(&floor_and_pillar()));
     wait_ready(&handle);
-    handle.command(Command::Edits(vec![clear(2, 3, 2)]));
+    handle.command(Command::Cell(clear(2, 3, 2)));
 
     for tick_number in 1..=16 {
         feed(&handle, period());
@@ -624,7 +624,7 @@ fn depenetration_pushes_up_first_and_retries_every_tick() {
 
     handle.activate(activation_of(&open_floor()));
     wait_ready(&handle);
-    handle.command(Command::Edits(vec![set(4, 1, 2, 1)]));
+    handle.command(Command::Cell(set(4, 1, 2, 1)));
 
     feed(&handle, period());
 
@@ -656,7 +656,7 @@ fn a_jump_pressed_against_a_buried_player_still_launches() {
 
     handle.activate(activation_of(&open_floor()));
     wait_ready(&handle);
-    handle.command(Command::Edits(vec![set(4, 1, 2, 1)]));
+    handle.command(Command::Cell(set(4, 1, 2, 1)));
 
     feed(&handle, period());
     expect_tick(recv_push(&handle));

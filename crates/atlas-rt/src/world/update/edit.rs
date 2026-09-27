@@ -15,7 +15,7 @@ use crate::world::{
 pub const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
 pub const MICRO_AREA: usize = MICRO_EDGE * MICRO_EDGE;
 pub const MICRO_CELLS: usize = MICRO_EDGE * MICRO_AREA;
-const MICRO_BYTES: usize = MICRO_CELLS / MICRO_EDGE;
+pub const MICRO_BYTES: usize = MICRO_CELLS / MICRO_EDGE;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoxelChange {
@@ -29,10 +29,147 @@ pub struct VoxelEdit {
     pub change: VoxelChange,
 }
 
+impl VoxelEdit {
+    /// Whether the edit disagrees with `world`: a `Set` of the material the
+    /// cell already holds and a `Clear` of an empty cell agree and resolve
+    /// as no-ops. An edit outside the lattice always disagrees, so
+    /// validation still gets its turn.
+    #[must_use]
+    pub fn disagrees_with(&self, world: &World) -> bool {
+        if !in_lattice(self.position) {
+            return true;
+        }
+
+        let held = world.material_at(&self.position);
+
+        match self.change {
+            VoxelChange::Set(material) => held != Some(material),
+            VoxelChange::Clear => held.is_some(),
+        }
+    }
+}
+
+/// A Micro-chunk as a host commands it.
+///
+/// The origin, the occupancy mask, and the material indices of the occupied
+/// cells in ascending cell-index order. Diffed against the World at commit,
+/// so a later write never derives a no-op against a World that lacks an
+/// earlier one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicroChunkEdit {
+    pub origin: IVec3,
+    pub mask: [u8; MICRO_BYTES],
+    pub materials: Vec<u8>,
+}
+
+impl MicroChunkEdit {
+    /// The edits that turn `world`'s copy of this Micro-chunk into the raw
+    /// chunk, in ascending cell-index order. A cell already holding what the
+    /// chunk asks for contributes nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`EditError`] naming the origin when it sits outside the
+    /// lattice or off the Micro-chunk grid, and when the materials do not
+    /// match the mask's occupancy.
+    pub fn diff(&self, world: &World) -> Result<Vec<VoxelEdit>, EditError> {
+        validate_chunk(self)?;
+
+        let mut edits = Vec::new();
+        let mut next_material = 0usize;
+
+        for index in 0..MICRO_CELLS {
+            let occupied = self
+                .mask
+                .get(index / MICRO_EDGE)
+                .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0);
+
+            let incoming = if occupied {
+                let material = self.materials.get(next_material).copied();
+                next_material = next_material.saturating_add(1);
+                material
+            } else {
+                None
+            };
+
+            let position = self.origin.saturating_add(cell_offset(index));
+            let current = world
+                .get_voxel(&position)
+                .and_then(|voxel| u8::try_from(*voxel).ok());
+
+            match (incoming, current) {
+                (Some(material), Some(existing)) if material == existing => {}
+                (Some(material), _) => edits.push(VoxelEdit {
+                    position,
+                    change: VoxelChange::Set(material),
+                }),
+                (None, Some(_)) => edits.push(VoxelEdit {
+                    position,
+                    change: VoxelChange::Clear,
+                }),
+                (None, None) => {}
+            }
+        }
+
+        Ok(edits)
+    }
+}
+
+/// The chunk-wide checks a diff needs before it may read the World: the
+/// origin sits in the lattice on the Micro-chunk grid, which puts every cell
+/// it covers in the lattice too, and the materials match the occupancy.
+fn validate_chunk(chunk: &MicroChunkEdit) -> Result<(), EditError> {
+    let position = chunk.origin;
+
+    if !in_lattice(position) {
+        return Err(EditError {
+            position,
+            reason: EditReason::OutsideLattice,
+        });
+    }
+
+    if grid_origin(position, MICRO_CHUNK_LENGTH) != position {
+        return Err(EditError {
+            position,
+            reason: EditReason::NotChunkOrigin,
+        });
+    }
+
+    let occupied: usize = chunk
+        .mask
+        .iter()
+        .map(|byte| byte.count_ones() as usize)
+        .sum();
+
+    if occupied != chunk.materials.len() {
+        return Err(EditError {
+            position,
+            reason: EditReason::MaterialCount {
+                occupied,
+                given: chunk.materials.len(),
+            },
+        });
+    }
+
+    Ok(())
+}
+
+/// The cell at `index` of the `x + 8y + 64z` walk a Micro-chunk's mask and
+/// materials both follow.
+fn cell_offset(index: usize) -> IVec3 {
+    IVec3::new(
+        i32::try_from(index % MICRO_EDGE).unwrap_or(0),
+        i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
+        i32::try_from(index / MICRO_AREA).unwrap_or(0),
+    )
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum EditReason {
     OutsideLattice,
     RegionOutsideLattice,
+    NotChunkOrigin,
+    MaterialCount { occupied: usize, given: usize },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +188,15 @@ impl Display for EditError {
                 write!(
                     f,
                     "the region holding voxel {position} is outside the lattice"
+                )
+            }
+            EditReason::NotChunkOrigin => {
+                write!(f, "voxel {position} is not a Micro-chunk origin")
+            }
+            EditReason::MaterialCount { occupied, given } => {
+                write!(
+                    f,
+                    "the mask marks {occupied} cells but carries {given} materials"
                 )
             }
         }
@@ -139,13 +285,7 @@ fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
     let mut materials = Vec::new();
 
     for index in 0..MICRO_CELLS {
-        let offset = IVec3::new(
-            i32::try_from(index % MICRO_EDGE).unwrap_or(0),
-            i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
-            i32::try_from(index / MICRO_AREA).unwrap_or(0),
-        );
-
-        let Some(material) = world.material_at(&origin.saturating_add(offset)) else {
+        let Some(material) = world.material_at(&origin.saturating_add(cell_offset(index))) else {
             continue;
         };
 

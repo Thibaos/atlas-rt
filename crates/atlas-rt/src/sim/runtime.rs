@@ -5,14 +5,15 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use glam::Vec2;
+use glam::{IVec3, Vec2};
 use tracing::error;
 
 use crate::world::World;
+use crate::world::grid::in_lattice;
 use crate::world::material::PhysicalMaterialTable;
 use crate::world::update::{
     batch::{TrackedCoords, plan_load},
-    edit::{VoxelEdit, edit_world},
+    edit::{MicroChunkEdit, VoxelEdit, edit_world},
     snapshot::MicroChunkSnapshot,
 };
 
@@ -52,9 +53,12 @@ pub struct Activation {
 }
 
 /// A host edit resolved at the next commit, against the `World` then active.
+/// Commands commit in arrival order, each diffed against the World the
+/// earlier ones left.
 #[derive(Debug)]
 pub enum Command {
-    Edits(Vec<VoxelEdit>),
+    Cell(VoxelEdit),
+    MicroChunk(MicroChunkEdit),
 }
 
 /// What the sim hands back: an activation batch, the readiness reply, or one
@@ -219,7 +223,7 @@ struct Runtime {
     materials: PhysicalMaterialTable,
     queue: UpdateQueue,
     tracked: TrackedCoords,
-    commands: Vec<Vec<VoxelEdit>>,
+    commands: Vec<Command>,
     rule_edits: Vec<VoxelEdit>,
     scheduler: Scheduler,
     player: PlayerState,
@@ -339,9 +343,7 @@ impl Runtime {
     }
 
     fn on_command(&mut self, command: Command) {
-        let Command::Edits(edits) = command;
-
-        self.commands.push(edits);
+        self.commands.push(command);
     }
 
     fn on_activation(&mut self, activation: Activation) {
@@ -415,59 +417,132 @@ impl Runtime {
         started.elapsed()
     }
 
-    /// Applies the rule edits and then the queued commands under the write
-    /// lock, so a command that lands on a cell a rule also edited wins, and
-    /// emits their snapshots. A failed batch leaves the World as it was, so
-    /// the queue reseeds from that World instead of holding the moves the
-    /// batch dropped. The measured window starts before the lock is taken,
-    /// so it carries any wait for a host reader.
+    /// Applies the rule edits as one batch and then every queued command as
+    /// its own batch, in arrival order, all under one write lock, so a later
+    /// command diffs against the World the earlier ones left. The batches of
+    /// a tick merge into one snapshot list, the last snapshot per
+    /// Micro-chunk winning. A failed rule batch reseeds the queue from the
+    /// World it left behind; a failed command is logged and dropped. The
+    /// measured window starts before the lock is taken, so it carries any
+    /// wait for a host reader.
     fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>) {
-        let mut edits: Vec<VoxelEdit> = mem::take(&mut self.rule_edits);
-
-        for command in mem::take(&mut self.commands) {
-            edits.extend(command);
-        }
-
-        if edits.is_empty() {
+        if self.rule_edits.is_empty() && self.commands.is_empty() {
             return (Duration::ZERO, None);
         }
 
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
+        let mut merged: Vec<MicroChunkSnapshot> = Vec::new();
 
-        let outcome = {
+        {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
-            let outcome = edit_world(&mut guard, &edits, &self.tracked);
+            let rules = mem::take(&mut self.rule_edits);
 
-            if outcome.is_err() {
-                self.queue.seed(&guard, &self.materials);
+            if !rules.is_empty() {
+                let outcome = edit_world(&mut guard, &rules, &self.tracked);
+
+                if outcome.is_err() {
+                    self.queue.seed(&guard, &self.materials);
+                }
+
+                debug_assert!(
+                    outcome.is_ok(),
+                    "a rule edit left the lattice between validation and commit: {outcome:?}"
+                );
+
+                match outcome {
+                    Ok(batch) => {
+                        self.tracked = batch.tracked;
+                        merge_snapshots(&mut merged, batch.snapshots);
+                    }
+                    Err(error) => error!("atlas_rt: dropped a failed rule batch: {error}"),
+                }
+            }
+
+            for command in mem::take(&mut self.commands) {
+                self.apply_command(&mut guard, command, &mut merged);
             }
 
             drop(guard);
-
-            outcome
-        };
+        }
 
         let elapsed = started.elapsed();
+        let pushed = (!merged.is_empty()).then_some(merged);
 
-        debug_assert!(
-            outcome.is_ok(),
-            "an edit left the lattice between validation and commit: {outcome:?}"
-        );
+        (elapsed, pushed)
+    }
 
-        match outcome {
+    /// Diffs one command against the World it will land in and applies what
+    /// the diff asks for, folding the snapshots into `merged`. A command
+    /// that fails validation, or that changes nothing, leaves the World,
+    /// the tracked set, and the queue alone.
+    fn apply_command(
+        &mut self,
+        guard: &mut World,
+        command: Command,
+        merged: &mut Vec<MicroChunkSnapshot>,
+    ) {
+        let edits = match command {
+            Command::Cell(edit) => {
+                if !edit.disagrees_with(guard) {
+                    return;
+                }
+
+                vec![edit]
+            }
+            Command::MicroChunk(chunk) => match chunk.diff(guard) {
+                Ok(edits) => edits,
+                Err(error) => {
+                    error!("atlas_rt: dropped an invalid command: {error}");
+
+                    return;
+                }
+            },
+        };
+
+        if edits.is_empty() {
+            return;
+        }
+
+        match edit_world(guard, &edits, &self.tracked) {
             Ok(batch) => {
                 self.tracked = batch.tracked;
+                merge_snapshots(merged, batch.snapshots);
 
-                let pushed = (!batch.snapshots.is_empty()).then_some(batch.snapshots);
-
-                (elapsed, pushed)
+                for edit in &edits {
+                    self.wake(edit.position);
+                }
             }
-            Err(error) => {
-                error!("atlas_rt: dropped a failed edit batch: {error}");
+            Err(error) => error!("atlas_rt: dropped a failed command batch: {error}"),
+        }
+    }
 
-                (elapsed, None)
+    /// Queues the edited cell and the three above it, so the rule queue sees
+    /// what a host edit moved without scanning the World. Cells above the
+    /// lattice are skipped.
+    fn wake(&mut self, cell: IVec3) {
+        for height in 0..4 {
+            let woken = cell.with_y(cell.y.saturating_add(height));
+
+            if in_lattice(woken) {
+                self.queue.insert(woken);
             }
+        }
+    }
+}
+
+/// Folds one batch's snapshots into the tick's list, keeping the last
+/// snapshot per Micro-chunk so a chunk edited twice reaches the renderer in
+/// its final state.
+fn merge_snapshots(merged: &mut Vec<MicroChunkSnapshot>, snapshots: Vec<MicroChunkSnapshot>) {
+    for snapshot in snapshots {
+        if let Some(slot) = merged
+            .iter_mut()
+            .find(|earlier| earlier.global_coords == snapshot.global_coords)
+        {
+            *slot = snapshot;
+        } else {
+            merged.push(snapshot);
         }
     }
 }
