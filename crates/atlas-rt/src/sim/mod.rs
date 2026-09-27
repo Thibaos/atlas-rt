@@ -2,6 +2,8 @@
 //! activations in, readiness and tick-end pushes out, against a World behind a
 //! shared lock.
 
+mod contact;
+mod controller;
 mod input;
 mod profile;
 mod runtime;

@@ -5,6 +5,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use glam::Vec2;
 use tracing::error;
 
 use crate::world::World;
@@ -15,10 +16,11 @@ use crate::world::update::{
     snapshot::MicroChunkSnapshot,
 };
 
+use super::controller::Controller;
 use super::input::{InputSample, PlayerState};
 use super::profile::PlayerProfile;
 use super::scheduler::Scheduler;
-use super::spawn::{floor_pose, grounded, pose};
+use super::spawn::{floor_pose, pose};
 
 /// One frame of host time and buffered input, one pause change, one edit
 /// command, one World handover, or the shutdown that ends the loop.
@@ -208,7 +210,8 @@ struct Runtime {
     commands: Vec<Vec<VoxelEdit>>,
     scheduler: Scheduler,
     player: PlayerState,
-    pending_jump: Option<Instant>,
+    controller: Controller,
+    movement: Vec2,
     pushes: mpsc::Sender<Push>,
     active: bool,
     paused: bool,
@@ -227,7 +230,8 @@ impl Runtime {
             commands: Vec::new(),
             scheduler,
             player: floor_pose(),
-            pending_jump: None,
+            controller: Controller::new(),
+            movement: Vec2::ZERO,
             pushes,
             active: false,
             paused: false,
@@ -252,7 +256,8 @@ impl Runtime {
 
         if paused {
             self.scheduler.reset();
-            self.pending_jump = None;
+            self.controller.discard_jump();
+            self.movement = Vec2::ZERO;
         }
     }
 
@@ -262,8 +267,10 @@ impl Runtime {
         }
 
         if let Some(edge) = sample.jump_edge {
-            self.pending_jump = Some(self.pending_jump.map_or(edge, |held| held.max(edge)));
+            self.controller.buffer_jump(edge);
         }
+
+        self.movement = sample.movement;
 
         self.scheduler.advance(elapsed);
 
@@ -296,15 +303,14 @@ impl Runtime {
         let _ = self.pushes.send(push);
     }
 
-    /// One tick: the player resolves under the read lock first, then the
+    /// One tick: the player moves under the read lock first, then the
     /// queued voxel edits commit under the write lock.
     fn tick(&mut self, report: &mut UpdateReport) {
-        let (grounded, evaluated) = self.evaluate();
+        let evaluated = self.evaluate();
         let (committed, batch) = self.commit();
 
         report.tick_time = report.tick_time.saturating_add(evaluated);
         report.commit_time = report.commit_time.saturating_add(committed);
-        self.player.grounded = grounded;
 
         if let Some(snapshots) = batch {
             report.batches.push(snapshots);
@@ -346,7 +352,7 @@ impl Runtime {
         self.materials = materials;
         self.player = player;
         self.scheduler.reset();
-        self.pending_jump = None;
+        self.controller.reset();
         self.active = true;
         self.snap_pending = true;
 
@@ -354,18 +360,25 @@ impl Runtime {
         let _ = self.pushes.send(Push::Ready { player });
     }
 
-    /// Reads the ground under the player under the read lock alone.
-    fn evaluate(&self) -> (bool, Duration) {
+    /// Runs one tick's movement on the player under the read lock alone. The
+    /// window starts before the lock is taken, so it carries any wait for a
+    /// host reader and stamps the jump deadline.
+    fn evaluate(&mut self) -> Duration {
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
 
-        let grounded = {
-            let guard = shared.read().unwrap_or_else(PoisonError::into_inner);
+        let guard = shared.read().unwrap_or_else(PoisonError::into_inner);
 
-            grounded(&guard, self.player.feet, self.profile, &self.materials)
-        };
+        self.controller.advance(
+            &guard,
+            &mut self.player,
+            self.profile,
+            &self.materials,
+            self.movement,
+            started,
+        );
 
-        (grounded, started.elapsed())
+        started.elapsed()
     }
 
     /// Applies the queued commands under the write lock and emits their
