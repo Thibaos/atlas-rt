@@ -2,6 +2,9 @@
 //! renderer exists, one frame of time and input per frame, and the pushes
 //! drained into the renderer in the order they arrive.
 
+#[cfg(test)]
+mod bench;
+
 use std::mem;
 use std::sync::mpsc::TryRecvError;
 use std::sync::{Arc, PoisonError, RwLock};
