@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use atlas_rt::render::camera::mirror_right;
 use atlas_rt::sim::{Command, Handle, InputSample, PlayerState};
-use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit};
+use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit};
 use glam::{IVec3, Quat, Vec2, Vec3};
 
 use common::*;

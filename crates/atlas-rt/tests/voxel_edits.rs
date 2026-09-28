@@ -5,13 +5,13 @@ use atlas_rt::{
     },
     world::{
         World,
-        format::open_file,
-        grid::{MICRO_CHUNK_LENGTH, grid_origin, region_index_of},
-        update::{
+        diff::{
             batch::{Batch, TrackedCoords, plan_clear, plan_load},
             edit::{VoxelChange, VoxelEdit, edit_world},
             snapshot::{MicroChunkSnapshot, emit_snapshots},
         },
+        format::open_file,
+        grid::{MICRO_CHUNK_LENGTH, grid_origin, region_index_of},
     },
 };
 use glam::IVec3;

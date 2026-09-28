@@ -16,10 +16,10 @@ use crate::{
     host::display_gate::DisplayGate,
     world::{
         World,
+        diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
         format::{get_effective_palette, open_bytes},
         load::progress::{Progress, Stage},
         material::{PhysicalMaterialTable, load_table},
-        update::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
     },
 };
 
@@ -512,7 +512,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::world::{format::get_palette, update::snapshot::emit_snapshots};
+    use crate::world::{diff::snapshot::emit_snapshots, format::get_palette};
 
     fn matl_paletted_world() -> Vec<u8> {
         fn chunk(id: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {

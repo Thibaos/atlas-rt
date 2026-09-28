@@ -15,8 +15,8 @@ use tracing::error;
 use crate::{
     render::region::pack::{RegionData, pack_region, pack_regions},
     world::{
+        diff::snapshot::MicroChunkSnapshot,
         grid::{assert_region_index_in_lattice, region_index_of},
-        update::snapshot::MicroChunkSnapshot,
     },
 };
 
@@ -474,8 +474,8 @@ mod tests {
         render::region::pack::pack_regions,
         world::{
             World,
+            diff::snapshot::emit_snapshots,
             grid::{MICRO_CHUNK_LENGTH, region_index_of},
-            update::snapshot::emit_snapshots,
         },
     };
 

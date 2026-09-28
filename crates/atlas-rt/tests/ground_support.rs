@@ -3,7 +3,7 @@ mod common;
 use std::time::Instant;
 
 use atlas_rt::sim::{Handle, InputSample, PlayerProfile, PlayerState};
-use atlas_rt::world::update::edit::VoxelEdit;
+use atlas_rt::world::diff::edit::VoxelEdit;
 use glam::{Vec2, Vec3};
 
 use common::*;

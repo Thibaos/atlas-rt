@@ -31,15 +31,15 @@ use atlas_rt::{
     sim::{Command, PlayerProfile},
     world::{
         World,
-        format::open_file,
-        grid::LATTICE_HALF_EXTENT,
-        material::load_table,
-        raycast::{VoxelHit, screen_center_ray},
-        update::{
+        diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
             snapshot::emit_snapshots,
         },
+        format::open_file,
+        grid::LATTICE_HALF_EXTENT,
+        material::load_table,
+        raycast::{VoxelHit, screen_center_ray},
     },
 };
 

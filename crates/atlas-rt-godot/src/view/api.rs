@@ -10,8 +10,8 @@ use atlas_rt::{
     },
     world::{
         World,
+        diff::batch::TrackedCoords,
         load::job::{Status, WorldUpdateJob},
-        update::batch::TrackedCoords,
     },
 };
 use godot::classes::{

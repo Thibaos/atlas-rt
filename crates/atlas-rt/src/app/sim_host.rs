@@ -15,9 +15,9 @@ use atlas_rt::sim::{
     self, Activation, Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push,
 };
 use atlas_rt::world::World;
+use atlas_rt::world::diff::batch::TrackedCoords;
+use atlas_rt::world::diff::snapshot::MicroChunkSnapshot;
 use atlas_rt::world::material::PhysicalMaterialTable;
-use atlas_rt::world::update::batch::TrackedCoords;
-use atlas_rt::world::update::snapshot::MicroChunkSnapshot;
 
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);
@@ -249,7 +249,7 @@ mod tests {
     use glam::{IVec3, Vec3};
 
     use atlas_rt::sim::TickEnd;
-    use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit, edit_world};
+    use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit, edit_world};
 
     use super::*;
 

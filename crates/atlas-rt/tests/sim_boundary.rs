@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use atlas_rt::render::region::feed::RendererInput;
 use atlas_rt::sim::{Command, InputSample, PlayerProfile, PlayerState};
-use atlas_rt::world::update::snapshot::{MicroChunkSnapshot, emit_snapshots};
+use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use glam::{IVec3, Vec3};
 
 use common::*;

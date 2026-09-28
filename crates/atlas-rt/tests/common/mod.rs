@@ -15,10 +15,10 @@ use atlas_rt::sim::{
     self, Activation, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push, TickEnd,
 };
 use atlas_rt::world::World;
+use atlas_rt::world::diff::batch::TrackedCoords;
+use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit, edit_world};
+use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use atlas_rt::world::material::{PhysicalMaterialTable, parse_override};
-use atlas_rt::world::update::batch::TrackedCoords;
-use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit, edit_world};
-use atlas_rt::world::update::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use glam::IVec3;
 
 pub const TIMEOUT: Duration = Duration::from_secs(2);

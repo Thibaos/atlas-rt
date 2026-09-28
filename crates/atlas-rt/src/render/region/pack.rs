@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 use vulkano::acceleration_structure::AabbPositions;
 
 use crate::world::{
+    diff::snapshot::MicroChunkSnapshot,
     grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of},
-    update::snapshot::MicroChunkSnapshot,
 };
 
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
@@ -215,7 +215,7 @@ fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
 
 #[cfg(test)]
 mod tests {
-    use crate::world::{World, update::snapshot::emit_snapshots};
+    use crate::world::{World, diff::snapshot::emit_snapshots};
 
     use super::*;
 

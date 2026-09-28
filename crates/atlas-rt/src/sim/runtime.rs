@@ -9,13 +9,13 @@ use glam::{IVec3, Vec2};
 use tracing::error;
 
 use crate::world::World;
-use crate::world::grid::in_lattice;
-use crate::world::material::PhysicalMaterialTable;
-use crate::world::update::{
+use crate::world::diff::{
     batch::{TrackedCoords, plan_load},
     edit::{MicroChunkEdit, VoxelEdit, edit_world},
     snapshot::MicroChunkSnapshot,
 };
+use crate::world::grid::in_lattice;
+use crate::world::material::PhysicalMaterialTable;
 
 use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;

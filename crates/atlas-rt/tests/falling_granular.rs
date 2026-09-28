@@ -6,8 +6,8 @@ mod common;
 
 use atlas_rt::render::region::feed::RendererInput;
 use atlas_rt::sim::{Handle, ParityPolicy};
-use atlas_rt::world::update::edit::VoxelEdit;
-use atlas_rt::world::update::snapshot::{MicroChunkSnapshot, emit_snapshots};
+use atlas_rt::world::diff::edit::VoxelEdit;
+use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use glam::{IVec3, Vec3};
 
 use common::*;

@@ -1,7 +1,7 @@
 use glam::IVec3;
 use rustc_hash::FxHashSet;
 
-use crate::world::update::edit::{VoxelChange, VoxelEdit};
+use crate::world::diff::edit::{VoxelChange, VoxelEdit};
 
 use super::field::Field;
 use super::queue::UpdateQueue;

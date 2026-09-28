@@ -5,11 +5,11 @@ use rustc_hash::FxHashSet;
 
 use crate::world::{
     World,
-    grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice, region_index_in_lattice, region_index_of},
-    update::{
+    diff::{
         batch::{Batch, TrackedCoords, plan_edit},
         snapshot::MicroChunkSnapshot,
     },
+    grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice, region_index_in_lattice, region_index_of},
 };
 
 pub const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
@@ -311,12 +311,12 @@ mod tests {
 
     use crate::world::{
         World,
-        grid::{MICRO_CHUNK_LENGTH, grid_origin},
-        placement::{Rng, u8_below},
-        update::{
+        diff::{
             batch::TrackedCoords,
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},
         },
+        grid::{MICRO_CHUNK_LENGTH, grid_origin},
+        placement::{Rng, u8_below},
     };
 
     use super::{

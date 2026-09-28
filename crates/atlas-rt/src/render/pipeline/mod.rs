@@ -26,7 +26,7 @@ use crate::{
         },
         region::{feed::RendererInput, residency::RegionStore},
     },
-    world::{World, update::snapshot::emit_snapshots},
+    world::{World, diff::snapshot::emit_snapshots},
 };
 
 pub const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_2;

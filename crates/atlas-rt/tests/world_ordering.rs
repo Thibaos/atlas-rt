@@ -4,11 +4,11 @@ use atlas_rt::{
         pack::{RegionData, pack_regions},
     },
     world::{
-        grid::region_index_of,
-        update::{
+        diff::{
             batch::{TrackedCoords, plan_clear, plan_edit, plan_load},
             snapshot::MicroChunkSnapshot,
         },
+        grid::region_index_of,
     },
 };
 use glam::IVec3;

@@ -6,8 +6,8 @@ mod load_bench {
         render::region::pack::pack_regions,
         world::{
             World,
+            diff::snapshot::{emit_snapshots, emit_snapshots_reporting},
             load::progress::{Progress, Stage},
-            update::snapshot::{emit_snapshots, emit_snapshots_reporting},
         },
     };
 
@@ -262,12 +262,12 @@ mod edit_bench {
 
     use crate::world::{
         World,
-        grid::{REGION_LENGTH, region_index_of},
-        placement::Rng,
-        update::{
+        diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
         },
+        grid::{REGION_LENGTH, region_index_of},
+        placement::Rng,
     };
 
     const BATCH_SIZES: [usize; 3] = [1_000, 10_000, 100_000];

@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
-use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
-use atlas_rt::world::update::batch::{self};
-use atlas_rt::world::update::edit::{
+use atlas_rt::world::diff::batch::{self};
+use atlas_rt::world::diff::edit::{
     MICRO_AREA, MICRO_CELLS, MICRO_EDGE, VoxelChange, VoxelEdit, edit_world,
 };
+use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -597,7 +597,7 @@ fn chunk_edits(world: &World, chunk: &ValidatedChunk) -> Vec<VoxelEdit> {
 mod tests {
     use atlas_rt::world::{
         World,
-        update::{
+        diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
         },
@@ -783,7 +783,7 @@ mod tests {
         input: &atlas_rt::render::region::feed::RendererInput,
         world: &World,
     ) {
-        let expected = must(atlas_rt::world::update::snapshot::emit_snapshots(world));
+        let expected = must(atlas_rt::world::diff::snapshot::emit_snapshots(world));
         let want = must(atlas_rt::render::region::pack::pack_regions(&expected));
         let got = must(input.packed_regions());
 
@@ -799,8 +799,8 @@ mod tests {
     #[test]
     fn a_chunk_submission_leaves_the_feed_and_the_world_in_agreement() {
         use atlas_rt::render::region::feed::RendererInput;
-        use atlas_rt::world::update::batch::TrackedCoords;
-        use atlas_rt::world::update::edit::edit_world;
+        use atlas_rt::world::diff::batch::TrackedCoords;
+        use atlas_rt::world::diff::edit::edit_world;
 
         let mut world = world_with(&[(0, 1), (7, 2), (64, 3)]);
         let input = must(RendererInput::new());
@@ -821,8 +821,8 @@ mod tests {
     #[test]
     fn a_zero_mask_submission_empties_the_chunk_and_leaves_the_rest_resident() {
         use atlas_rt::render::region::feed::RendererInput;
-        use atlas_rt::world::update::batch::TrackedCoords;
-        use atlas_rt::world::update::edit::edit_world;
+        use atlas_rt::world::diff::batch::TrackedCoords;
+        use atlas_rt::world::diff::edit::edit_world;
 
         let mut world = world_with(&[(0, 1), (7, 2)]);
         let neighbour = IVec3::new(8, 0, 0);
