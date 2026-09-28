@@ -242,7 +242,11 @@ fn a_loaded_world_edited_matches_a_fresh_emission() {
     let data = open_file(LOADED_ASSET);
     let (mut world, _) = World::new_clipped(&data);
 
-    let mut tracked = submit_load(&input, emit_snapshots(&world).unwrap(), &TrackedCoords::default());
+    let mut tracked = submit_load(
+        &input,
+        emit_snapshots(&world).unwrap(),
+        &TrackedCoords::default(),
+    );
 
     let Some(first) = world.iter_voxels().next().map(|(position, _)| position) else {
         panic!("the loaded asset must hold at least one voxel");
@@ -257,7 +261,10 @@ fn a_loaded_world_edited_matches_a_fresh_emission() {
             if index % 5 == 0 {
                 clear(*position)
             } else {
-                set(*position, u8::try_from((index % 200) as u64 + 1).unwrap_or(u8::MAX))
+                set(
+                    *position,
+                    u8::try_from((index % 200) as u64 + 1).unwrap_or(u8::MAX),
+                )
             }
         })
         .collect();
@@ -269,7 +276,9 @@ fn a_loaded_world_edited_matches_a_fresh_emission() {
     let batch = submit_edit(&input, &mut world, &[set(added, 9)], &tracked);
 
     assert!(
-        batch.tracked.contains(&grid_origin(added, MICRO_CHUNK_LENGTH)),
+        batch
+            .tracked
+            .contains(&grid_origin(added, MICRO_CHUNK_LENGTH)),
         "the new chunk beside the loaded content is tracked"
     );
     assert_matches_world(&input, &world);
@@ -372,7 +381,10 @@ fn clearing_every_chunk_of_a_region_yields_none_from_packed_region() {
     input.submit_batch(batch.snapshots).unwrap();
     input.wait_until_idle().unwrap();
 
-    assert!(tracked.is_empty(), "the emptied region leaves no tracked chunk");
+    assert!(
+        tracked.is_empty(),
+        "the emptied region leaves no tracked chunk"
+    );
     assert!(
         input.packed_region(region).unwrap().is_none(),
         "a region emptied by the edits must yield None"

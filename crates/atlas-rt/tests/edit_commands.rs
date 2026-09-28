@@ -321,7 +321,10 @@ fn a_dig_wakes_the_cell_it_left_and_the_three_above() {
 
     let tick = run_tick(&handle);
 
-    assert!(tick.report.batches.is_empty(), "the grain rests on the floor");
+    assert!(
+        tick.report.batches.is_empty(),
+        "the grain rests on the floor"
+    );
 
     handle.command(Command::Cell(clear(4, 3, 4)));
 
