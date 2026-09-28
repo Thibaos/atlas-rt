@@ -17,7 +17,7 @@ use crate::render::{
     context::RenderContext,
     output::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, delivery_memory},
     pipeline::{
-        FrameInput,
+        FrameInput, PROJ_FAR, PROJ_NEAR,
         task::{
             RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
         },
@@ -27,9 +27,6 @@ use crate::render::{
         residency::{ApplyReport, RegionStore},
     },
 };
-
-const PROJ_NEAR: f32 = 0.01;
-const PROJ_FAR: f32 = 10000.0;
 
 pub const REWRITE_GATE_TICKS: u64 = 3;
 

@@ -218,10 +218,11 @@ fn raycast(world: &World, ray: Ray) -> Option<VoxelHit> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::camera::camera_view;
+    use crate::render::{
+        camera::camera_view,
+        pipeline::{PROJ_FAR, PROJ_NEAR},
+    };
 
-    const PROJ_NEAR: f32 = 0.01;
-    const PROJ_FAR: f32 = 10000.0;
     const FOV: f32 = std::f32::consts::FRAC_PI_2;
     const TOLERANCE: f32 = 1.0e-3;
 
