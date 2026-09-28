@@ -25,14 +25,14 @@ pub struct PlayerProfile {
 impl Default for PlayerProfile {
     fn default() -> Self {
         Self {
-            width: 0.6,
-            depth: 0.6,
-            body_height: 1.8,
-            eye_offset: 1.62,
-            move_speed: 4.0,
-            gravity: 24.0,
-            jump_velocity: 8.0,
-            step_height: 2,
+            width: 6.0,
+            depth: 6.0,
+            body_height: 18.0,
+            eye_offset: 16.2,
+            move_speed: 40.0,
+            gravity: 200.0,
+            jump_velocity: 80.0,
+            step_height: 4,
             jump_buffer: Duration::from_secs_f32(0.15),
             tick_rate: 30,
         }
@@ -202,14 +202,14 @@ mod tests {
     impl Default for Values {
         fn default() -> Self {
             Self {
-                width: 0.6,
-                depth: 0.6,
-                body_height: 1.8,
-                eye_offset: 1.62,
-                move_speed: 4.0,
-                gravity: 24.0,
-                jump_velocity: 8.0,
-                step_height: 2.0,
+                width: 6.0,
+                depth: 6.0,
+                body_height: 18.0,
+                eye_offset: 16.2,
+                move_speed: 40.0,
+                gravity: 200.0,
+                jump_velocity: 80.0,
+                step_height: 4.0,
                 jump_buffer: 0.15,
                 tick_rate: 30.0,
             }
@@ -249,14 +249,14 @@ mod tests {
         assert_eq!(
             PlayerProfile::default(),
             PlayerProfile {
-                width: 0.6,
-                depth: 0.6,
-                body_height: 1.8,
-                eye_offset: 1.62,
-                move_speed: 4.0,
-                gravity: 24.0,
-                jump_velocity: 8.0,
-                step_height: 2,
+                width: 6.0,
+                depth: 6.0,
+                body_height: 18.0,
+                eye_offset: 16.2,
+                move_speed: 40.0,
+                gravity: 200.0,
+                jump_velocity: 80.0,
+                step_height: 4,
                 jump_buffer: Duration::from_secs_f32(0.15),
                 tick_rate: 30,
             }
@@ -356,7 +356,7 @@ mod tests {
 
         for values in [
             Values {
-                eye_offset: 1.9,
+                eye_offset: base.body_height + 0.1,
                 ..base
             },
             Values {
@@ -386,7 +386,7 @@ mod tests {
                 ..base
             },
             Values {
-                eye_offset: 1.8,
+                eye_offset: base.body_height,
                 ..base
             },
         ] {

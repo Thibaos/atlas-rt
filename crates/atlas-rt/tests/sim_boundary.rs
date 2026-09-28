@@ -110,9 +110,10 @@ fn spawn_sits_on_top_of_the_highest_cell_of_the_center_column() {
     assert_eq!(
         wait_ready(&handle),
         PlayerState {
-            feet: Vec3::new(2.0, 2.0, 2.0),
+            feet: Vec3::new(2.0, 5.0, 2.0),
             grounded: true,
-        }
+        },
+        "the wide collider climbs over the cells it now spans until nothing solid touches it"
     );
 }
 
@@ -126,9 +127,9 @@ fn an_empty_spawn_column_spawns_at_the_roofline() {
         wait_ready(&handle),
         PlayerState {
             feet: Vec3::new(2.0, 1.0, 0.5),
-            grounded: false,
+            grounded: true,
         },
-        "the feet rest on an empty column, so the fall begins"
+        "the feet sit at the roofline and the wide footprint rests on the solid cells beside the empty column"
     );
 }
 
@@ -177,16 +178,13 @@ fn a_spawn_with_no_clear_position_stays_buried() {
     let player = wait_ready(&handle);
 
     assert!(
-        (player.feet.y - 2046.2).abs() < 0.01,
+        (player.feet.y - 2030.0).abs() < 0.01,
         "the climb stops at the ceiling, feet at {}",
         player.feet.y
     );
     assert_eq!(player.feet.x, 0.5);
     assert_eq!(player.feet.z, 0.5);
-    assert!(
-        !player.grounded,
-        "the buried feet hang past contact tolerance above the top"
-    );
+    assert!(!player.grounded, "the row under the buried feet is empty");
 }
 
 #[test]

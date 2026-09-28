@@ -9,19 +9,18 @@ use glam::{Vec2, Vec3};
 use common::*;
 
 const EPSILON: f32 = 1.0e-3;
-const GRAVITY: f32 = 24.0;
 const DT: f32 = 1.0 / 30.0;
 
 fn near(actual: f32, expected: f32) -> bool {
     (actual - expected).abs() < EPSILON
 }
 
-/// The height after `ticks` ticks of a jump launched at 8 units per second,
-/// the launch tick included and gravity skipped on it.
-fn arc(start: f32, ticks: u32) -> f32 {
+/// The height after `ticks` ticks of a jump launched at `launch` units per
+/// second, the launch tick included and `gravity` skipped on it.
+fn arc(start: f32, ticks: u32, launch: f32, gravity: f32) -> f32 {
     let n = ticks as f32;
 
-    start + (8.0 * n - 0.5 * GRAVITY * DT * n * (n - 1.0)) * DT
+    start + (launch * n - 0.5 * gravity * DT * n * (n - 1.0)) * DT
 }
 
 fn pressed() -> InputSample {
@@ -62,24 +61,36 @@ fn staircase() -> Vec<VoxelEdit> {
     edits
 }
 
-/// A walkway with a one cell crack at x = 16 and a two cell trench at
-/// x = 18..=19, floored one cell down so the fall lands and climbs back out.
-fn walkway() -> Vec<VoxelEdit> {
-    let mut edits: Vec<VoxelEdit> = (0..=23)
-        .filter(|x| ![16, 18, 19].contains(x))
-        .flat_map(|x| (0..=4).map(move |z| set(x, 0, z, 1)))
-        .collect();
+/// A staircase for the default profile: a one rise, a two rise, and a five
+/// rise wall, all three within the reach of the default stride.
+fn default_staircase() -> Vec<VoxelEdit> {
+    let mut edits = floor(0, 145);
 
-    edits.extend(fill(18, 19, -1, -1));
+    edits.extend(fill(93, 112, 1, 1));
+    edits.extend(fill(113, 142, 1, 3));
+    edits.extend(fill(143, 145, 1, 8));
 
     edits
 }
 
-/// A one cell plateau the walk leaves at x = 14 over the floor below.
+/// A walkway with a one cell crack at x = 16 and a seven cell trench at
+/// x = 18..=24, floored one cell down so the fall lands and climbs back out.
+fn walkway() -> Vec<VoxelEdit> {
+    let mut edits: Vec<VoxelEdit> = (0..=25)
+        .filter(|x| *x != 16 && !(18..=24).contains(x))
+        .flat_map(|x| (0..=4).map(move |z| set(x, 0, z, 1)))
+        .collect();
+
+    edits.extend(fill(18, 24, -1, -1));
+
+    edits
+}
+
+/// A plateau the walk leaves at x = 18 over the floor below.
 fn ledge_walkway() -> Vec<VoxelEdit> {
     let mut edits = floor(0, 23);
 
-    edits.extend(fill(0, 13, 1, 1));
+    edits.extend(fill(0, 17, 1, 1));
 
     edits
 }
@@ -122,11 +133,11 @@ fn wide_step() -> Vec<VoxelEdit> {
     edits
 }
 
-/// A single one cell step at x = 15.
+/// A four cell pillar standing at the end of the floor at x = 72.
 fn single_step() -> Vec<VoxelEdit> {
-    let mut edits = floor(0, 23);
+    let mut edits = floor(0, 72);
 
-    edits.extend(fill(15, 15, 1, 1));
+    edits.extend(fill(72, 72, 1, 4));
 
     edits
 }
@@ -134,7 +145,7 @@ fn single_step() -> Vec<VoxelEdit> {
 /// A floor with a two cell slot cut across it at x = 18..=19 over z = 2
 /// only: one cell wide along z, closed on both long sides.
 fn one_cell_slot() -> Vec<VoxelEdit> {
-    (0..=23)
+    (-70..=93)
         .flat_map(|x| (0..=4).map(move |z| (x, z)))
         .filter(|&(x, z)| !((x == 18 || x == 19) && z == 2))
         .map(|(x, z)| set(x, 0, z, 1))
@@ -232,9 +243,9 @@ fn press_and_run(handle: &Handle, movement: Vec2, ticks: u32) -> Vec<PlayerState
 
 #[test]
 fn the_staircase_climbs_one_rise_and_two_rises_and_stops_at_the_wall() {
-    let (handle, spawn) = ready(&staircase(), PlayerProfile::default());
+    let (handle, spawn) = ready(&default_staircase(), PlayerProfile::default());
 
-    assert_eq!(spawn.feet, Vec3::new(14.0, 1.0, 2.5));
+    assert_eq!(spawn.feet, Vec3::new(73.0, 1.0, 2.5));
     assert!(spawn.grounded, "the floor holds the spawn");
 
     let players = walk(&handle, keys(Vec2::X), 60);
@@ -256,7 +267,7 @@ fn the_staircase_climbs_one_rise_and_two_rises_and_stops_at_the_wall() {
     let rise = players.get(12).expect("thirteen ticks");
 
     assert!(
-        near(rise.feet.x, 15.73333),
+        near(rise.feet.x, 90.33333),
         "the contact carries the stride onto the step: {}",
         rise.feet.x
     );
@@ -269,7 +280,7 @@ fn the_staircase_climbs_one_rise_and_two_rises_and_stops_at_the_wall() {
     let twice = players.get(27).expect("twenty eight ticks");
 
     assert!(
-        near(twice.feet.x, 17.73333),
+        near(twice.feet.x, 110.33333),
         "the two voxel rise climbs in one move: {}",
         twice.feet.x
     );
@@ -282,15 +293,15 @@ fn the_staircase_climbs_one_rise_and_two_rises_and_stops_at_the_wall() {
     let wall = players.get(50).expect("fifty one ticks");
 
     assert!(
-        near(wall.feet.x, 20.7),
-        "a three voxel stack stops the walk as a wall: {}",
+        near(wall.feet.x, 140.0),
+        "a five voxel stack stops the walk as a wall: {}",
         wall.feet.x
     );
     assert_eq!(wall.feet.y, 4.0, "the wall never becomes a step");
 
     for player in players.iter().skip(50) {
         assert!(
-            near(player.feet.x, 20.7),
+            near(player.feet.x, 140.0),
             "the walk holds against the wall: {}",
             player.feet.x
         );
@@ -384,7 +395,7 @@ fn step_height_zero_disables_stepping_but_not_jumping() {
         let tick = index as u32 + 1;
 
         assert!(
-            near(player.feet.y, arc(1.0, tick)),
+            near(player.feet.y, arc(1.0, tick, 8.0, 24.0)),
             "jump tick {tick}: feet.y {}",
             player.feet.y
         );
@@ -407,58 +418,58 @@ fn step_height_zero_disables_stepping_but_not_jumping() {
 }
 
 #[test]
-fn a_one_cell_crack_holds_the_walk_and_a_two_cell_trench_swallows() {
+fn a_one_cell_crack_holds_the_walk_and_a_seven_cell_trench_swallows() {
     let (handle, spawn) = ready(&walkway(), PlayerProfile::default());
 
-    assert_eq!(spawn.feet, Vec3::new(12.0, 1.0, 2.5));
+    assert_eq!(spawn.feet, Vec3::new(13.0, 1.0, 2.5));
     assert!(spawn.grounded, "the walkway floor holds the spawn");
 
-    let players = walk(&handle, keys(Vec2::X), 62);
+    let players = walk(&handle, keys(Vec2::X), 12);
 
-    for (index, player) in players.iter().take(47).enumerate() {
+    for (index, player) in players.iter().take(5).enumerate() {
         let tick = index as u32 + 1;
 
         assert_eq!(player.feet.y, 1.0, "tick {tick} of the crack stays level");
         assert!(player.grounded, "tick {tick} of the crack holds");
     }
 
-    let leaving = players.get(47).expect("fourty eight ticks");
+    let leaving = players.get(5).expect("six ticks");
 
     assert!(
-        near(leaving.feet.y, 0.97333),
+        near(leaving.feet.y, 0.7777778),
         "the trench starts the fall: {}",
         leaving.feet.y
     );
-    assert!(!leaving.grounded, "a two cell gap is not ground");
+    assert!(!leaving.grounded, "a seven cell gap is not ground");
 
-    for player in players.iter().skip(48).take(7) {
-        assert!(!player.grounded, "the fall runs before the trench floor");
-    }
+    let falling = players.get(6).expect("seven ticks");
 
-    let trench = players.get(55).expect("fifty six ticks");
+    assert!(!falling.grounded, "the fall runs before the trench floor");
+
+    let trench = players.get(7).expect("eight ticks");
 
     assert_eq!(trench.feet.y, 0.0, "the trench floor catches the fall");
     assert!(trench.grounded, "the trench floor is ground");
 
-    let climbed = players.get(57).expect("fifty eight ticks");
+    let climbed = players.get(8).expect("nine ticks");
 
     assert!(
-        near(climbed.feet.x, 19.73333),
+        near(climbed.feet.x, 23.33333),
         "the climb out carries the stride: {}",
         climbed.feet.x
     );
     assert_eq!(climbed.feet.y, 1.0, "the walkway height rises in one step");
     assert!(climbed.grounded, "the climb holds");
 
-    for player in players.iter().skip(58) {
+    for player in players.iter().skip(9) {
         assert_eq!(player.feet.y, 1.0, "the climb holds its height");
         assert!(player.grounded, "the climbed walkway stays ground");
     }
 
-    let last = players.last().expect("sixty two ticks");
+    let last = players.last().expect("twelve ticks");
 
     assert!(
-        near(last.feet.x, 20.26667),
+        near(last.feet.x, 27.33333),
         "the walk resumes after the climb: {}",
         last.feet.x
     );
@@ -471,40 +482,40 @@ fn walking_off_a_ledge_falls_and_reports_ungrounded() {
     assert_eq!(spawn.feet, Vec3::new(12.0, 2.0, 2.5));
     assert!(spawn.grounded, "the plateau holds the spawn");
 
-    let players = walk(&handle, keys(Vec2::X), 30);
+    let players = walk(&handle, keys(Vec2::X), 11);
 
-    for player in players.iter().take(17) {
+    for player in players.iter().take(6) {
         assert_eq!(player.feet.y, 2.0, "the plateau holds the walk");
         assert!(player.grounded, "the plateau is ground");
     }
 
-    let leaving = players.get(17).expect("eighteen ticks");
+    let leaving = players.get(6).expect("seven ticks");
 
     assert!(
-        near(leaving.feet.y, 1.97333),
+        near(leaving.feet.y, 1.7777778),
         "the ledge drop starts the fall: {}",
         leaving.feet.y
     );
     assert!(!leaving.grounded, "the ledge is gone under the feet");
 
-    for player in players.iter().skip(18).take(7) {
-        assert!(!player.grounded, "the fall runs to the floor");
-    }
+    let falling = players.get(7).expect("eight ticks");
 
-    let landed = players.get(25).expect("twenty six ticks");
+    assert!(!falling.grounded, "the fall runs to the floor");
+
+    let landed = players.get(8).expect("nine ticks");
 
     assert_eq!(landed.feet.y, 1.0, "the floor catches the fall");
     assert!(landed.grounded, "the landing reports grounded");
 
-    for player in players.iter().skip(26) {
+    for player in players.iter().skip(9) {
         assert_eq!(player.feet.y, 1.0, "the landing holds");
         assert!(player.grounded, "the floor stays ground");
     }
 
-    let last = players.last().expect("thirty ticks");
+    let last = players.last().expect("eleven ticks");
 
     assert!(
-        near(last.feet.x, 16.0),
+        near(last.feet.x, 26.66667),
         "the walk resumes on the floor: {}",
         last.feet.x
     );
@@ -621,25 +632,25 @@ fn the_same_step_without_a_destination_ceiling_crosses() {
 fn an_airborne_contact_never_starts_a_step() {
     let (handle, spawn) = ready(&single_step(), PlayerProfile::default());
 
-    assert_eq!(spawn.feet, Vec3::new(12.0, 1.0, 2.5));
+    assert_eq!(spawn.feet, Vec3::new(36.5, 1.0, 2.5));
 
-    let players = press_and_run(&handle, Vec2::X, 22);
+    let players = press_and_run(&handle, Vec2::X, 26);
 
-    for (index, player) in players.iter().take(20).enumerate() {
+    for (index, player) in players.iter().take(24).enumerate() {
         let tick = index as u32 + 1;
 
         assert!(
-            near(player.feet.y, arc(1.0, tick)),
+            near(player.feet.y, arc(1.0, tick, 80.0, 200.0)),
             "tick {tick} follows the arc: {}",
             player.feet.y
         );
         assert!(!player.grounded, "tick {tick} flies");
     }
 
-    let contact = players.get(20).expect("twenty one ticks");
+    let contact = players.get(24).expect("twenty five ticks");
 
     assert!(
-        near(contact.feet.x, 14.7),
+        near(contact.feet.x, 69.0),
         "the airborne contact stops at the face: {}",
         contact.feet.x
     );
@@ -650,15 +661,15 @@ fn an_airborne_contact_never_starts_a_step() {
     );
     assert!(contact.grounded, "the landing reports grounded");
 
-    let stepped = players.get(21).expect("twenty two ticks");
+    let stepped = players.get(25).expect("twenty six ticks");
 
     assert!(
-        near(stepped.feet.x, 14.83333),
-        "the grounded contact steps one: {}",
+        near(stepped.feet.x, 70.33333),
+        "the grounded contact steps four: {}",
         stepped.feet.x
     );
-    assert_eq!(stepped.feet.y, 2.0, "the step climbs onto the platform");
-    assert!(stepped.grounded, "the step top holds");
+    assert_eq!(stepped.feet.y, 5.0, "the step climbs onto the pillar");
+    assert!(stepped.grounded, "the pillar top holds");
 }
 
 #[test]
@@ -676,14 +687,14 @@ fn the_walk_holds_over_a_one_cell_wide_slot() {
         assert_eq!(player.feet.y, 1.0, "tick {tick} stays level over the slot");
         assert!(
             player.grounded,
-            "tick {tick} bridges the slot one cell wide in z"
+            "tick {tick} spans the slot one cell wide in z"
         );
     }
 
     let across = players.get(52).expect("fifty three ticks");
 
     assert!(
-        near(across.feet.x, 19.06667),
+        near(across.feet.x, 82.66667),
         "the slot never stalls the stride: {}",
         across.feet.x
     );

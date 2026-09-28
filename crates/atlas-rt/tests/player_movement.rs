@@ -13,10 +13,10 @@ const EPSILON: f32 = 1.0e-3;
 const PARITY: f32 = 1.0e-5;
 const WIDE: f32 = 1.0e-2;
 
-const GRAVITY: f32 = 24.0;
-const MOVE_SPEED: f32 = 4.0;
+const GRAVITY: f32 = 200.0;
+const MOVE_SPEED: f32 = 40.0;
 const DT: f32 = 1.0 / 30.0;
-const CEILING: f32 = 2048.0 - 1.8;
+const CEILING: f32 = 2048.0 - 18.0;
 
 fn near(actual: f32, expected: f32) -> bool {
     (actual - expected).abs() < EPSILON
@@ -37,12 +37,12 @@ fn fall(start: f32, ticks: u32) -> f32 {
     start - 0.5 * GRAVITY * DT * DT * n * (n + 1.0)
 }
 
-/// The height after `ticks` ticks of a jump launched at 8 units per second,
+/// The height after `ticks` ticks of a jump launched at 80 units per second,
 /// the launch tick included and gravity skipped on it.
 fn arc(start: f32, ticks: u32) -> f32 {
     let n = ticks as f32;
 
-    start + (8.0 * n - 0.5 * GRAVITY * DT * n * (n - 1.0)) * DT
+    start + (80.0 * n - 0.5 * GRAVITY * DT * n * (n - 1.0)) * DT
 }
 
 fn clear(x: i32, y: i32, z: i32) -> VoxelEdit {
@@ -89,13 +89,15 @@ fn open_floor() -> Vec<VoxelEdit> {
     floor(0, 7, 0, 4)
 }
 
-/// A floor room walled three cells high: taller than the step height, so
-/// the walk slides along the walls instead of climbing them.
+/// A floor room walled five cells high: taller than the step height, so
+/// the walk slides along the walls instead of climbing them. The floor
+/// reaches far enough negative that the spawn sits a walk's distance from
+/// both walls.
 fn wall_room() -> Vec<VoxelEdit> {
-    let mut edits = floor(0, 7, 0, 4);
+    let mut edits = floor(-12, 7, -21, 4);
 
-    edits.extend((1..=3).flat_map(|y| (0..=4).map(move |z| set(5, y, z, 1))));
-    edits.extend((1..=3).flat_map(|y| (3..=6).map(move |x| set(x, y, 4, 1))));
+    edits.extend((1..=5).flat_map(|y| (-21..=4).map(move |z| set(5, y, z, 1))));
+    edits.extend((1..=5).flat_map(|y| (-12..=6).map(move |x| set(x, y, 4, 1))));
 
     edits
 }
@@ -109,13 +111,15 @@ fn floor_and_pillar() -> Vec<VoxelEdit> {
 }
 
 fn ledge() -> Vec<VoxelEdit> {
-    vec![set(1, 4, 2, 1), set(7, 8, 2, 1)]
+    vec![set(1, 6, 2, 1), set(8, 8, 2, 1)]
 }
 
-/// A floor cell under the spawn column, the two cells that bury the player,
-/// and a ring at both buried heights, so no sideways escape exists.
+/// A floor cell under the spawn column that catches the fall and seals the
+/// downward exit, the cells that bury the player, a ring at their heights,
+/// and one cell past each box side, so no escape exit is clear.
 fn cage() -> Vec<VoxelEdit> {
     vec![
+        set(0, 2027, 0, 1),
         set(0, 2045, 0, 1),
         set(0, 2046, 0, 1),
         set(0, 2047, 0, 1),
@@ -127,6 +131,10 @@ fn cage() -> Vec<VoxelEdit> {
         set(0, 2047, 1, 1),
         set(0, 2046, -1, 1),
         set(0, 2047, -1, 1),
+        set(5, 2045, 0, 1),
+        set(-5, 2045, 0, 1),
+        set(0, 2045, 5, 1),
+        set(0, 2045, -5, 1),
     ]
 }
 
@@ -178,8 +186,9 @@ fn press_and_run(handle: &Handle, movement: Vec2, ticks: u32) -> Vec<PlayerState
     players
 }
 
-/// A player twelve ticks into the fall after the pillar is cleared: feet at
-/// 2.24, still a cell above the floor's ground band, with no edge buffered.
+/// A player two ticks into the fall after the pillar is cleared: feet at
+/// 3.777778, still a cell above the floor's ground band, with no edge
+/// buffered.
 fn falling_player() -> Handle {
     let (_world, handle) = spawn_sim();
 
@@ -188,13 +197,13 @@ fn falling_player() -> Handle {
 
     handle.command(Command::Cell(clear(2, 3, 2)));
 
-    for _ in 0..12 {
+    for _ in 0..2 {
         feed(&handle, period());
         last = expect_tick(recv_push(&handle)).player;
     }
 
     assert!(
-        near(last.feet.y, 2.24),
+        near(last.feet.y, 3.777778),
         "the preamble must leave the player mid-fall, got {}",
         last.feet.y
     );
@@ -230,7 +239,7 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
     assert_eq!(sunk.feet.x, 0.5, "no sideways input, no sideways exit");
     assert_eq!(sunk.feet.z, 0.5);
     assert!(
-        near(sunk.feet.y, 2046.1733),
+        near(sunk.feet.y, 2029.777778),
         "no exit is clear, so the first tick only falls: {}",
         sunk.feet.y
     );
@@ -244,12 +253,12 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
     let shuffled = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(shuffled.feet.x, 0.633333),
+        near(shuffled.feet.x, 1.833333),
         "the sweep skips the cells inside the box: {}",
         shuffled.feet.x
     );
     assert!(
-        near(shuffled.feet.y, 2046.12),
+        near(shuffled.feet.y, 2029.333333),
         "the fall keeps running while buried: {}",
         shuffled.feet.y
     );
@@ -259,12 +268,12 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
     let at_wall = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(at_wall.feet.x, 0.7),
+        near(at_wall.feet.x, 2.0),
         "the ring stops x at its face: {}",
         at_wall.feet.x
     );
     assert!(
-        near(at_wall.feet.y, 2046.04),
+        near(at_wall.feet.y, 2028.666667),
         "the face below is still a tick away: {}",
         at_wall.feet.y
     );
@@ -275,11 +284,11 @@ fn a_buried_player_keeps_its_overlap_and_the_sweeps_still_move_it() {
         let settled = expect_tick(recv_push(&handle)).player;
 
         assert_eq!(
-            settled.feet.y, 2046.0,
+            settled.feet.y, 2028.0,
             "the fall lands the feet exactly on the cell below"
         );
         assert!(
-            near(settled.feet.x, 0.7),
+            near(settled.feet.x, 2.0),
             "the wall still holds x: {}",
             settled.feet.x
         );
@@ -296,7 +305,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
     wait_ready(&handle);
     handle.command(Command::Cell(clear(2, 3, 2)));
 
-    for tick_number in 1..=16 {
+    for tick_number in 1..=6 {
         feed(&handle, period());
 
         let feet = expect_tick(recv_push(&handle)).player;
@@ -304,7 +313,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
         assert_eq!(feet.feet.x, 2.5, "no horizontal input");
         assert_eq!(feet.feet.z, 2.5, "no horizontal input");
 
-        if tick_number == 16 {
+        if tick_number == 6 {
             assert_eq!(
                 feet.feet.y, 1.0,
                 "the sweep lands the feet exactly on the floor face"
@@ -321,7 +330,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
         if tick_number == 5 {
             assert!(
                 !feet.grounded,
-                "the pillar is gone and the floor is two cells down"
+                "the pillar is gone and the feet still hang above the floor"
             );
         }
     }
@@ -331,7 +340,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
 fn one_press_runs_one_arc_that_lands_back_on_the_pillar() {
     let scene = floor_and_pillar();
     let (handle, _) = ready(&scene);
-    let players = press_and_run(&handle, Vec2::ZERO, 21);
+    let players = press_and_run(&handle, Vec2::ZERO, 25);
 
     for (index, player) in players.iter().enumerate() {
         let tick = index as u32 + 1;
@@ -346,7 +355,7 @@ fn one_press_runs_one_arc_that_lands_back_on_the_pillar() {
     }
 
     assert!(
-        players.last().expect("twenty one ticks").grounded,
+        players.last().expect("twenty five ticks").grounded,
         "the arc ends resting on the pillar"
     );
 
@@ -377,7 +386,7 @@ fn the_same_scene_and_the_same_input_replay_the_same_arc() {
     let last = one.last().expect("twenty one ticks");
 
     assert!(
-        near(last.feet.x, 3.9),
+        near(last.feet.x, 16.5),
         "the run walks the whole way, so it is not trivially empty: {}",
         last.feet.x
     );
@@ -400,7 +409,7 @@ fn a_three_tick_update_runs_three_ticks_of_arc_after_one_press() {
 
     assert_eq!(tick.report.ticks, 3);
     assert!(
-        near(tick.player.feet.y, 4.72),
+        near(tick.player.feet.y, 11.333333),
         "three ticks of arc put the feet at {}",
         tick.player.feet.y
     );
@@ -416,18 +425,18 @@ fn horizontal_resolves_first_so_the_ledge_lip_lifts_the_player_up() {
 
     assert_eq!(
         spawn.feet,
-        Vec3::new(4.5, 9.0, 2.5),
+        Vec3::new(5.0, 9.0, 2.5),
         "the spawn column is empty, so the fall begins at the roofline"
     );
     assert!(!spawn.grounded);
 
-    for tick_number in 1..=16 {
+    for tick_number in 1..=3 {
         handle.frame(period(), keys(Vec2::new(-1.0, 0.0)));
 
         let player = expect_tick(recv_push(&handle)).player;
 
         assert!(
-            near(player.feet.x, 4.5 - MOVE_SPEED * DT * tick_number as f32),
+            near(player.feet.x, 5.0 - MOVE_SPEED * DT * tick_number as f32),
             "tick {tick_number}: feet.x {}",
             player.feet.x
         );
@@ -444,11 +453,11 @@ fn horizontal_resolves_first_so_the_ledge_lip_lifts_the_player_up() {
     let lip = expect_tick(recv_push(&handle)).player;
 
     assert_eq!(
-        lip.feet.y, 5.0,
+        lip.feet.y, 7.0,
         "the x sweep cleared the lip, so the y sweep lands on top of it"
     );
     assert!(
-        near(lip.feet.x, 4.5 - MOVE_SPEED * DT * 17.0),
+        near(lip.feet.x, 5.0 - MOVE_SPEED * DT * 4.0),
         "the x move ran its full distance: {}",
         lip.feet.x
     );
@@ -459,15 +468,15 @@ fn horizontal_resolves_first_so_the_ledge_lip_lifts_the_player_up() {
 fn angled_movement_slides_along_the_wall_and_stops_at_the_corner() {
     let angle = keys(Vec2::ONE);
 
-    let sliding = drive(&wall_room(), angle, 10);
+    let sliding = drive(&wall_room(), angle, 7);
 
     assert!(
-        near(sliding.feet.x, 4.7),
+        near(sliding.feet.x, 2.0),
         "the wall stops x at the face minus half the width: {}",
         sliding.feet.x
     );
     assert!(
-        near(sliding.feet.z, 3.442809),
+        near(sliding.feet.z, -1.400337),
         "z keeps sliding along the wall: {}",
         sliding.feet.z
     );
@@ -477,12 +486,12 @@ fn angled_movement_slides_along_the_wall_and_stops_at_the_corner() {
     let stopped = drive(&wall_room(), angle, 15);
 
     assert!(
-        near(stopped.feet.x, 4.7),
+        near(stopped.feet.x, 2.0),
         "x stays held against the wall: {}",
         stopped.feet.x
     );
     assert!(
-        near(stopped.feet.z, 3.7),
+        near(stopped.feet.z, 1.0),
         "the corner stops z at the face minus half the depth: {}",
         stopped.feet.z
     );
@@ -493,12 +502,12 @@ fn angled_movement_slides_along_the_wall_and_stops_at_the_corner() {
 fn the_lattice_ceiling_stops_the_rise_and_the_platform_catches_the_fall() {
     let (_world, handle) = spawn_sim();
 
-    handle.activate(activation_of(&[set(0, 2044, 0, 1)]));
+    handle.activate(activation_of(&[set(0, 2028, 0, 1)]));
 
     assert_eq!(
         wait_ready(&handle),
         PlayerState {
-            feet: Vec3::new(0.5, 2045.0, 0.5),
+            feet: Vec3::new(0.5, 2029.0, 0.5),
             grounded: true,
         }
     );
@@ -538,7 +547,7 @@ fn the_lattice_ceiling_stops_the_rise_and_the_platform_catches_the_fall() {
     let last = last.expect("ten ticks landed");
 
     assert_eq!(
-        last.feet.y, 2045.0,
+        last.feet.y, 2029.0,
         "the fall lands exactly on the platform face"
     );
     assert!(last.grounded);
@@ -546,7 +555,7 @@ fn the_lattice_ceiling_stops_the_rise_and_the_platform_catches_the_fall() {
 
 #[test]
 fn the_lattice_side_is_an_invisible_wall() {
-    let scene = [set(2047, 0, 2047, 1)];
+    let scene = [set(2044, 0, 2044, 1)];
     let (_world, handle) = spawn_sim();
 
     handle.activate(activation_of(&scene));
@@ -556,7 +565,7 @@ fn the_lattice_side_is_an_invisible_wall() {
     assert_eq!(
         spawn,
         PlayerState {
-            feet: Vec3::new(2047.5, 1.0, 2047.5),
+            feet: Vec3::new(2044.5, 1.0, 2044.5),
             grounded: true,
         }
     );
@@ -572,12 +581,12 @@ fn the_lattice_side_is_an_invisible_wall() {
     }
 
     assert!(
-        near(last.feet.x, 2047.7),
+        near(last.feet.x, 2045.0),
         "the invisible side stops x at the lattice edge: {}",
         last.feet.x
     );
     assert!(
-        near(last.feet.z, 2047.7),
+        near(last.feet.z, 2045.0),
         "the invisible side stops z at the lattice edge: {}",
         last.feet.z
     );
@@ -595,7 +604,7 @@ fn the_lattice_floor_is_an_invisible_floor_under_a_jump() {
         }
     );
 
-    let players = press_and_run(&handle, Vec2::ZERO, 21);
+    let players = press_and_run(&handle, Vec2::ZERO, 25);
 
     for (index, player) in players.iter().enumerate() {
         let tick = index as u32 + 1;
@@ -666,7 +675,7 @@ fn a_jump_pressed_against_a_buried_player_still_launches() {
     let launched = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(launched.feet.y, 2.26667),
+        near(launched.feet.y, 4.666667),
         "the depenetration ran before the launch and left the edge alone: {}",
         launched.feet.y
     );
@@ -683,7 +692,7 @@ fn a_jump_edge_held_through_the_fall_fires_on_the_grounded_tick() {
     let held = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(held.feet.y, 1.92),
+        near(held.feet.y, 3.333333),
         "the tick that took the edge starts airborne, so it only falls: {}",
         held.feet.y
     );
@@ -696,7 +705,7 @@ fn a_jump_edge_held_through_the_fall_fires_on_the_grounded_tick() {
     }
 
     assert!(
-        near(falling.feet.y, 1.2),
+        near(falling.feet.y, 1.777778),
         "the edge waits through the whole fall: {}",
         falling.feet.y
     );
@@ -714,7 +723,7 @@ fn a_jump_edge_held_through_the_fall_fires_on_the_grounded_tick() {
     let launched = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(launched.feet.y, 1.26667),
+        near(launched.feet.y, 3.666667),
         "the grounded tick fires the buffered edge: {}",
         launched.feet.y
     );
@@ -729,14 +738,14 @@ fn a_jump_edge_past_the_buffer_deadline_never_launches() {
 
     let held = expect_tick(recv_push(&handle)).player;
 
-    assert!(near(held.feet.y, 1.92), "feet.y {}", held.feet.y);
+    assert!(near(held.feet.y, 3.333333), "feet.y {}", held.feet.y);
 
     feed(&handle, period());
 
     let fallen = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(fallen.feet.y, 1.57333),
+        near(fallen.feet.y, 2.666667),
         "a stale edge is dropped unread instead of launching: {}",
         fallen.feet.y
     );
@@ -764,7 +773,7 @@ fn the_newest_edge_of_an_update_survives_the_sticky_merge() {
 
     let held = expect_tick(recv_push(&handle)).player;
 
-    assert!(near(held.feet.y, 1.92), "feet.y {}", held.feet.y);
+    assert!(near(held.feet.y, 3.333333), "feet.y {}", held.feet.y);
 
     let mut falling = held;
 
@@ -774,7 +783,7 @@ fn the_newest_edge_of_an_update_survives_the_sticky_merge() {
     }
 
     assert!(
-        near(falling.feet.y, 1.2),
+        near(falling.feet.y, 1.777778),
         "the fresh edge waits through the whole fall: {}",
         falling.feet.y
     );
@@ -791,7 +800,7 @@ fn the_newest_edge_of_an_update_survives_the_sticky_merge() {
     let launched = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(launched.feet.y, 1.26667),
+        near(launched.feet.y, 3.666667),
         "the fresh edge replaced the stale one and fired: {}",
         launched.feet.y
     );
@@ -810,14 +819,14 @@ fn pausing_discards_the_pending_jump_edge() {
 
     let held = expect_tick(recv_push(&handle)).player;
 
-    assert!(near(held.feet.y, 1.92), "feet.y {}", held.feet.y);
+    assert!(near(held.feet.y, 3.333333), "feet.y {}", held.feet.y);
 
     feed(&handle, period());
 
     let fallen = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(fallen.feet.y, 1.57333),
+        near(fallen.feet.y, 2.666667),
         "the paused edge is gone, so the fall keeps running: {}",
         fallen.feet.y
     );
@@ -838,7 +847,7 @@ fn pausing_discards_the_pending_jump_edge() {
 
     assert_eq!(
         rested.feet.y, 1.0,
-        "the discarded edge never launches: a live one would read 1.26667"
+        "the discarded edge never launches: a live one would read 3.666667"
     );
 }
 
@@ -854,14 +863,14 @@ fn a_pause_ignores_a_jump_edge_pressed_while_it_holds() {
 
     let held = expect_tick(recv_push(&handle)).player;
 
-    assert!(near(held.feet.y, 1.92), "feet.y {}", held.feet.y);
+    assert!(near(held.feet.y, 3.333333), "feet.y {}", held.feet.y);
 
     feed(&handle, period());
 
     let fallen = expect_tick(recv_push(&handle)).player;
 
     assert!(
-        near(fallen.feet.y, 1.57333),
+        near(fallen.feet.y, 2.666667),
         "the paused press never reached the buffer, so the fall keeps running: {}",
         fallen.feet.y
     );
@@ -882,7 +891,7 @@ fn a_pause_ignores_a_jump_edge_pressed_while_it_holds() {
 
     assert_eq!(
         rested.feet.y, 1.0,
-        "the ignored press never launches: a live one would read 1.26667"
+        "the ignored press never launches: a live one would read 3.666667"
     );
 }
 
@@ -910,16 +919,16 @@ fn activation_discards_the_pending_jump_edge() {
 
     assert_eq!(
         tick.feet.y, 4.0,
-        "a surviving edge would read 4.26667 here, so the respawn only fell"
+        "a surviving edge would read 6.666667 here, so the respawn only fell"
     );
 }
 
 #[test]
 fn movement_is_scaled_and_clamped_to_the_profile_move_speed() {
-    let east = drive(&open_floor(), keys(Vec2::X), 10);
+    let east = drive(&open_floor(), keys(Vec2::X), 5);
 
     assert!(
-        near(east.feet.x, 5.333333),
+        near(east.feet.x, 10.666667),
         "one key runs the whole move speed: {}",
         east.feet.x
     );
@@ -927,23 +936,23 @@ fn movement_is_scaled_and_clamped_to_the_profile_move_speed() {
     assert_eq!(east.feet.y, 1.0);
     assert!(east.grounded);
 
-    let diagonal = drive(&open_floor(), keys(Vec2::ONE), 10);
+    let diagonal = drive(&open_floor(), keys(Vec2::ONE), 5);
 
     assert!(
-        near(diagonal.feet.x, 4.942809),
+        near(diagonal.feet.x, 8.714045),
         "two keys normalize instead of adding up: {}",
         diagonal.feet.x
     );
     assert!(
-        near(diagonal.feet.z, 3.442809),
+        near(diagonal.feet.z, 7.214045),
         "the diagonal splits the speed evenly: {}",
         diagonal.feet.z
     );
 
-    let half = drive(&open_floor(), keys(Vec2::new(0.5, 0.0)), 10);
+    let half = drive(&open_floor(), keys(Vec2::new(0.5, 0.0)), 5);
 
     assert!(
-        near(half.feet.x, 4.666667),
+        near(half.feet.x, 7.333333),
         "a partial key scales without normalizing: {}",
         half.feet.x
     );
@@ -974,11 +983,11 @@ fn a_local_key_sample_drives_the_player_along_the_view() {
     let strafe = drive(
         &open_floor(),
         InputSample::from_local(0.0, 1.0, 0.0, None),
-        10,
+        4,
     );
 
     assert!(
-        near(strafe.feet.x, 2.666667),
+        near(strafe.feet.x, -1.333333),
         "strafe right at yaw zero runs to world -x: {}",
         strafe.feet.x
     );
@@ -987,12 +996,12 @@ fn a_local_key_sample_drives_the_player_along_the_view() {
     let ahead = drive(
         &open_floor(),
         InputSample::from_local(0.0, 0.0, 1.0, None),
-        10,
+        4,
     );
 
     assert!(near(ahead.feet.x, 4.0));
     assert!(
-        near(ahead.feet.z, 1.166667),
+        near(ahead.feet.z, -2.833333),
         "forward at yaw zero runs to world -z: {}",
         ahead.feet.z
     );
