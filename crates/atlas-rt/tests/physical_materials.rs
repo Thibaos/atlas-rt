@@ -13,11 +13,11 @@ use std::{
 use atlas_rt::world::{
     World,
     format::{get_effective_palette, open_file},
+    load::job::{Finished, LoadedWorld, Status, WorldSource, WorldUpdateJob},
     material::{
         Override, PhysicalMaterial, PhysicalMaterialTable, Rule, load_override, load_table,
         override_path,
     },
-    update::job::{Finished, LoadedWorld, Status, WorldSource, WorldUpdateJob},
 };
 
 const WORLD: &str = "assets/test/matl-alpha.vox";

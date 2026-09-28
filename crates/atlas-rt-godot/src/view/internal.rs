@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex};
 
+use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use atlas_rt::world::update::batch::{self};
 use atlas_rt::world::update::edit::{
     MICRO_AREA, MICRO_CELLS, MICRO_EDGE, VoxelChange, VoxelEdit, edit_world,
 };
-use atlas_rt::world::update::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 

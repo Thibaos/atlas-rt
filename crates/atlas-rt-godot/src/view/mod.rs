@@ -1,7 +1,7 @@
 pub mod api;
 pub mod internal;
 
-use atlas_rt::world::update::job::WorldSource;
+use atlas_rt::world::load::job::WorldSource;
 use godot::prelude::*;
 use std::path::PathBuf;
 

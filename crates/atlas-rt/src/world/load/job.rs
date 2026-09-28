@@ -19,10 +19,9 @@ use crate::{
         format::{get_effective_palette, open_bytes},
         load::progress::{Progress, Stage},
         material::{PhysicalMaterialTable, load_table},
+        update::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
     },
 };
-
-use super::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting};
 
 const STATUS_EMPTY: u8 = 0;
 const STATUS_LOADING: u8 = 1;
