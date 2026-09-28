@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, bail};
 use tracing::{error, warn};
 
+use atlas_rt::host::ViewInterpolation;
 use atlas_rt::sim::{
     self, Activation, Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push,
 };
@@ -17,8 +18,6 @@ use atlas_rt::world::World;
 use atlas_rt::world::material::PhysicalMaterialTable;
 use atlas_rt::world::update::batch::TrackedCoords;
 use atlas_rt::world::update::snapshot::MicroChunkSnapshot;
-
-use super::interpolation::ViewInterpolation;
 
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);

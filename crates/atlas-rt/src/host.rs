@@ -1,13 +1,22 @@
+//! The sub-tick view both hosts build from the sim's pushes.
+//!
+//! The standalone host and the Godot adapter feed it the same tick-end
+//! pushes and read one interpolated pose per frame, so the alpha formula
+//! exists once.
+
 use std::time::{Duration, Instant};
 
-use atlas_rt::sim::PlayerState;
 use glam::Vec3;
 
-/// The host's sub-tick view: feet interpolate between the previous and the
-/// current push's pose with alpha = (the sim's sub-tick remainder plus the
-/// time since that push was applied) divided by the tick period, clamped to
-/// zero through one. Discrete state always comes from the current push.
-pub(super) struct ViewInterpolation {
+use crate::sim::PlayerState;
+
+/// The host's sub-tick view of the sim's pushes.
+///
+/// Feet interpolate between the previous and the current push's pose with
+/// alpha = (the sim's sub-tick remainder plus the time since that push was
+/// applied) divided by the tick period, clamped to zero through one.
+/// Discrete state always comes from the current push.
+pub struct ViewInterpolation {
     period: Duration,
     previous: PlayerState,
     current: PlayerState,
@@ -16,7 +25,8 @@ pub(super) struct ViewInterpolation {
 }
 
 impl ViewInterpolation {
-    pub(super) fn new(period: Duration) -> Self {
+    #[must_use]
+    pub fn new(period: Duration) -> Self {
         let idle = PlayerState {
             feet: Vec3::ZERO,
             grounded: false,
@@ -34,7 +44,7 @@ impl ViewInterpolation {
     /// Readiness or a snapped tick end: previous and current both hold
     /// `player`, so the feet hold that pose instead of lerping from a pose
     /// the sim never reported.
-    pub(super) const fn snap(&mut self, now: Instant, player: PlayerState) {
+    pub const fn snap(&mut self, now: Instant, player: PlayerState) {
         self.previous = player;
         self.current = player;
         self.remainder = Duration::ZERO;
@@ -46,8 +56,9 @@ impl ViewInterpolation {
     ///
     /// Every tick end advances, including the one the sim flags as a snap:
     /// `Push::Ready` already snapped the activation's unbounded gap, so the
-    /// first tick has a pose to interpolate from and glides like the rest.
-    pub(super) const fn advance(&mut self, now: Instant, player: PlayerState, remainder: Duration) {
+    /// first tick has a pose to interpolate from and interpolates like the
+    /// rest.
+    pub const fn advance(&mut self, now: Instant, player: PlayerState, remainder: Duration) {
         self.previous = self.current;
         self.current = player;
         self.remainder = remainder;
@@ -58,7 +69,7 @@ impl ViewInterpolation {
     /// discrete state from the current push. Equal endpoints skip the lerp,
     /// so a snapped pose comes out exactly as the push reported it.
     #[must_use]
-    pub(super) fn state(&self, now: Instant) -> PlayerState {
+    pub fn state(&self, now: Instant) -> PlayerState {
         if self.previous.feet == self.current.feet {
             return self.current;
         }
@@ -81,8 +92,9 @@ impl ViewInterpolation {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use atlas_rt::sim::{PlayerProfile, PlayerState};
     use glam::Vec3;
+
+    use crate::sim::{PlayerProfile, PlayerState};
 
     use super::*;
 

@@ -1,5 +1,4 @@
 mod input;
-mod interpolation;
 mod player;
 mod schedule;
 mod sim_host;
