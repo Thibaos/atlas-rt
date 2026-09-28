@@ -17,7 +17,8 @@ use atlas_rt::world::World;
 use atlas_rt::world::material::PhysicalMaterialTable;
 use atlas_rt::world::update::batch::TrackedCoords;
 use atlas_rt::world::update::snapshot::MicroChunkSnapshot;
-use glam::Vec3;
+
+use super::interpolation::ViewInterpolation;
 
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);
@@ -31,7 +32,7 @@ pub struct SimHost {
         TrackedCoords,
         PhysicalMaterialTable,
     )>,
-    player: PlayerState,
+    view: ViewInterpolation,
     ready: bool,
     waited: bool,
 }
@@ -51,15 +52,13 @@ impl SimHost {
         tracked: TrackedCoords,
         materials: &PhysicalMaterialTable,
     ) -> Result<Self> {
+        let period = profile.tick_period();
         let handle = sim::spawn(world, profile, ParityPolicy::default())?;
 
         Ok(Self {
             handle,
             handover: Some((snapshots, tracked, *materials)),
-            player: PlayerState {
-                feet: Vec3::ZERO,
-                grounded: false,
-            },
+            view: ViewInterpolation::new(period),
             ready: false,
             waited: false,
         })
@@ -195,10 +194,12 @@ impl SimHost {
         self.ready
     }
 
-    /// The pose the last push reported, valid from readiness on.
+    /// The pose one frame draws from the pushes applied so far: feet
+    /// interpolated between the previous and current tick as of `now`,
+    /// discrete state from the current tick, valid from readiness on.
     #[must_use]
-    pub const fn player(&self) -> PlayerState {
-        self.player
+    pub fn frame_state(&self, now: Instant) -> PlayerState {
+        self.view.state(now)
     }
 
     fn apply(
@@ -209,7 +210,7 @@ impl SimHost {
         match push {
             Push::ActivationBatch(batch) => forward_batch(forward, batch),
             Push::Ready { player } => {
-                self.player = player;
+                self.view.snap(Instant::now(), player);
                 self.ready = true;
             }
             Push::Tick(tick) => {
@@ -224,7 +225,8 @@ impl SimHost {
                     );
                 }
 
-                self.player = tick.player;
+                self.view
+                    .advance(Instant::now(), tick.player, tick.remainder);
             }
         }
     }
@@ -245,7 +247,7 @@ fn forward_batch(
 mod tests {
     use std::thread;
 
-    use glam::IVec3;
+    use glam::{IVec3, Vec3};
 
     use atlas_rt::sim::TickEnd;
     use atlas_rt::world::update::edit::{VoxelChange, VoxelEdit, edit_world};
@@ -373,7 +375,7 @@ mod tests {
     #[test]
     fn a_tick_without_edits_advances_the_pose_and_pushes_no_batch() {
         let (mut host, _world) = ready_host();
-        let before = host.player();
+        let before = host.frame_state(Instant::now());
 
         host.frame(period(), InputSample::from_local(0.0, 0.0, 1.0, None));
 
@@ -388,7 +390,105 @@ mod tests {
         host.apply(Push::Tick(tick), &mut collector.capture());
 
         assert!(collector.batches.is_empty());
-        assert_eq!(host.player().feet, feet);
+        assert_eq!(
+            host.frame_state(Instant::now() + period()).feet,
+            feet,
+            "the frame reaches the tick's own pose once alpha clamps at one"
+        );
+    }
+
+    #[test]
+    fn the_first_tick_interpolates_from_the_readiness_pose() {
+        let (mut host, _world) = ready_host();
+
+        let held = host.frame_state(Instant::now()).feet;
+
+        host.frame(period(), InputSample::from_local(0.0, 0.0, 1.0, None));
+
+        let tick = take_tick(&host);
+        let pose = tick.player.feet;
+
+        assert!(
+            tick.snap,
+            "the sim flags the first update after activation, and readiness has already snapped it"
+        );
+        assert_ne!(held, pose, "the forward sample moved the feet");
+
+        let stamped = Instant::now();
+
+        host.apply(Push::Tick(tick), &mut |_batch| Ok(()));
+
+        let first = host.frame_state(stamped).feet;
+
+        assert_ne!(
+            first, pose,
+            "the first tick starts from the readiness pose instead of snapping to its own"
+        );
+        assert_ne!(
+            first, held,
+            "the sub-tick remainder starts the interpolation within the same frame"
+        );
+
+        assert_eq!(
+            host.frame_state(stamped + period()).feet,
+            pose,
+            "alpha reaches one a tick after the push"
+        );
+    }
+
+    #[test]
+    fn a_later_tick_push_interpolates_between_the_two_tick_poses() {
+        let (mut host, _world) = ready_host();
+
+        let step = InputSample::from_local(0.0, 0.0, 1.0, None);
+
+        host.frame(period(), step);
+        let first = take_tick(&host);
+        let from = first.player.feet;
+        host.apply(Push::Tick(first), &mut |_batch| Ok(()));
+
+        host.frame(period(), step);
+        let second = take_tick(&host);
+        let to = second.player.feet;
+
+        assert!(!second.snap, "only the first push snaps");
+        assert_ne!(from, to, "the forward sample moved the feet");
+
+        let stamped = Instant::now();
+        host.apply(Push::Tick(second), &mut |_batch| Ok(()));
+
+        let between = host.frame_state(stamped).feet;
+
+        const EPSILON: f32 = 0.00001;
+        let low = from.min(to) - Vec3::splat(EPSILON);
+        let high = from.max(to) + Vec3::splat(EPSILON);
+
+        assert!(
+            between.cmpge(low).all() && between.cmple(high).all(),
+            "the feet stay between the two tick poses: {between:?}"
+        );
+        assert_ne!(
+            between, to,
+            "a push past the first one interpolates instead of snapping"
+        );
+    }
+
+    #[test]
+    fn the_push_after_activation_renders_one_pose_for_a_whole_tick() {
+        let (host, _world) = ready_host();
+
+        let early = host.frame_state(Instant::now()).feet;
+        let late = host.frame_state(Instant::now() + period()).feet;
+
+        assert_ne!(
+            early,
+            Vec3::ZERO,
+            "the readiness reply replaced the host's idle pose"
+        );
+        assert_eq!(
+            early, late,
+            "activation is the only unbounded gap, so it holds one pose"
+        );
     }
 
     #[test]

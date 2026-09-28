@@ -1,4 +1,5 @@
 mod input;
+mod interpolation;
 mod player;
 mod schedule;
 mod sim_host;
@@ -269,11 +270,11 @@ impl App {
             .sim
             .as_ref()
             .filter(|sim| sim.ready())
-            .map(SimHost::player)
+            .map(|sim| sim.frame_state(Instant::now()))
         {
-            Some(player) => self
+            Some(state) => self
                 .player_controller
-                .place_eye(player.feet, self.profile.eye_offset),
+                .place_eye(state.feet, self.profile.eye_offset),
             None => self
                 .player_controller
                 .fly_movement(self.delta_time, &self.player_input),
