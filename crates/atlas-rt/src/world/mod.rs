@@ -1,9 +1,10 @@
 pub mod diff;
-pub mod format;
 pub mod grid;
 pub mod load;
 pub mod material;
+pub mod palette;
 pub mod raycast;
+pub mod vox;
 
 #[cfg(test)]
 mod bench;

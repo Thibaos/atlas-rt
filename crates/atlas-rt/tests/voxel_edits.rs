@@ -10,8 +10,8 @@ use atlas_rt::{
             edit::{VoxelChange, VoxelEdit, edit_world},
             snapshot::{MicroChunkSnapshot, emit_snapshots},
         },
-        format::open_file,
         grid::{MICRO_CHUNK_LENGTH, grid_origin, region_index_of},
+        vox::open_file,
     },
 };
 use glam::IVec3;

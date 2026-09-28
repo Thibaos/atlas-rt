@@ -31,8 +31,8 @@ use crate::{
         },
     },
     world::{
-        format::get_effective_palette,
         grid::{REGION_LENGTH, region_id},
+        palette::get_effective_palette,
     },
 };
 

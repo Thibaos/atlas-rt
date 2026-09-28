@@ -6,10 +6,7 @@
 //! palette position still loads, still draws, and silently renders every pane
 //! opaque, which is what the old `glass-shadow.vox` did.
 
-use atlas_rt::world::{
-    World,
-    format::{get_palette, open_file},
-};
+use atlas_rt::world::{World, palette::get_palette, vox::open_file};
 use glam::{IVec3, Vec4};
 
 const GLASS_PANE: &str = "assets/test/glass-pane.vox";

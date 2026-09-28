@@ -36,10 +36,10 @@ use atlas_rt::{
             edit::{VoxelChange, VoxelEdit, edit_world},
             snapshot::emit_snapshots,
         },
-        format::open_file,
         grid::LATTICE_HALF_EXTENT,
         material::load_table,
         raycast::{VoxelHit, screen_center_ray},
+        vox::open_file,
     },
 };
 

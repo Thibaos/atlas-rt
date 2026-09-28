@@ -1,4 +1,7 @@
-use atlas_rt::world::format::{get_effective_palette, get_palette, open_bytes, open_file};
+use atlas_rt::world::{
+    palette::{get_effective_palette, get_palette},
+    vox::{open_bytes, open_file},
+};
 use dot_vox::DotVoxData;
 use glam::Vec4;
 
