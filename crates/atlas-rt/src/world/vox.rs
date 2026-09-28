@@ -190,6 +190,8 @@ fn validate_imap(bytes: &[u8]) -> anyhow::Result<()> {
 mod tests {
     use super::open_bytes;
 
+    use crate::world::test_support::expect_error;
+
     fn chunk(kind: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&kind);
@@ -228,13 +230,6 @@ mod tests {
         bytes.extend_from_slice(&150u32.to_le_bytes());
         bytes.extend_from_slice(&main);
         bytes
-    }
-
-    fn expect_error<T, E>(result: Result<T, E>, message: &str) -> E {
-        match result {
-            Ok(_) => panic!("{message}"),
-            Err(error) => error,
-        }
     }
 
     #[test]

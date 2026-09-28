@@ -164,6 +164,8 @@ mod tests {
 
     use super::{get_effective_palette, get_palette};
 
+    use crate::world::test_support::expect_error;
+
     fn material(id: u32, alpha: Option<&str>) -> Material {
         let mut properties = Dict::new();
 
@@ -226,13 +228,6 @@ mod tests {
 
     fn half(value: f32) -> f32 {
         value.mul_add(0.5, 0.0)
-    }
-
-    fn expect_error<T, E>(result: Result<T, E>, message: &str) -> E {
-        match result {
-            Ok(_) => panic!("{message}"),
-            Err(error) => error,
-        }
     }
 
     #[test]

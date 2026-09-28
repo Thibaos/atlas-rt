@@ -51,6 +51,13 @@ pub(crate) fn u8_below(rng: &mut Rng, bound: u64) -> u8 {
     u8::try_from(rng.below(bound)).unwrap_or(u8::MAX)
 }
 
+pub(super) fn expect_error<T, E>(result: Result<T, E>, message: &str) -> E {
+    match result {
+        Ok(_) => panic!("{message}"),
+        Err(error) => error,
+    }
+}
+
 fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
     let mut axis = || {
         if rng.below(8) == 0 {
