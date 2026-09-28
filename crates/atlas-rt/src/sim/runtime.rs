@@ -17,14 +17,14 @@ use crate::world::update::{
     snapshot::MicroChunkSnapshot,
 };
 
-use super::contact::Field;
-use super::controller::Controller;
 use super::input::{InputSample, PlayerState};
+use super::physics::controller::Controller;
+use super::physics::field::Field;
+use super::physics::queue::UpdateQueue;
+use super::physics::rules::{self, ParityPolicy};
+use super::physics::spawn::{floor_pose, pose};
 use super::profile::PlayerProfile;
-use super::queue::UpdateQueue;
-use super::rules::{self, ParityPolicy};
 use super::scheduler::Scheduler;
-use super::spawn::{floor_pose, pose};
 
 /// One frame of host time and buffered input, one pause change, one edit
 /// command, one World handover, or the shutdown that ends the loop.

@@ -2,17 +2,13 @@
 //! activations in, readiness and tick-end pushes out, against a World behind a
 //! shared lock.
 
-mod contact;
-mod controller;
 mod input;
+mod physics;
 mod profile;
-mod queue;
-mod rules;
 mod runtime;
 mod scheduler;
-mod spawn;
 
 pub use input::{InputSample, PlayerState};
+pub use physics::rules::ParityPolicy;
 pub use profile::{PlayerProfile, ProfileError};
-pub use rules::ParityPolicy;
 pub use runtime::{Activation, Command, Handle, Push, TickEnd, UpdateReport, spawn};

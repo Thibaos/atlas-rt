@@ -2,20 +2,22 @@ use std::time::Instant;
 
 use glam::{IVec3, Vec2, Vec3};
 
-use super::contact::{self, Axis, Field};
-use super::input::PlayerState;
-use super::profile::PlayerProfile;
+use crate::sim::input::PlayerState;
+use crate::sim::profile::PlayerProfile;
+
+use super::contact::{self, Axis};
+use super::field::Field;
 
 /// The vertical velocity and the jump edge waiting for a grounded tick. The
 /// edge dies at its buffer deadline, so only one press can ever launch.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct Controller {
+pub(in crate::sim) struct Controller {
     velocity_y: f32,
     pending_jump: Option<Instant>,
 }
 
 impl Controller {
-    pub(super) const fn new() -> Self {
+    pub(in crate::sim) const fn new() -> Self {
         Self {
             velocity_y: 0.0,
             pending_jump: None,
@@ -23,20 +25,20 @@ impl Controller {
     }
 
     /// The activation reset: a respawned player falls from rest with no edge.
-    pub(super) const fn reset(&mut self) {
+    pub(in crate::sim) const fn reset(&mut self) {
         self.velocity_y = 0.0;
         self.pending_jump = None;
     }
 
     /// The pause drop: the buffered edge goes with the buffered input, while
     /// the velocity carries through the freeze.
-    pub(super) const fn discard_jump(&mut self) {
+    pub(in crate::sim) const fn discard_jump(&mut self) {
         self.pending_jump = None;
     }
 
     /// Sticks a rising transition into the buffer, so several transitions in
     /// one update collapse to the newest.
-    pub(super) fn buffer_jump(&mut self, edge: Instant) {
+    pub(in crate::sim) fn buffer_jump(&mut self, edge: Instant) {
         self.pending_jump = Some(self.pending_jump.map_or(edge, |held| held.max(edge)));
     }
 
@@ -44,7 +46,7 @@ impl Controller {
     /// step on grounded contact, then hold or sweep y, and report the
     /// grounded state the sweeps left behind. The y hold rounds the feet
     /// onto the face, the same snap a landing sweep performs.
-    pub(super) fn advance(
+    pub(in crate::sim) fn advance(
         &mut self,
         field: &Field,
         player: &mut PlayerState,

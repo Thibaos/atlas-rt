@@ -2,14 +2,10 @@ use std::ops::RangeInclusive;
 
 use glam::{IVec3, Vec3};
 
-use crate::world::{
-    World,
-    grid::in_lattice,
-    material::{PhysicalMaterialTable, Rule},
-};
+use crate::sim::profile::PlayerProfile;
+use crate::world::grid::in_lattice;
 
-use super::profile::PlayerProfile;
-use super::queue::UpdateQueue;
+use super::field::Field;
 
 /// The face slack every contact test keeps. A sweep snaps the box onto the
 /// integer face it stopped at, so this is also the most an overlap can be off
@@ -21,95 +17,8 @@ const EPSILON: f32 = 1.0e-3;
 /// Grounded and only rests, bridges, and landed sweeps do.
 const CONTACT: f32 = 1.1e-2;
 
-/// The World one evaluation reads through: the World, the material table, and
-/// the update queue. Both the player's contact tests and the voxel rules ask
-/// this the same questions, so blocking and rule support cannot disagree.
-pub(super) struct Field<'a> {
-    world: &'a World,
-    table: &'a PhysicalMaterialTable,
-    queued: &'a UpdateQueue,
-}
-
-impl<'a> Field<'a> {
-    pub(super) const fn new(
-        world: &'a World,
-        table: &'a PhysicalMaterialTable,
-        queued: &'a UpdateQueue,
-    ) -> Self {
-        Self {
-            world,
-            table,
-            queued,
-        }
-    }
-
-    /// The coordinates the voxel rules have not evaluated yet, in no order.
-    pub(super) fn queued_cells(&self) -> impl Iterator<Item = &IVec3> {
-        self.queued.iter()
-    }
-
-    /// The material at the cell, or nothing outside the lattice or in an
-    /// empty cell.
-    pub(super) fn material(&self, cell: IVec3) -> Option<u8> {
-        if !in_lattice(cell) {
-            return None;
-        }
-
-        self.world.material_at(&cell)
-    }
-
-    /// The Falling granular material at the cell.
-    pub(super) fn grain(&self, cell: IVec3) -> Option<u8> {
-        let material = self.material(cell)?;
-
-        (self.table.get(material).rule == Rule::FallingGranular).then_some(material)
-    }
-
-    /// Whether the cell is inside the lattice and holds nothing.
-    pub(super) fn open(&self, cell: IVec3) -> bool {
-        in_lattice(cell) && self.material(cell).is_none()
-    }
-
-    /// Whether the cell stably refuses a fall: outside the lattice, or held by
-    /// a solid cell or a grain the queue has left settled. A queued grain
-    /// never holds the column above it, which is what keeps a falling column
-    /// coherent.
-    pub(super) fn supports(&self, cell: IVec3) -> bool {
-        if !in_lattice(cell) {
-            return true;
-        }
-
-        let Some(material) = self.world.material_at(&cell) else {
-            return false;
-        };
-
-        let physical = self.table.get(material);
-
-        if physical.rule == Rule::FallingGranular && self.queued.contains(cell) {
-            return false;
-        }
-
-        physical.solid || physical.rule == Rule::FallingGranular
-    }
-
-    /// Whether the cell blocks the player: outside the lattice, or held by a
-    /// player-blocking material the queue has left settled.
-    pub(super) fn blocks(&self, cell: IVec3) -> bool {
-        if !in_lattice(cell) {
-            return true;
-        }
-
-        self.world.material_at(&cell).is_some_and(|material| {
-            let physical = self.table.get(material);
-
-            physical.solid
-                && !(physical.rule == Rule::FallingGranular && self.queued.contains(cell))
-        })
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
-pub(super) enum Axis {
+pub(in crate::sim) enum Axis {
     X,
     Y,
     Z,
@@ -124,7 +33,7 @@ impl Axis {
         }
     }
 
-    pub(super) const fn coordinate(self, cell: IVec3) -> i32 {
+    pub(in crate::sim) const fn coordinate(self, cell: IVec3) -> i32 {
         match self {
             Self::X => cell.x,
             Self::Y => cell.y,
@@ -132,7 +41,7 @@ impl Axis {
         }
     }
 
-    pub(super) const fn get(self, position: Vec3) -> f32 {
+    pub(in crate::sim) const fn get(self, position: Vec3) -> f32 {
         match self {
             Self::X => position.x,
             Self::Y => position.y,
@@ -140,7 +49,7 @@ impl Axis {
         }
     }
 
-    pub(super) const fn set(self, position: Vec3, value: f32) -> Vec3 {
+    pub(in crate::sim) const fn set(self, position: Vec3, value: f32) -> Vec3 {
         match self {
             Self::X => Vec3::new(value, position.y, position.z),
             Self::Y => Vec3::new(position.x, value, position.z),
@@ -177,7 +86,7 @@ impl Axis {
 
 /// The collider box the feet anchor: the bottom sits on the feet, the top
 /// `body_height` above them, and x and z reach half the width and depth out.
-pub(super) fn bounds(feet: Vec3, profile: PlayerProfile) -> (Vec3, Vec3) {
+pub(in crate::sim) fn bounds(feet: Vec3, profile: PlayerProfile) -> (Vec3, Vec3) {
     (
         Vec3::new(
             Axis::X.min(feet, profile),
@@ -195,7 +104,7 @@ pub(super) fn bounds(feet: Vec3, profile: PlayerProfile) -> (Vec3, Vec3) {
 /// Moves the feet `delta` along `axis` and stops on the first blocking face
 /// the box sweeps into, with the feet left exactly on it, reported as the
 /// cell that owns the face.
-pub(super) fn sweep(
+pub(in crate::sim) fn sweep(
     field: &Field,
     feet: Vec3,
     profile: PlayerProfile,
@@ -274,7 +183,7 @@ pub(super) fn sweep(
 
 /// The blocking cells the box spans with slack on every face, so a box
 /// resting exactly on a face does not count as overlapping the cell under it.
-pub(super) fn overlapping<'a>(
+pub(in crate::sim) fn overlapping<'a>(
     field: &'a Field<'a>,
     feet: Vec3,
     profile: PlayerProfile,
@@ -290,14 +199,14 @@ fn hits<'a>(field: &'a Field<'a>, min: Vec3, max: Vec3) -> impl Iterator<Item = 
 }
 
 /// Whether any blocking cell sits inside the box, with the same face slack.
-pub(super) fn blocked(field: &Field, min: Vec3, max: Vec3) -> bool {
+pub(in crate::sim) fn blocked(field: &Field, min: Vec3, max: Vec3) -> bool {
     hits(field, min, max).next().is_some()
 }
 
 /// Whether blocking cells hold the feet: any cell under the footprint whose
 /// top sits within contact tolerance, or a one cell crack the footprint
 /// bridges across.
-pub(super) fn grounded(field: &Field, feet: Vec3, profile: PlayerProfile) -> bool {
+pub(in crate::sim) fn grounded(field: &Field, feet: Vec3, profile: PlayerProfile) -> bool {
     let face = feet.y.round();
 
     if (face - feet.y).abs() >= CONTACT {
@@ -344,7 +253,7 @@ fn span(min: f32, max: f32) -> RangeInclusive<i32> {
 /// The height a step would climb in the contacted column: the top of the
 /// blocking stack the feet run into, within the step height, or no step.
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // feet and step heights sit in the lattice
-pub(super) fn step_rise(
+pub(in crate::sim) fn step_rise(
     field: &Field,
     feet: Vec3,
     profile: PlayerProfile,
@@ -416,7 +325,7 @@ fn inside(cell: IVec3, min: Vec3, max: Vec3) -> bool {
 
 /// The cells the player collider spans, from `bottom` under the feet to `top`
 /// above them.
-pub(super) fn footprint(
+pub(in crate::sim) fn footprint(
     feet: Vec3,
     profile: PlayerProfile,
     bottom: f32,

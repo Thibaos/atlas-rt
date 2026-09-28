@@ -3,7 +3,7 @@ use rustc_hash::FxHashSet;
 
 use crate::world::update::edit::{VoxelChange, VoxelEdit};
 
-use super::contact::Field;
+use super::field::Field;
 use super::queue::UpdateQueue;
 
 /// How a grain breaks a diagonal tie on the axis it picked: by the parity of
@@ -17,15 +17,15 @@ pub enum ParityPolicy {
 
 /// One tick's rule outcome: the pending edits and the queue the next tick
 /// starts from.
-pub(super) struct Outcome {
-    pub(super) edits: Vec<VoxelEdit>,
-    pub(super) queue: UpdateQueue,
+pub(in crate::sim) struct Outcome {
+    pub(in crate::sim) edits: Vec<VoxelEdit>,
+    pub(in crate::sim) queue: UpdateQueue,
 }
 
 /// Drains the queued cells in ascending y, then x, then z against `field`,
 /// records one claim per destination in emission order, and rebuilds the queue
 /// from the moves and their wakes. Nothing here writes to the World.
-pub(super) fn drain(field: &Field, parity: ParityPolicy) -> Outcome {
+pub(in crate::sim) fn drain(field: &Field, parity: ParityPolicy) -> Outcome {
     let mut order: Vec<IVec3> = field.queued_cells().copied().collect();
     order.sort_unstable_by_key(|cell| (cell.y, cell.x, cell.z));
 

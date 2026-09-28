@@ -1,10 +1,11 @@
 use glam::{IVec3, Vec3};
 
+use crate::sim::input::PlayerState;
+use crate::sim::profile::PlayerProfile;
 use crate::world::{World, grid::LATTICE_HALF_EXTENT, material::PhysicalMaterialTable};
 
-use super::contact::{Field, footprint, grounded};
-use super::input::PlayerState;
-use super::profile::PlayerProfile;
+use super::contact::{footprint, grounded};
+use super::field::Field;
 use super::queue::UpdateQueue;
 
 const FLOOR_FEET: Vec3 = Vec3::new(0.0, -(LATTICE_HALF_EXTENT as f32), 0.0);
