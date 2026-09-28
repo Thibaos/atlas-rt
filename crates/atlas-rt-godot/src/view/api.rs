@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex, mpsc};
 
 use atlas_rt::{
+    host::display_gate::DisplayGate,
     render::{
         context::RenderContext,
         embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
-        image::{delivery::SLOT_COUNT, display_gate::DisplayGate},
+        output::delivery::SLOT_COUNT,
         pipeline::{DEFAULT_FOV, FrameInput},
     },
     world::{

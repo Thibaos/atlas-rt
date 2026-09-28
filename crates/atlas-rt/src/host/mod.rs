@@ -1,8 +1,11 @@
-//! The sub-tick view both hosts build from the sim's pushes.
+//! The sub-tick view both hosts build from the sim's pushes, and the gate that
+//! decides whether published frames reach the screen.
 //!
-//! The standalone host and the Godot adapter feed it the same tick-end
+//! The standalone host and the Godot adapter feed the view the same tick-end
 //! pushes and read one interpolated pose per frame, so the alpha formula
 //! exists once.
+
+pub mod display_gate;
 
 use std::time::{Duration, Instant};
 

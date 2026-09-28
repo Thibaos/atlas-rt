@@ -11,7 +11,7 @@ use godot::prelude::*;
 use atlas_rt::render::{
     context::RenderContext,
     embedded::EmbeddedPipeline,
-    image::delivery::{DeviceMemory, SLOT_COUNT},
+    output::delivery::{DeviceMemory, SLOT_COUNT},
     pipeline::task::RenderMode,
 };
 use atlas_rt::world::World;
@@ -279,7 +279,7 @@ impl AtlasRtView {
         memory: &Arc<DeviceMemory>,
         extent: [u32; 2],
     ) -> Result<Rid, String> {
-        let handle = atlas_rt::render::image::delivery::export_win32_handle(memory)
+        let handle = atlas_rt::render::output::delivery::export_win32_handle(memory)
             .map_err(|error| format!("memory export failed: {error:#}"))?;
 
         let alloc_size = memory.allocation_size();

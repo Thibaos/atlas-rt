@@ -13,7 +13,7 @@ use glam::Vec4;
 use tracing::error;
 
 use crate::{
-    render::image::display_gate::DisplayGate,
+    host::display_gate::DisplayGate,
     world::{
         World,
         format::{get_effective_palette, open_bytes},

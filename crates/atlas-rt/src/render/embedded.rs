@@ -15,7 +15,7 @@ use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
     context::RenderContext,
-    image::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, delivery_memory},
+    output::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, delivery_memory},
     pipeline::{
         FrameInput,
         task::{
@@ -145,7 +145,7 @@ fn slot_storage_ids(
 #[cfg(test)]
 mod tests {
     use super::{BatchDelivery, REWRITE_GATE_TICKS, WrapTimes, gated_slot};
-    use crate::render::{image::delivery::SLOT_COUNT, region::residency::ApplyReport};
+    use crate::render::{output::delivery::SLOT_COUNT, region::residency::ApplyReport};
     use glam::IVec3;
 
     fn wrap_times(wrapped_at: [Option<u64>; SLOT_COUNT], tick: u64) -> WrapTimes {

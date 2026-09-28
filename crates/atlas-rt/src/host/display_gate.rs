@@ -1,6 +1,6 @@
 /// Whether published frames may reach the screen.
 ///
-/// The host records a version when it requests a world change, then admits
+/// The caller records a version when it requests a world change, then admits
 /// only frames with a later version.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DisplayGate {
