@@ -1,7 +1,7 @@
 mod input;
 mod player;
-mod schedule;
 mod sim_host;
+mod timers;
 
 use std::{
     path::Path,
@@ -45,8 +45,8 @@ use atlas_rt::{
 
 use input::{Input, InputButton, InputKey};
 use player::PlayerController;
-use schedule::ScheduleController;
 use sim_host::SimHost;
+use timers::ScheduleController;
 
 #[allow(clippy::struct_excessive_bools)]
 pub struct App {

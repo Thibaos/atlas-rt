@@ -23,7 +23,7 @@ use crate::render::{
         },
     },
     region::{
-        feed::RendererInput,
+        queue::RendererInput,
         residency::{ApplyReport, RegionStore},
     },
 };

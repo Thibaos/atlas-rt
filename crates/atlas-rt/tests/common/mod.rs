@@ -9,8 +9,8 @@ use std::sync::{Arc, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use atlas_rt::render::region::feed::RendererInput;
 use atlas_rt::render::region::pack::{RegionData, pack_regions};
+use atlas_rt::render::region::queue::RendererInput;
 use atlas_rt::sim::{
     self, Activation, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push, TickEnd,
 };

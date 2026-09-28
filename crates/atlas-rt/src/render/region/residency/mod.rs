@@ -27,8 +27,8 @@ use crate::{
                 AllocStats, BlasAllocation, FreeLists, FreedBlas, FreedPool, PendingFrees,
                 PoolAllocation, allocate_blas, allocate_pool,
             },
-            feed::RendererInput,
             pack::{REGION_COUNT, RegionData},
+            queue::RendererInput,
             rebuild::{
                 BlasBuild, RebuildGraph, RebuildLogEntry, RebuildPlan, RegionUpload, TlasBuild,
             },

@@ -4,7 +4,7 @@
 
 mod common;
 
-use atlas_rt::render::region::feed::RendererInput;
+use atlas_rt::render::region::queue::RendererInput;
 use atlas_rt::sim::{Handle, ParityPolicy};
 use atlas_rt::world::diff::edit::VoxelEdit;
 use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};

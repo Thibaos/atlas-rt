@@ -1,7 +1,7 @@
 use atlas_rt::{
     render::region::{
-        feed::RendererInput,
         pack::{RegionData, pack_regions},
+        queue::RendererInput,
     },
     world::{
         diff::{
@@ -24,7 +24,7 @@ fn snapshot(coords: IVec3, material: u8) -> MicroChunkSnapshot {
     }
 }
 
-/// Drains the feed's packed regions; a second call yields nothing.
+/// Drains the queue's packed regions; a second call yields nothing.
 fn resident_regions(input: &RendererInput) -> Vec<RegionData> {
     input.packed_regions().unwrap()
 }

@@ -1,7 +1,7 @@
 use atlas_rt::{
     render::region::{
-        feed::RendererInput,
         pack::{RegionData, pack_regions},
+        queue::RendererInput,
     },
     world::{
         World,
@@ -53,7 +53,7 @@ fn clear(position: IVec3) -> VoxelEdit {
     }
 }
 
-/// Drains the feed's packed regions; a second call yields nothing.
+/// Drains the queue's packed regions; a second call yields nothing.
 fn resident_regions(input: &RendererInput) -> Vec<RegionData> {
     input.packed_regions().unwrap()
 }
@@ -484,7 +484,7 @@ fn tracked_edits_converge_under_plan_clear() {
 
     assert!(
         resident_regions(&input).is_empty(),
-        "plan_clear of the tracked set empties the feed"
+        "plan_clear of the tracked set empties the queue"
     );
 }
 

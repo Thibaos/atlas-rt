@@ -24,7 +24,7 @@ use crate::{
         pipeline::task::{
             RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
         },
-        region::{feed::RendererInput, residency::RegionStore},
+        region::{queue::RendererInput, residency::RegionStore},
     },
     world::{World, diff::snapshot::emit_snapshots},
 };

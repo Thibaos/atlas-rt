@@ -779,8 +779,8 @@ mod tests {
         }
     }
 
-    fn assert_feed_matches_world(
-        input: &atlas_rt::render::region::feed::RendererInput,
+    fn assert_queue_matches_world(
+        input: &atlas_rt::render::region::queue::RendererInput,
         world: &World,
     ) {
         let expected = must(atlas_rt::world::diff::snapshot::emit_snapshots(world));
@@ -797,8 +797,8 @@ mod tests {
     }
 
     #[test]
-    fn a_chunk_submission_leaves_the_feed_and_the_world_in_agreement() {
-        use atlas_rt::render::region::feed::RendererInput;
+    fn a_chunk_submission_leaves_the_queue_and_the_world_in_agreement() {
+        use atlas_rt::render::region::queue::RendererInput;
         use atlas_rt::world::diff::batch::TrackedCoords;
         use atlas_rt::world::diff::edit::edit_world;
 
@@ -815,12 +815,12 @@ mod tests {
         must(input.submit_batch(batch.snapshots));
         must(input.wait_until_idle());
 
-        assert_feed_matches_world(&input, &world);
+        assert_queue_matches_world(&input, &world);
     }
 
     #[test]
     fn a_zero_mask_submission_empties_the_chunk_and_leaves_the_rest_resident() {
-        use atlas_rt::render::region::feed::RendererInput;
+        use atlas_rt::render::region::queue::RendererInput;
         use atlas_rt::world::diff::batch::TrackedCoords;
         use atlas_rt::world::diff::edit::edit_world;
 
@@ -852,6 +852,6 @@ mod tests {
             "the emptied chunk leaves the tracked set"
         );
         assert!(tracked.contains(&neighbour), "the neighbour stays resident");
-        assert_feed_matches_world(&input, &world);
+        assert_queue_matches_world(&input, &world);
     }
 }
