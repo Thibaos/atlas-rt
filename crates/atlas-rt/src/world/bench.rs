@@ -1,4 +1,3 @@
-#[cfg(test)]
 mod load_bench {
     use std::time::{Duration, Instant};
 
@@ -253,7 +252,6 @@ mod load_bench {
     }
 }
 
-#[cfg(test)]
 mod edit_bench {
     use std::time::Instant;
 
@@ -267,7 +265,7 @@ mod edit_bench {
             edit::{VoxelChange, VoxelEdit, edit_world},
         },
         grid::{REGION_LENGTH, region_index_of},
-        placement::Rng,
+        test_support::Rng,
     };
 
     const BATCH_SIZES: [usize; 3] = [1_000, 10_000, 100_000];

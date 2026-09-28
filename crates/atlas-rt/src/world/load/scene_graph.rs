@@ -313,7 +313,7 @@ mod tests {
     use super::VoxelPlacement;
     use crate::world::{
         grid,
-        placement::{Rng, rotation_bytes},
+        test_support::{Rng, rotation_bytes},
     };
 
     fn placement(translation: [i32; 3], rotation: u8, size: (u32, u32, u32)) -> VoxelPlacement {

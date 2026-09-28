@@ -261,7 +261,7 @@ pub fn emit_snapshots_reporting(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::world::placement::{Rng, u8_below};
+    use crate::world::test_support::{Rng, u8_below};
 
     use super::*;
 

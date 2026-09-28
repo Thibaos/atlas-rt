@@ -269,7 +269,7 @@ fn scene_fixture(specs: &[ModelSpec]) -> DotVoxData {
 }
 
 #[cfg(test)]
-mod placement;
+mod test_support;
 
 #[cfg(test)]
 mod tests {

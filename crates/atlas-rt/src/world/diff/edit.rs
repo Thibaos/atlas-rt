@@ -316,7 +316,7 @@ mod tests {
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},
         },
         grid::{MICRO_CHUNK_LENGTH, grid_origin},
-        placement::{Rng, u8_below},
+        test_support::{Rng, u8_below},
     };
 
     use super::{
