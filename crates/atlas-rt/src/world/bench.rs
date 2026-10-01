@@ -300,13 +300,7 @@ mod edit_bench {
     }
 
     fn dense_world(origins: &[IVec3]) -> World {
-        let cells = usize::try_from(DENSE_EDGE)
-            .unwrap_or(8)
-            .pow(3)
-            .saturating_mul(origins.len());
-
         let mut world = World::default();
-        world.reserve(cells);
 
         for origin in origins {
             for x in 0..DENSE_EDGE {

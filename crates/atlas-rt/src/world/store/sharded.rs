@@ -29,11 +29,6 @@ impl Default for ShardedMap {
 }
 
 impl ShardedMap {
-    #[must_use]
-    pub const fn from_shards(shards: [VoxelMap; SHARD_COUNT]) -> Self {
-        Self { shards }
-    }
-
     fn shard(&self, position: IVec3) -> &VoxelMap {
         let index = shard_index(fold(position));
 
@@ -103,14 +98,6 @@ impl VoxelStore for ShardedMap {
 
     fn count(&self) -> usize {
         self.shards.iter().map(HashMap::len).sum()
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        let per_shard = additional / SHARD_COUNT;
-
-        for map in &mut self.shards {
-            map.reserve(per_shard);
-        }
     }
 
     #[cfg(test)]

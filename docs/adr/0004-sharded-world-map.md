@@ -14,7 +14,26 @@ borrows model voxels as slices instead of cloning them.
 
 ## Status
 
-accepted (load-performance ticket 06, 2026-09-07)
+accepted (load-performance ticket 06, 2026-09-07). Amended (region-backed
+voxel store, 2026-10-01): the sharded map is superseded as the World's
+resident storage. `World` becomes a flat table of 4096 Region slots indexed by
+the 12-bit region id, and parallel load partitions by region id instead of by
+hash route, so there is one owner thread per Region and no mutex array. The
+sharded map survives as a test-only oracle behind the same storage interface,
+kept for the differential tests, not as the resident store. The decision this
+ADR recorded, that insert contention and last-write-wins are resolved without a
+global lock, still stands: partitioning by region satisfies it as well as
+routing by hash did. Sequence tags survive inside a Region, because two
+placements writing one cell still need the later to win.
+
+Three of the consequences below are void, and each says so in place. The
+per-shard `reserve` split and its instruction to ticket 07 have no referent once
+the shards are gone, and the per-shard strip pass is replaced by a per-Region
+one. The staged and resident coexistence consequence is removed rather than
+revised: staging writes into the Region's own blob, so peak load memory no
+longer holds two copies of the World. That is the largest single memory win of
+the change and the reason the load stage no longer needs a pre-write reserve
+sized from the in-lattice attempt count.
 
 ## Considered Options
 
@@ -36,10 +55,16 @@ accepted (load-performance ticket 06, 2026-09-07)
   coordinates; the packed fold key, shard routing, and staged maps are
   internal.
 - Iteration order (iter_voxels, voxel_bounds) is shard-major and unordered
-  within a shard; content comparisons must be order-insensitive.
+  within a shard; content comparisons must be order-insensitive. (Void as of
+  2026-10-01: iteration is by Region id, then Micro-chunk ordinal, then cell
+  index, which is deterministic, so order-insensitive comparison is no longer
+  required.)
 - reserve distributes capacity per shard (additional / 64 each); ticket 07
-  touches the same reserve site and must keep the per-shard split.
+  touches the same reserve site and must keep the per-shard split. (Void as of
+  2026-10-01: no shards and no per-shard reserve site remain. Ticket 07 must
+  not look for one.)
 - Staged maps (sequence-tagged values) and resident maps coexist during the
   strip pass, so peak load memory holds both; staged maps are consumed
-  shard-by-shard as they strip.
+  shard-by-shard as they strip. (Void as of 2026-10-01: staging writes into
+  the Region's own blob, so there is no second copy of the World during load.)
 - Material indices must fit a byte, which the .vox format guarantees.

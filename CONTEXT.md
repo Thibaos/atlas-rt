@@ -6,11 +6,13 @@ vulkano). Renders sparse voxel worlds loaded from .vox files.
 ## Language
 
 **World**:
-The scene loaded from a .vox file: a sparse set of occupied voxels, held in a
-flat map keyed by global coordinates, internally sharded 64 ways by hash
-route, plus a 256-color palette. The single source of truth for voxel content:
-a load constructs one, the Voxel edit path is the only later mutation, and the
-renderer holds only packed regions built from its Snapshots.
+The scene loaded from a .vox file: a sparse set of occupied voxels, held as a
+flat table of 4096 Region slots indexed by region id, plus a 256-color palette.
+A Region stores its content per Micro-chunk as an Occupancy mask followed by the
+Material indices of that Micro-chunk's occupied cells, which is the same shape
+the Voxel pool uses. The single source of truth for voxel content: a load
+constructs one, the Voxel edit path is the only later mutation, and the renderer
+holds only packed regions built from its Snapshots.
 _Avoid_: Scene, level, map
 
 **Lattice**:
@@ -76,17 +78,19 @@ heatmap (x red, y green, z blue).
 _Avoid_: facet normal, interpolated normal (no raster interpolants exist)
 
 **Micro-chunk**:
-The renderer's 8x8x8 render/acceleration-structure unit, tightly wrapped to
+The 8x8x8 unit the World stores by and the renderer traces, tightly wrapped to
 occupied voxels (owner requirement; named by rendering-core ticket 03). One
 AABB per non-empty micro-chunk. That AABB is the trimmed hull (tight occupied
-bounds), not the full 8x8x8 cell box.
+bounds), not the full 8x8x8 cell box. The Occupancy mask, not a sentinel index,
+decides which of its 512 cells exist.
 _Avoid_: cell
 
 **Region**:
-The renderer's grouping of Micro-chunks that share one acceleration-structure
-build: 32^3 micro-chunks (256^3 voxels). The TLAS holds one
-instance per region; a region's structure exists only while it holds >=1
-non-empty Micro-chunk.
+The unit both the World stores by and the renderer traces: 32^3 micro-chunks
+(256^3 voxels). The TLAS holds one instance per region and a region's structure
+exists only while it holds >=1 non-empty Micro-chunk. In the World, one region
+slot holds an index over its micro-chunks plus a blob of their Occupancy masks
+and Materials, and a region that has never held a voxel costs nothing.
 _Avoid_: Super-chunk, block
 
 ## Voxel storage
@@ -95,7 +99,8 @@ _Avoid_: Super-chunk, block
 The renderer's GPU-side storage for voxel data, organized per Region: for
 each non-empty Micro-chunk, one Occupancy mask plus the material indices of
 the occupied voxels. Built by the renderer from the world's Micro-chunk
-snapshots; the world never writes it.
+snapshots; the world never writes it. The World stores per-Micro-chunk content
+in this same shape, so the two sides of the boundary need no translation step.
 _Avoid_: Voxel buffer, voxel data store
 
 **Occupancy mask**:

@@ -15,7 +15,7 @@ use std::fmt::Display;
 use dot_vox::DotVoxData;
 use glam::IVec3;
 
-use store::{ShardedMap, VoxelStore};
+use store::{RegionStore, VoxelStore};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
@@ -37,17 +37,13 @@ pub struct World {
 
 impl Default for World {
     fn default() -> Self {
-        Self::from_store(Box::new(ShardedMap::default()))
+        Self::from_store(Box::new(RegionStore::default()))
     }
 }
 
 impl World {
     pub(crate) fn from_store(store: Box<dyn VoxelStore>) -> Self {
         Self { store }
-    }
-
-    fn reserve(&mut self, additional: usize) {
-        self.store.reserve(additional);
     }
 
     pub(crate) fn insert(

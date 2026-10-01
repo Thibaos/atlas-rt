@@ -1,3 +1,5 @@
+pub mod region;
+#[cfg(test)]
 pub mod sharded;
 
 use std::fmt::Debug;
@@ -6,6 +8,8 @@ use glam::IVec3;
 
 use crate::world::{BoundsPolicy, InsertResult, grid};
 
+pub use region::RegionStore;
+#[cfg(test)]
 pub use sharded::ShardedMap;
 
 /// The World's voxel storage.
@@ -44,8 +48,6 @@ pub trait VoxelStore: Debug + Send + Sync {
 
         bounds
     }
-
-    fn reserve(&mut self, additional: usize);
 
     #[cfg(test)]
     fn reserved_capacity(&self) -> usize;

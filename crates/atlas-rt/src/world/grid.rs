@@ -5,6 +5,11 @@ pub const REGION_LENGTH: u32 = 256;
 pub const REGION_HALF_EXTENT: u32 = 8;
 pub const LATTICE_HALF_EXTENT: u32 = REGION_HALF_EXTENT * REGION_LENGTH;
 
+const REGION_SIDE: usize = 2 * REGION_HALF_EXTENT as usize;
+
+/// The Region slots in the World's flat table, one per region id.
+pub const REGION_COUNT: usize = REGION_SIDE * REGION_SIDE * REGION_SIDE;
+
 #[must_use]
 pub fn grid_index(global: IVec3, edge: u32) -> IVec3 {
     global.div_euclid(IVec3::splat(edge.cast_signed()))
@@ -65,6 +70,20 @@ pub fn region_id(region_index: IVec3) -> u32 {
 #[must_use]
 pub fn region_index_of(global_coords: IVec3) -> IVec3 {
     grid_index(global_coords, REGION_LENGTH)
+}
+
+/// The inverse of [`region_id`].
+#[must_use]
+pub fn region_index_from_id(id: u32) -> IVec3 {
+    let axis = |shift: u32| {
+        let biased = (id >> shift) & 0xF;
+
+        i32::try_from(biased)
+            .unwrap_or(0)
+            .wrapping_sub(REGION_HALF_EXTENT.cast_signed())
+    };
+
+    IVec3::new(axis(8), axis(4), axis(0))
 }
 
 #[cfg(test)]
@@ -136,5 +155,20 @@ mod tests {
         assert!(region_index_in_lattice(IVec3::new(7, 0, 0)));
         assert!(!region_index_in_lattice(IVec3::new(8, 0, 0)));
         assert!(!region_index_in_lattice(IVec3::new(-9, 0, 0)));
+    }
+
+    #[test]
+    fn region_id_round_trips() {
+        for x in -8..8 {
+            for y in -8..8 {
+                for z in -8..8 {
+                    let index = IVec3::new(x, y, z);
+
+                    assert_eq!(region_index_from_id(region_id(index)), index);
+                }
+            }
+        }
+
+        assert_eq!(REGION_COUNT, 4096);
     }
 }
