@@ -80,7 +80,7 @@ fn activation_leaves_the_new_world_readable_through_the_shared_lock() {
     {
         let guard = world.read().unwrap();
 
-        assert_eq!(guard.get_voxel(&IVec3::new(4, 4, 4)), Some(&6));
+        assert_eq!(guard.get_voxel(&IVec3::new(4, 4, 4)), Some(6));
         assert_eq!(guard.voxel_count(), 1);
     }
 
@@ -89,7 +89,7 @@ fn activation_leaves_the_new_world_readable_through_the_shared_lock() {
 
     let guard = world.read().unwrap();
 
-    assert_eq!(guard.get_voxel(&IVec3::new(8, 8, 8)), Some(&2));
+    assert_eq!(guard.get_voxel(&IVec3::new(8, 8, 8)), Some(2));
     assert_eq!(
         guard.get_voxel(&IVec3::new(4, 4, 4)),
         None,

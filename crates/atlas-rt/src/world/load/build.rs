@@ -181,7 +181,7 @@ fn unstage_shard(staged: Mutex<StagedMap>) -> VoxelMap {
     map.into_iter()
         .map(|(position, value)| {
             let [material, ..] = value.to_le_bytes();
-            (position, u32::from(material))
+            (position, material)
         })
         .collect()
 }

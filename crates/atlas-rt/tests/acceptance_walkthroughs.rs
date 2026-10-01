@@ -91,7 +91,7 @@ fn grains(handle: &Handle) -> Vec<IVec3> {
     let guard = handle.world().read().unwrap();
     let mut cells: Vec<IVec3> = guard
         .iter_voxels()
-        .filter(|(_, voxel)| **voxel == u32::from(GRAIN))
+        .filter(|(_, voxel)| *voxel == GRAIN)
         .map(|(position, _)| position)
         .collect();
 
@@ -675,7 +675,7 @@ fn walkthrough_the_obstacle_run() {
         for z in 0..=4 {
             assert_eq!(
                 held(&handle, IVec3::new(x, 0, z)),
-                Some(u32::from(GRAIN)),
+                Some(GRAIN),
                 "cell ({x}, 0, {z}) under the walk still holds sand"
             );
             assert_eq!(
@@ -743,7 +743,7 @@ fn walkthrough_the_obstacle_run() {
         for z in 0..=4 {
             assert_eq!(
                 held(&handle, IVec3::new(x, 0, z)),
-                Some(u32::from(GRAIN)),
+                Some(GRAIN),
                 "the trench keeps its sand at ({x}, 0, {z})"
             );
         }
@@ -835,7 +835,7 @@ fn walkthrough_sand_through_the_player_then_pile_climb() {
 
     assert_eq!(
         held(&handle, IVec3::new(11, 1, 2)),
-        Some(u32::from(GRAIN)),
+        Some(GRAIN),
         "the grain came to rest inside the box"
     );
 

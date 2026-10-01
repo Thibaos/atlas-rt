@@ -20,9 +20,7 @@ impl UpdateQueue {
         self.cells = world
             .iter_voxels()
             .filter_map(|(position, voxel)| {
-                let material = u8::try_from(*voxel).ok()?;
-
-                (table.get(material).rule == Rule::FallingGranular).then_some(position)
+                (table.get(voxel).rule == Rule::FallingGranular).then_some(position)
             })
             .collect();
     }

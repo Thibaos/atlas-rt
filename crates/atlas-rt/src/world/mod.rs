@@ -28,7 +28,7 @@ const LATTICE_BIAS: i32 = grid::LATTICE_HALF_EXTENT.cast_signed();
 const FOLD_FIELD_BITS: u32 = grid::LATTICE_HALF_EXTENT.trailing_zeros() + 1;
 const FOLD_FIELD_MASK: u64 = (1u64 << FOLD_FIELD_BITS) - 1;
 
-type VoxelMap = HashMap<u64, u32, FxBuildHasher>;
+type VoxelMap = HashMap<u64, u8, FxBuildHasher>;
 
 #[derive(Debug)]
 pub struct World {
@@ -120,7 +120,10 @@ impl World {
             }
         }
 
-        match self.shard_mut(position).insert(fold(position), voxel) {
+        let material = u8::try_from(voxel)
+            .unwrap_or_else(|_| panic!("material index {voxel} does not fit a byte"));
+
+        match self.shard_mut(position).insert(fold(position), material) {
             Some(_) => InsertResult::Existing,
             None => InsertResult::Ok,
         }
@@ -145,15 +148,14 @@ impl World {
     }
 
     #[must_use]
-    pub fn get_voxel(&self, position: &IVec3) -> Option<&u32> {
+    pub fn get_voxel(&self, position: &IVec3) -> Option<u8> {
         Self::assert_in_lattice(position);
-        self.shard(*position).get(&fold(*position))
+        self.shard(*position).get(&fold(*position)).copied()
     }
 
     pub(crate) fn set_voxel(&mut self, position: IVec3, material: u8) {
         Self::assert_in_lattice(&position);
-        self.shard_mut(position)
-            .insert(fold(position), u32::from(material));
+        self.shard_mut(position).insert(fold(position), material);
     }
 
     pub(crate) fn clear_voxel(&mut self, position: IVec3) {
@@ -161,17 +163,15 @@ impl World {
         self.shard_mut(position).remove(&fold(position));
     }
 
-    // every write into the shards is a byte, so only an absent voxel is None
     #[must_use]
     pub(crate) fn material_at(&self, position: &IVec3) -> Option<u8> {
         self.get_voxel(position)
-            .and_then(|voxel| u8::try_from(*voxel).ok())
     }
 
-    pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, &u32)> + '_ {
+    pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, u8)> + '_ {
         self.shards
             .iter()
-            .flat_map(|map| map.iter().map(|(key, voxel)| (unfold(*key), voxel)))
+            .flat_map(|map| map.iter().map(|(key, voxel)| (unfold(*key), *voxel)))
     }
 
     #[must_use]

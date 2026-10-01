@@ -142,7 +142,7 @@ fn exact_oracle_transform(translation: IVec3, rotation: Rotation, size: UVec3) -
     DMat4::from_scale_rotation_translation(scale, quat, translation - center * scale + offset)
 }
 
-fn exact_oracle_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
+fn exact_oracle_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     let mut map = HashMap::new();
     for (translation, rotation, size, voxels) in collected_models(data) {
         let transform = exact_oracle_transform(translation, rotation, size);
@@ -155,14 +155,14 @@ fn exact_oracle_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
             let placed = transform.mul_vec4(DVec4::new(local.x, local.y, local.z, 1.0));
             let position = IVec3::new(rounded(placed.x), rounded(placed.y), -rounded(placed.z));
             if grid::in_lattice(position) {
-                map.insert(position, u32::from(voxel.i));
+                map.insert(position, voxel.i);
             }
         }
     }
     map
 }
 
-fn legacy_float_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
+fn legacy_float_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     let mut map = HashMap::new();
     for (translation, rotation, size, voxels) in collected_models(data) {
         let transform = SceneGraphTraverser::legacy_float_transform(translation, rotation, size);
@@ -177,19 +177,16 @@ fn legacy_float_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
             let position = (transform.mul_vec4(position)).xyz().as_ivec3();
             let position = IVec3::new(position.x, position.y, position.z.neg());
             if grid::in_lattice(position) {
-                map.insert(position, u32::from(voxel.i));
+                map.insert(position, voxel.i);
             }
         }
     }
     map
 }
 
-fn production_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
+fn production_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     let (world, _) = World::new_clipped(data);
-    world
-        .iter_voxels()
-        .map(|(position, voxel)| (position, *voxel))
-        .collect()
+    world.iter_voxels().collect()
 }
 
 fn random_specs(rng: &mut Rng, rotation: u8) -> Vec<ModelSpec> {
@@ -299,12 +296,12 @@ fn placement_known_example_from_legacy_pipeline() {
     assert_eq!(world.voxel_count(), 1);
     assert_eq!(
         world.get_voxel(&IVec3::new(5, 8, 6)),
-        Some(&7),
+        Some(7),
         "the legacy pipeline evaluates this origin voxel to m = (5, 8, -6), so the world position after the final z negation is (5, 8, 6)"
     );
 }
 
-fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
+fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     let mut map = HashMap::new();
 
     for (translation, rotation, size, voxels) in collected_models(data) {
@@ -314,7 +311,7 @@ fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
             let position = placement.place(*voxel);
 
             if grid::in_lattice(position) {
-                map.insert(position, u32::from(voxel.i));
+                map.insert(position, voxel.i);
             }
         }
     }
@@ -322,7 +319,7 @@ fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u32> {
     map
 }
 
-fn content_hash(map: &HashMap<IVec3, u32>) -> u64 {
+fn content_hash(map: &HashMap<IVec3, u8>) -> u64 {
     let mut hash = 0u64;
 
     for (position, voxel) in map {

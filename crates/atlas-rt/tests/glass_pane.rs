@@ -20,10 +20,6 @@ fn load() -> (World, [Vec4; 256]) {
     (World::new(&data), get_palette(&data))
 }
 
-fn material(slot: u8) -> u32 {
-    u32::from(slot)
-}
-
 fn alpha(palette: &[Vec4; 256], slot: u8) -> f32 {
     palette.get(usize::from(slot)).map_or(0.0, |color| color.w)
 }
@@ -90,17 +86,17 @@ fn the_pane_and_the_opening_sit_in_front_of_the_wall() {
 
     assert_eq!(
         world.get_voxel(&pane),
-        Some(&material(PANE)),
+        Some(PANE),
         "pane cell carries the alpha-128 slot"
     );
     assert_eq!(
         world.get_voxel(&opening),
-        Some(&material(OPENING)),
+        Some(OPENING),
         "opening cell carries the alpha-0 slot"
     );
     assert_eq!(
         world.get_voxel(&wall),
-        Some(&material(WALL)),
+        Some(WALL),
         "wall sits two cells behind the opening"
     );
 }
@@ -117,7 +113,7 @@ fn the_wall_fills_the_frame_around_the_window_unit() {
     ] {
         assert_eq!(
             world.get_voxel(&cell),
-            Some(&material(WALL)),
+            Some(WALL),
             "wall should back the unit {label}"
         );
     }

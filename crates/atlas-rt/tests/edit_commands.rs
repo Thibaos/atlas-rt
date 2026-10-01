@@ -87,7 +87,7 @@ fn a_micro_chunk_command_diffs_against_the_world_at_commit() {
 
     assert_eq!(
         guard.get_voxel(&IVec3::new(0, 0, 0)),
-        Some(&5),
+        Some(5),
         "the cell the chunk keeps is untouched"
     );
     assert_eq!(
@@ -97,12 +97,12 @@ fn a_micro_chunk_command_diffs_against_the_world_at_commit() {
     );
     assert_eq!(
         guard.get_voxel(&IVec3::new(2, 0, 0)),
-        Some(&9),
+        Some(9),
         "the cell the chunk claims is set"
     );
     assert_eq!(
         guard.get_voxel(&IVec3::new(8, 0, 0)),
-        Some(&3),
+        Some(3),
         "the neighbouring Micro-chunk is outside the diff"
     );
 }
@@ -133,12 +133,12 @@ fn an_empty_chunk_clears_every_cell_it_covers() {
     );
     assert_eq!(
         guard.get_voxel(&IVec3::new(9, 7, 0)),
-        Some(&6),
+        Some(6),
         "cell (9, 7, 0) sits in the neighbouring Micro-chunk"
     );
     assert_eq!(
         guard.get_voxel(&IVec3::new(0, 8, 0)),
-        Some(&7),
+        Some(7),
         "cell (0, 8, 0) sits in the Micro-chunk above"
     );
 }
@@ -343,7 +343,7 @@ fn a_dig_wakes_the_cell_it_left_and_the_three_above() {
     assert_eq!(held(&handle, IVec3::new(4, 4, 4)), None);
     assert_eq!(
         held(&handle, IVec3::new(4, 3, 4)),
-        Some(u32::from(GRAIN)),
+        Some(GRAIN),
         "the grain took the cell the dig opened"
     );
 }

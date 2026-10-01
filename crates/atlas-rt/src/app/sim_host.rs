@@ -522,8 +522,7 @@ mod tests {
         let held = world
             .read()
             .unwrap_or_else(PoisonError::into_inner)
-            .get_voxel(&position)
-            .copied();
+            .get_voxel(&position);
 
         assert_eq!(held, Some(1), "the command landed in the World");
     }

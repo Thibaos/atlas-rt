@@ -572,9 +572,7 @@ fn chunk_edits(world: &World, chunk: &ValidatedChunk) -> Vec<VoxelEdit> {
             None
         };
 
-        let current = world
-            .get_voxel(&position)
-            .and_then(|voxel| u8::try_from(*voxel).ok());
+        let current = world.get_voxel(&position);
 
         match (incoming, current) {
             (Some(material), Some(existing)) if material == existing => {}

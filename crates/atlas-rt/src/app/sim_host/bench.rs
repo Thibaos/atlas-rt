@@ -160,9 +160,7 @@ fn free_material(world: &World) -> u8 {
     let mut used = [false; 256];
 
     for (_, voxel) in world.iter_voxels() {
-        if let Ok(index) = u8::try_from(*voxel)
-            && let Some(slot) = used.get_mut(index as usize)
-        {
+        if let Some(slot) = used.get_mut(usize::from(voxel)) {
             *slot = true;
         }
     }

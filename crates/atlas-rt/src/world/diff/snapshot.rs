@@ -190,7 +190,7 @@ pub fn emit_snapshots_reporting(
                 .all()
         );
 
-        let material = u8::try_from(*voxel)?;
+        let material = voxel;
 
         let chunk_x = chunk_axis_ordinal(origin.x)?;
         let chunk_y = chunk_axis_ordinal(origin.y)?;
@@ -291,7 +291,7 @@ pub(crate) mod tests {
             per_microchunk
                 .entry(origin)
                 .or_default()
-                .push((idx, u8::try_from(*voxel)?));
+                .push((idx, voxel));
         }
 
         let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk

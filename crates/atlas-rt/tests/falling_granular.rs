@@ -29,7 +29,7 @@ fn grains(handle: &Handle) -> Vec<IVec3> {
     let guard = handle.world().read().unwrap();
     let mut cells: Vec<IVec3> = guard
         .iter_voxels()
-        .filter(|(_, voxel)| **voxel == u32::from(GRAIN))
+        .filter(|(_, voxel)| *voxel == GRAIN)
         .map(|(position, _)| position)
         .collect();
 

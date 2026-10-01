@@ -158,7 +158,7 @@ fn raycast(world: &World, ray: Ray) -> Option<VoxelHit> {
     let mut entry_t = 0.0;
 
     loop {
-        let material = world.get_voxel(&current).copied();
+        let material = world.get_voxel(&current);
 
         if let Some(material) = material {
             let normal = entered.map_or_else(
@@ -170,7 +170,7 @@ fn raycast(world: &World, ray: Ray) -> Option<VoxelHit> {
                 voxel: current,
                 normal,
                 t: entry_t,
-                material: u8::try_from(material).unwrap_or(0),
+                material,
             });
         }
 

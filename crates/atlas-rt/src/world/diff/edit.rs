@@ -93,9 +93,7 @@ impl MicroChunkEdit {
             };
 
             let position = self.origin.saturating_add(cell_offset(index));
-            let current = world
-                .get_voxel(&position)
-                .and_then(|voxel| u8::try_from(*voxel).ok());
+            let current = world.get_voxel(&position);
 
             match (incoming, current) {
                 (Some(material), Some(existing)) if material == existing => {}
@@ -524,7 +522,7 @@ mod tests {
 
         assert_eq!(batch.snapshots, vec![cell(origin, 3)]);
         assert_eq!(batch.tracked, [origin].into_iter().collect());
-        assert_eq!(world.get_voxel(&origin), Some(&3));
+        assert_eq!(world.get_voxel(&origin), Some(3));
     }
 
     #[test]

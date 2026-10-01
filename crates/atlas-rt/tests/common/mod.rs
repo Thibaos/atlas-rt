@@ -154,16 +154,16 @@ pub fn run_tick(handle: &Handle) -> TickEnd {
     expect_tick(recv_push(handle))
 }
 
-pub fn held(handle: &Handle, position: IVec3) -> Option<u32> {
+pub fn held(handle: &Handle, position: IVec3) -> Option<u8> {
     let guard = handle.world().read().unwrap();
 
-    guard.get_voxel(&position).copied()
+    guard.get_voxel(&position)
 }
 
 /// The hash of the held World's cells in coordinate order.
 pub fn world_hash(handle: &Handle) -> u64 {
     let guard = handle.world().read().unwrap();
-    let mut cells: Vec<(IVec3, u32)> = guard.iter_voxels().map(|(p, v)| (p, *v)).collect();
+    let mut cells: Vec<(IVec3, u8)> = guard.iter_voxels().collect();
 
     cells.sort_unstable_by_key(|(position, _)| position.to_array());
 
