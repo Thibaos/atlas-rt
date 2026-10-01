@@ -22,6 +22,16 @@ pub fn in_lattice(global: IVec3) -> bool {
     global.cmpge(half.saturating_mul(IVec3::splat(-1))).all() && global.cmplt(half).all()
 }
 
+/// # Panics
+///
+/// Panics if `global` is outside the lattice.
+pub(crate) fn assert_in_lattice(global: IVec3) {
+    assert!(
+        in_lattice(global),
+        "voxel {global} outside the ±{LATTICE_HALF_EXTENT} lattice"
+    );
+}
+
 #[must_use]
 pub fn region_index_in_lattice(region_index: IVec3) -> bool {
     let half = IVec3::splat(REGION_HALF_EXTENT.cast_signed());

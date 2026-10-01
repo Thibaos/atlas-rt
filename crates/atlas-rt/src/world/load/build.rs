@@ -8,7 +8,10 @@ use rayon::prelude::*;
 use rustc_hash::FxBuildHasher;
 
 use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
-use crate::world::{BoundsPolicy, SHARD_COUNT, VoxelMap, World, fold, grid, shard_index};
+use crate::world::{
+    BoundsPolicy, World, grid,
+    store::sharded::{SHARD_COUNT, ShardedMap, VoxelMap, fold, shard_index},
+};
 
 const BUILD_CHUNK: usize = 8_192;
 
@@ -54,21 +57,25 @@ pub(in crate::world) fn load(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (
         }
     }
 
-    clipped = clipped.saturating_add(build(&mut world, &placements, live, policy));
+    if placements.is_empty() || live == 0 {
+        return (world, clipped);
+    }
 
-    (world, clipped)
+    let (shards, build_clipped) = build(&placements, live, policy);
+
+    clipped = clipped.saturating_add(build_clipped);
+
+    (
+        World::from_store(Box::new(ShardedMap::from_shards(shards))),
+        clipped,
+    )
 }
 
 fn build(
-    world: &mut World,
     placements: &[(VoxelPlacement, &[Voxel])],
     live: usize,
     policy: BoundsPolicy,
-) -> usize {
-    if live == 0 {
-        return 0;
-    }
-
+) -> ([VoxelMap; SHARD_COUNT], usize) {
     let per_shard = live / SHARD_COUNT;
     let staged: Vec<Mutex<StagedMap>> = (0..SHARD_COUNT)
         .map(|_| {
@@ -102,11 +109,11 @@ fn build(
 
     let loaded: Vec<VoxelMap> = staged.into_par_iter().map(unstage_shard).collect();
 
-    for (map, staged_map) in world.shards.iter_mut().zip(loaded) {
-        *map = staged_map;
-    }
+    let shards = loaded
+        .try_into()
+        .unwrap_or_else(|_| panic!("staging produced a shard count other than {SHARD_COUNT}"));
 
-    clipped
+    (shards, clipped)
 }
 
 fn stage_chunk(
@@ -133,7 +140,7 @@ fn stage_chunk(
             }
         } else {
             match policy {
-                BoundsPolicy::Panic => World::assert_in_lattice(&position),
+                BoundsPolicy::Panic => grid::assert_in_lattice(position),
                 BoundsPolicy::Clip => clipped = clipped.saturating_add(1),
             }
         }

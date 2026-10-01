@@ -4,67 +4,23 @@ pub mod load;
 pub mod material;
 pub mod palette;
 pub mod raycast;
+pub(crate) mod store;
 pub mod vox;
 
 #[cfg(test)]
 mod bench;
 
-use std::{collections::HashMap, fmt::Display};
+use std::fmt::Display;
 
 use dot_vox::DotVoxData;
 use glam::IVec3;
-use rustc_hash::FxBuildHasher;
+
+use store::{ShardedMap, VoxelStore};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
     Panic,
     Clip,
-}
-
-const SHARD_COUNT: usize = 64;
-const SHARD_ROUTE_SHIFT: u32 = 64 - SHARD_COUNT.trailing_zeros();
-
-const LATTICE_BIAS: i32 = grid::LATTICE_HALF_EXTENT.cast_signed();
-const FOLD_FIELD_BITS: u32 = grid::LATTICE_HALF_EXTENT.trailing_zeros() + 1;
-const FOLD_FIELD_MASK: u64 = (1u64 << FOLD_FIELD_BITS) - 1;
-
-type VoxelMap = HashMap<u64, u8, FxBuildHasher>;
-
-#[derive(Debug)]
-pub struct World {
-    shards: [VoxelMap; SHARD_COUNT],
-}
-
-impl Default for World {
-    fn default() -> Self {
-        Self {
-            shards: std::array::from_fn(|_| HashMap::default()),
-        }
-    }
-}
-
-// Bijective 36-bit fold: three biased 12-bit axis fields, x high.
-fn fold(position: IVec3) -> u64 {
-    let biased = position.wrapping_add(IVec3::splat(LATTICE_BIAS)).as_uvec3();
-
-    (u64::from(biased.x) << (2 * FOLD_FIELD_BITS))
-        | (u64::from(biased.y) << FOLD_FIELD_BITS)
-        | u64::from(biased.z)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn unfold(key: u64) -> IVec3 {
-    let axis = |field: u64| (field as i32).wrapping_sub(LATTICE_BIAS);
-
-    IVec3::new(
-        axis((key >> (2 * FOLD_FIELD_BITS)) & FOLD_FIELD_MASK),
-        axis((key >> FOLD_FIELD_BITS) & FOLD_FIELD_MASK),
-        axis(key & FOLD_FIELD_MASK),
-    )
-}
-
-const fn shard_index(key: u64) -> usize {
-    (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> SHARD_ROUTE_SHIFT) as usize
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -74,37 +30,24 @@ pub enum InsertResult {
     Existing,
 }
 
+#[derive(Debug)]
+pub struct World {
+    store: Box<dyn VoxelStore>,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self::from_store(Box::new(ShardedMap::default()))
+    }
+}
+
 impl World {
-    fn assert_in_lattice(position: &IVec3) {
-        assert!(
-            grid::in_lattice(*position),
-            "voxel {position} outside the ±{} lattice",
-            grid::LATTICE_HALF_EXTENT
-        );
-    }
-
-    fn shard(&self, position: IVec3) -> &VoxelMap {
-        let index = shard_index(fold(position));
-
-        self.shards
-            .get(index)
-            .unwrap_or_else(|| panic!("shard {index} out of the {SHARD_COUNT} shards"))
-    }
-
-    fn shard_mut(&mut self, position: IVec3) -> &mut VoxelMap {
-        let index = shard_index(fold(position));
-
-        self.shards
-            .get_mut(index)
-            .unwrap_or_else(|| panic!("shard {index} out of the {SHARD_COUNT} shards"))
+    pub(crate) fn from_store(store: Box<dyn VoxelStore>) -> Self {
+        Self { store }
     }
 
     fn reserve(&mut self, additional: usize) {
-        let per_shard = additional / SHARD_COUNT;
-
-        for map in &mut self.shards {
-            map.reserve(per_shard);
-        }
+        self.store.reserve(additional);
     }
 
     pub(crate) fn insert(
@@ -113,20 +56,7 @@ impl World {
         voxel: u32,
         policy: BoundsPolicy,
     ) -> InsertResult {
-        if !grid::in_lattice(position) {
-            match policy {
-                BoundsPolicy::Panic => Self::assert_in_lattice(&position),
-                BoundsPolicy::Clip => return InsertResult::Clipped,
-            }
-        }
-
-        let material = u8::try_from(voxel)
-            .unwrap_or_else(|_| panic!("material index {voxel} does not fit a byte"));
-
-        match self.shard_mut(position).insert(fold(position), material) {
-            Some(_) => InsertResult::Existing,
-            None => InsertResult::Ok,
-        }
+        self.store.insert(position, voxel, policy)
     }
 
     #[must_use]
@@ -143,24 +73,24 @@ impl World {
 
     #[must_use]
     pub fn contains(&self, position: &IVec3) -> bool {
-        Self::assert_in_lattice(position);
-        self.shard(*position).contains_key(&fold(*position))
+        grid::assert_in_lattice(*position);
+        self.store.contains(*position)
     }
 
     #[must_use]
     pub fn get_voxel(&self, position: &IVec3) -> Option<u8> {
-        Self::assert_in_lattice(position);
-        self.shard(*position).get(&fold(*position)).copied()
+        grid::assert_in_lattice(*position);
+        self.store.get(*position)
     }
 
     pub(crate) fn set_voxel(&mut self, position: IVec3, material: u8) {
-        Self::assert_in_lattice(&position);
-        self.shard_mut(position).insert(fold(position), material);
+        grid::assert_in_lattice(position);
+        self.store.set(position, material);
     }
 
     pub(crate) fn clear_voxel(&mut self, position: IVec3) {
-        Self::assert_in_lattice(&position);
-        self.shard_mut(position).remove(&fold(position));
+        grid::assert_in_lattice(position);
+        self.store.clear(position);
     }
 
     #[must_use]
@@ -169,31 +99,22 @@ impl World {
     }
 
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, u8)> + '_ {
-        self.shards
-            .iter()
-            .flat_map(|map| map.iter().map(|(key, voxel)| (unfold(*key), *voxel)))
+        self.store.iter()
     }
 
     #[must_use]
     pub fn voxel_bounds(&self) -> Option<(IVec3, IVec3)> {
-        let mut min: Option<IVec3> = None;
-        let mut max: Option<IVec3> = None;
-
-        for (position, _) in self.iter_voxels() {
-            min = Some(min.map_or(position, |m| m.min(position)));
-            max = Some(max.map_or(position, |m| m.max(position)));
-        }
-
-        min.zip(max)
+        self.store.bounds()
     }
 
+    #[must_use]
     pub fn voxel_count(&self) -> usize {
-        self.shards.iter().map(HashMap::len).sum()
+        self.store.count()
     }
 
     #[cfg(test)]
     pub(crate) fn reserved_capacity(&self) -> usize {
-        self.shards.iter().map(HashMap::capacity).sum()
+        self.store.reserved_capacity()
     }
 }
 
@@ -274,26 +195,6 @@ mod test_support;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn fold_round_trips_lattice_extremes() {
-        for position in [
-            IVec3::new(-2048, -2048, -2048),
-            IVec3::new(2047, 2047, 2047),
-            IVec3::new(-2048, 2047, 0),
-            IVec3::new(0, -2048, 2047),
-            IVec3::new(123, -456, 789),
-            IVec3::ZERO,
-        ] {
-            assert!(grid::in_lattice(position));
-            assert_eq!(unfold(fold(position)), position);
-        }
-
-        assert_ne!(
-            fold(IVec3::new(-2048, -2048, -2048)),
-            fold(IVec3::new(-2048, -2048, -2047))
-        );
-    }
 
     #[test]
     fn insert_and_contains() {
