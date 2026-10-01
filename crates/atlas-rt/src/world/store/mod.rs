@@ -10,12 +10,10 @@ pub use sharded::ShardedMap;
 
 /// The World's voxel storage.
 ///
-/// Positions are in-lattice; the World resolves `BoundsPolicy` before storage
-/// sees a position. The one exception is `insert`, which owns the policy
-/// resolution because it is the only operation that reports `Clipped`.
+/// Positions are in-lattice. `insert` is the one operation that resolves the
+/// `BoundsPolicy`, because it is the one that reports `Clipped`; the World
+/// checks the lattice for every other operation.
 pub trait VoxelStore: Debug + Send + Sync {
-    /// Writes `material` at `position`, reporting whether the cell already
-    /// held one.
     fn set(&mut self, position: IVec3, material: u8) -> bool;
 
     #[must_use]
@@ -52,8 +50,8 @@ pub trait VoxelStore: Debug + Send + Sync {
     #[cfg(test)]
     fn reserved_capacity(&self) -> usize;
 
-    /// The World's `insert`: resolves the `BoundsPolicy` and narrows the
-    /// material, then writes through. A clipped position never reaches storage.
+    /// The World's `insert`: the `BoundsPolicy` is resolved and the material
+    /// narrowed before the write. A clipped position never reaches storage.
     ///
     /// # Panics
     ///

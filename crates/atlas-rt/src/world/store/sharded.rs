@@ -14,8 +14,7 @@ const FOLD_FIELD_MASK: u64 = (1u64 << FOLD_FIELD_BITS) - 1;
 
 pub type VoxelMap = HashMap<u64, u8, FxBuildHasher>;
 
-/// The World's original storage: one hash map per shard, routed by the fold
-/// key's high bits.
+/// One hash map per shard, routed by the top bits of the fold key.
 #[derive(Debug)]
 pub struct ShardedMap {
     shards: [VoxelMap; SHARD_COUNT],
