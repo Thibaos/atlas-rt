@@ -1,3 +1,23 @@
+//! Timings and regression budgets for the World's load and edit paths.
+//!
+//! `load_pipeline_timings`, release, Windows, 2026-10-02:
+//!
+//! | stage          | church 14.3M vox | bistro 98.6M vox |
+//! | -------------- | ---------------- | ---------------- |
+//! | parse           | 96.7 ms          | 1.349 s          |
+//! | world_new       | 143.6 ms         | 894.6 ms         |
+//! | emit_snapshots  | 578.5 ms         | 4.295 s          |
+//! | pack            | 6.4 ms           | 69.9 ms          |
+//!
+//! `load_stage_weights` over castle, sponza, nuke, and bistro, same store:
+//! mean shares of read 2.1%, parse 10.8%, build 21.3%, emit 65.8%. That gives
+//! the cumulative endpoints `world::load::progress` uses: 21_000, 129_000,
+//! 342_000.
+//!
+//! The budgets below are these figures with headroom for run-to-run variance.
+//! Emission dominates, and its per-voxel record reserve, `total / 256` per
+//! bucket and 8 bytes per voxel overall, is the largest remaining CPU cost.
+
 mod load_bench {
     use std::time::{Duration, Instant};
 
@@ -28,30 +48,30 @@ mod load_bench {
 
     const WORLD_NEW: StageModel = StageModel {
         floor: ms(10),
-        per_voxel: ns(70),
-        per_micro_chunk: ns(200),
+        per_voxel: ns(15),
+        per_micro_chunk: ns(50),
         per_byte: ns(0),
     };
 
     const EMIT_SNAPSHOTS: StageModel = StageModel {
         floor: ms(10),
-        per_voxel: ns(75),
-        per_micro_chunk: ns(50),
+        per_voxel: ns(60),
+        per_micro_chunk: ns(200),
         per_byte: ns(0),
     };
 
     const PACK: StageModel = StageModel {
-        floor: ms(10),
+        floor: ms(2),
         per_voxel: ns(0),
-        per_micro_chunk: ns(500),
+        per_micro_chunk: ns(60),
         per_byte: ns(0),
     };
 
     const PARSE: StageModel = StageModel {
-        floor: ms(50),
+        floor: ms(25),
         per_voxel: ns(0),
         per_micro_chunk: ns(0),
-        per_byte: ns(4),
+        per_byte: ns(3),
     };
 
     const fn ns(count: u64) -> Duration {
@@ -204,6 +224,25 @@ mod load_bench {
         println!("emit_snapshots  {emit:10.3?}");
         println!("pack            {pack:10.3?}");
         println!("total           {total:10.3?}");
+
+        let stages = [
+            ("parse", parse),
+            ("world_new", world_new),
+            ("emit_snapshots", emit),
+            ("pack", pack),
+        ];
+        let dominant = stages
+            .iter()
+            .copied()
+            .max_by_key(|&(_, elapsed)| elapsed);
+
+        if let Some((stage, elapsed)) = dominant {
+            let share = elapsed.as_nanos().saturating_mul(100) / total.as_nanos().max(1);
+
+            println!("dominant        {stage} {share}%");
+        }
+
+        println!("reserve         emission's per-voxel record is the largest remaining CPU cost");
 
         let stage_budgets = [
             WORLD_NEW.budget(voxels, micro_chunks, 0),
@@ -385,6 +424,12 @@ mod edit_bench {
         nanos as f64 / count.max(1) as f64
     }
 
+    /// Mutation and compile cost of a Voxel edit batch on the Region store,
+    /// split by placement and batch size. Re-measured 2026-10-02, the compile
+    /// alone is about 11 µs per touched Micro-chunk for clustered and scattered
+    /// edits alike, close to the ~10 µs ADR 0009 recorded for the 512-probe map
+    /// compile. The probes are gone; the per-chunk snapshot allocation and
+    /// Material copy cost about the same.
     #[test]
     #[ignore = "bench: cargo test --release edit_path_timings -- --ignored --nocapture"]
     fn edit_path_timings() {

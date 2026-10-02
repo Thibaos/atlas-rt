@@ -9,13 +9,15 @@ const SCALE: u32 = 1_000_000;
 pub(crate) const VOXEL_STEP: usize = 65_536;
 
 /// Cumulative stage endpoints in millionths, based on mean timings across the
-/// example project's four worlds. Measured with
+/// example project's four worlds (castle, sponza, nuke, bistro), re-measured on
+/// the Region store: read 2.1%, parse +10.8%, build +21.3% of the total. Emit
+/// covers all work after build and now dominates at about 66%. Measured with
 /// `cargo test --release -p atlas-rt --lib load_stage_weights -- --ignored
-/// --nocapture`. Emit covers all work after build. Revisit when the loader changes.
+/// --nocapture`. Revisit when the loader changes.
 const STAGES: [(u32, u8, &str); 3] = [
-    (62_000, 1, "read"),
-    (226_000, 2, "parse"),
-    (489_000, 3, "build"),
+    (21_000, 1, "read"),
+    (129_000, 2, "parse"),
+    (342_000, 3, "build"),
 ];
 
 /// Emit's progress limit. Full progress requires a frame that includes the batch.
