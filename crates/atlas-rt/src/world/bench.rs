@@ -24,21 +24,37 @@
 //! minimum of eight passes taken. The probe reads all 512 cells of a touched
 //! Micro-chunk through `world.get_voxel`; the entry copy reads the Region store's
 //! 64-byte mask and compacted materials in one pass. The entry copy is installed,
-//! so `edit_world` uses it:
+//! so `edit_world` uses it. Ticket 15 took the rank scan off `get_voxel`, which
+//! halved the probe from about 10.5 to about 5.5 µs; the entry copy is unchanged
+//! at about 100 ns:
 //!
-//! | placement | edits | chunks | probe ns/chunk | entry ns/chunk |
-//! | --------- | ----- | ------ | -------------- | -------------- |
-//! | clustered |  1,000 |   447 | 10,456 |  96 |
-//! | scattered |  1,000 |   894 | 10,477 | 104 |
-//! | clustered | 10,000 |   512 | 10,465 |  98 |
-//! | scattered | 10,000 | 3,717 | 10,573 | 110 |
-//! | clustered |100,000 |   512 | 10,514 |  98 |
-//! | scattered |100,000 | 4,096 | 10,681 | 103 |
+//! | placement | edits     | chunks | probe ns/chunk | entry ns/chunk |
+//! | --------- | --------- | ------ | -------------- | -------------- |
+//! | clustered |     1,000 |   447 | 5,479 | 100 |
+//! | scattered |     1,000 |   894 | 5,487 | 104 |
+//! | clustered |    10,000 |   512 | 5,484 |  99 |
+//! | scattered |    10,000 | 3,717 | 5,492 | 105 |
+//! | clustered |   100,000 |   512 | 5,462 | 100 |
+//! | scattered |   100,000 | 4,096 | 5,488 | 111 |
+//! | clustered | 1,000,000 |   512 | 5,461 | 100 |
+//! | scattered | 1,000,000 | 4,096 | 5,485 | 110 |
 //!
-//! The entry copy runs at about 100 ns per touched Micro-chunk against the
-//! probe's 10.5 µs, a factor of about 100, and lifts the probe-bound ceiling on
-//! ADR 0009's reopen trigger. The probe column matches ADR 0009's ~10 µs figure;
-//! the older 11 to 17 µs `mut+compile` figures included mutation and assembly.
+//! The test also prints the whole `edit_world` call against a 60 Hz frame
+//! (16.667 ms). A million-edit batch is the first to exceed it; every smaller
+//! batch fits, and even the 100,000-edit batches stay under a fifth of the
+//! frame:
+//!
+//! | placement | 1,000  | 10,000  | 100,000  | 1,000,000 |
+//! | --------- | ------ | ------- | -------- | --------- |
+//! | clustered | 135 µs | 303 µs  | 1.911 ms | 18.049 ms |
+//! | scattered | 263 µs | 1.210 ms | 2.975 ms | 20.326 ms |
+//!
+//! The batch is pre-applied to the world before `edit_world` is timed, so every
+//! edit here overwrites an already-occupied cell in a dense Region. First writes
+//! into empty Micro-chunks, clears, growth between size classes, a non-empty
+//! tracked set, and the budget projection are all outside these figures, and so
+//! is the renderer's per-Region rebuild after the batch. The older 11 to 17 µs
+//! figures included mutation and assembly.
 //!
 //! `rank_read_path_timings`, release, 2026-10-02, same host. `rank` scanned the
 //! mask from byte 0 on every random read and on every voxel `iter_voxels`
@@ -365,7 +381,8 @@ mod edit_bench {
         test_support::Rng,
     };
 
-    const BATCH_SIZES: [usize; 3] = [1_000, 10_000, 100_000];
+    const BATCH_SIZES: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
+    const FRAME_BUDGET: Duration = Duration::from_micros(16_667);
     const DENSE_EDGE: i32 = 64;
     const SEED: u64 = 0x00ED_1704;
     const WORLD_MATERIAL: u8 = 1;
@@ -523,6 +540,13 @@ mod edit_bench {
     /// reads all 512 cells through `world.get_voxel`, and `compile_chunk` reads
     /// the Region store's 64-byte mask and compacted materials in one pass. The
     /// entry-copy compile is installed, so `mut+compile` uses it too.
+    ///
+    /// `frame` is `mut+compile` against a 60 Hz frame. The 1,000,000 rows are
+    /// the point that exceeds it; every smaller batch fits. The batch is
+    /// pre-applied before `edit_world` is timed, so the edits overwrite occupied
+    /// cells on the dense fixture with an empty tracked set and no budget
+    /// projection. A first write into an empty Micro-chunk, a clear, and a
+    /// non-empty tracked set are all dearer and are not measured here.
     #[test]
     #[ignore = "bench: cargo test --release edit_path_timings -- --ignored --nocapture"]
     fn edit_path_timings() {
@@ -533,9 +557,10 @@ mod edit_bench {
         println!("regions         {}", origins.len());
         println!("dense edge      {DENSE_EDGE}");
         println!("voxels          {}", world.voxel_count());
+        println!("frame budget    {:.3?} (60 Hz)", FRAME_BUDGET);
         println!();
         println!(
-            "{:<9} {:>7} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9} {:>11} {:>9}",
+            "{:<9} {:>7} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9} {:>11} {:>9} {:>8}",
             "placement",
             "edits",
             "chunks",
@@ -545,7 +570,8 @@ mod edit_bench {
             "ns/edit",
             "ns/chunk",
             "probe",
-            "entry"
+            "entry",
+            "frame %"
         );
 
         let first = origins.first().copied().unwrap_or(IVec3::ZERO);
@@ -616,9 +642,10 @@ mod edit_bench {
                 let chunk_per = per_unit(full.as_nanos(), chunks);
                 let probe_per = per_unit(probe.as_nanos(), chunks);
                 let copy_per = per_unit(copy.as_nanos(), chunks);
+                let frame_per = full.as_secs_f64() / FRAME_BUDGET.as_secs_f64() * 100.0;
 
                 println!(
-                    "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0}"
+                    "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0} {frame_per:>7.0}%"
                 );
             }
         }
