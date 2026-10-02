@@ -1,5 +1,5 @@
 pub mod region;
-#[cfg(test)]
+#[cfg(feature = "map-oracle")]
 pub mod sharded;
 
 use std::fmt::Debug;
@@ -9,7 +9,7 @@ use glam::IVec3;
 use crate::world::{BoundsPolicy, InsertResult, grid};
 
 pub use region::RegionStore;
-#[cfg(test)]
+#[cfg(feature = "map-oracle")]
 pub use sharded::ShardedMap;
 
 /// The World's voxel storage.

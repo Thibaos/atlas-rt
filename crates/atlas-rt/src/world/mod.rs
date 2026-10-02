@@ -17,6 +17,9 @@ use glam::IVec3;
 
 use store::{RegionStore, VoxelStore};
 
+#[cfg(feature = "map-oracle")]
+use store::ShardedMap;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum BoundsPolicy {
     Panic,
@@ -30,6 +33,15 @@ pub enum InsertResult {
     Existing,
 }
 
+/// Which storage backs a [`World`]: the resident Region store, or the sharded
+/// map oracle the `map-oracle` feature compiles for the differential tests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StoreKind {
+    Region,
+    #[cfg(feature = "map-oracle")]
+    Map,
+}
+
 #[derive(Debug)]
 pub struct World {
     store: Box<dyn VoxelStore>,
@@ -37,11 +49,23 @@ pub struct World {
 
 impl Default for World {
     fn default() -> Self {
-        Self::from_store(Box::new(RegionStore::default()))
+        Self::empty(StoreKind::Region)
     }
 }
 
 impl World {
+    fn build_store(kind: StoreKind) -> Box<dyn VoxelStore> {
+        match kind {
+            StoreKind::Region => Box::new(RegionStore::default()),
+            #[cfg(feature = "map-oracle")]
+            StoreKind::Map => Box::new(ShardedMap::default()),
+        }
+    }
+
+    pub(crate) fn empty(kind: StoreKind) -> Self {
+        Self::from_store(Self::build_store(kind))
+    }
+
     pub(crate) fn from_store(store: Box<dyn VoxelStore>) -> Self {
         Self { store }
     }
@@ -57,14 +81,24 @@ impl World {
 
     #[must_use]
     pub fn new(voxel_data: &DotVoxData) -> Self {
-        let (world, clipped) = load::build::load(voxel_data, BoundsPolicy::Panic);
+        Self::new_with_store(voxel_data, StoreKind::Region)
+    }
+
+    #[must_use]
+    pub fn new_clipped(voxel_data: &DotVoxData) -> (Self, usize) {
+        Self::new_clipped_with_store(voxel_data, StoreKind::Region)
+    }
+
+    #[must_use]
+    pub fn new_with_store(voxel_data: &DotVoxData, store: StoreKind) -> Self {
+        let (world, clipped) = load::build::load(voxel_data, BoundsPolicy::Panic, store);
         debug_assert_eq!(clipped, 0);
         world
     }
 
     #[must_use]
-    pub fn new_clipped(voxel_data: &DotVoxData) -> (Self, usize) {
-        load::build::load(voxel_data, BoundsPolicy::Clip)
+    pub fn new_clipped_with_store(voxel_data: &DotVoxData, store: StoreKind) -> (Self, usize) {
+        load::build::load(voxel_data, BoundsPolicy::Clip, store)
     }
 
     #[must_use]
@@ -278,5 +312,84 @@ mod tests {
         assert_eq!(world.voxel_count(), 2);
         assert!(world.contains(&IVec3::new(-1, -1, 0)));
         assert!(world.contains(&IVec3::new(-1, -1, 1)));
+    }
+
+    #[cfg(feature = "map-oracle")]
+    #[test]
+    fn stores_agree_on_a_loaded_world() {
+        let data = scene_fixture(&[
+            ModelSpec {
+                size: (4, 4, 4),
+                voxels: vec![
+                    dot_vox::Voxel {
+                        x: 0,
+                        y: 0,
+                        z: 0,
+                        i: 3,
+                    },
+                    dot_vox::Voxel {
+                        x: 3,
+                        y: 2,
+                        z: 1,
+                        i: 0,
+                    },
+                    dot_vox::Voxel {
+                        x: 1,
+                        y: 1,
+                        z: 1,
+                        i: 9,
+                    },
+                ],
+                rotation: 0b000_0100,
+                translation: [16, -16, 8],
+            },
+            ModelSpec {
+                size: (2, 2, 2),
+                voxels: vec![dot_vox::Voxel {
+                    x: 1,
+                    y: 1,
+                    z: 1,
+                    i: 5,
+                }],
+                rotation: 0b0001,
+                translation: [3000, 0, 0],
+            },
+        ]);
+
+        let (region, region_clipped) = World::new_clipped_with_store(&data, StoreKind::Region);
+        let (map, map_clipped) = World::new_clipped_with_store(&data, StoreKind::Map);
+
+        assert_eq!(region_clipped, map_clipped, "clipped counts");
+        test_support::assert_worlds_agree(&region, &map);
+    }
+
+    #[cfg(feature = "map-oracle")]
+    #[test]
+    fn randomized_edits_agree_across_stores() {
+        use test_support::{Rng, u8_below};
+
+        let mut rng = Rng::new(0x0505_A0A0);
+        let mut region = World::empty(StoreKind::Region);
+        let mut map = World::empty(StoreKind::Map);
+
+        for _ in 0..2_000 {
+            let position = IVec3::new(
+                i32::try_from(rng.below(512)).unwrap_or(0).wrapping_sub(256),
+                i32::try_from(rng.below(512)).unwrap_or(0).wrapping_sub(256),
+                i32::try_from(rng.below(512)).unwrap_or(0).wrapping_sub(256),
+            );
+
+            if rng.below(4) == 0 {
+                region.clear_voxel(position);
+                map.clear_voxel(position);
+            } else {
+                let material = u8_below(&mut rng, 256);
+
+                region.set_voxel(position, material);
+                map.set_voxel(position, material);
+            }
+        }
+
+        test_support::assert_worlds_agree(&region, &map);
     }
 }

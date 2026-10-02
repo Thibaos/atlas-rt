@@ -3,18 +3,22 @@ use glam::IVec3;
 
 use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
 use crate::world::{
-    BoundsPolicy, World, grid,
+    BoundsPolicy, StoreKind, World, grid,
     store::region::{micro_chunk_key, region_slot},
 };
 
-/// Places every model's voxels into a serial Region store.
+/// Places every model's voxels into a serial store of the requested kind.
 ///
 /// The scene-graph path stages each Region's voxels before writing them in
 /// Micro-chunk ordinal and cell order, so each Micro-chunk is filled before
 /// the next and its entry grows in place. A later placement at a shared cell
 /// overwrites an earlier one because the stable stage keeps the scene order.
-pub(in crate::world) fn load(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (World, usize) {
-    let mut world = World::default();
+pub(in crate::world) fn load(
+    voxel_data: &DotVoxData,
+    policy: BoundsPolicy,
+    store: StoreKind,
+) -> (World, usize) {
+    let mut world = World::empty(store);
     let clipped = load_into(&mut world, voxel_data, policy);
 
     (world, clipped)

@@ -589,11 +589,13 @@ impl VoxelStore for RegionStore {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::world::{
-        BoundsPolicy, World,
-        store::ShardedMap,
-        test_support::{Rng, u8_below},
-    };
+    use crate::world::test_support::{Rng, u8_below};
+
+    #[cfg(feature = "map-oracle")]
+    use crate::world::{StoreKind, World};
+
+    #[cfg(feature = "map-oracle")]
+    use crate::world::store::ShardedMap;
 
     use super::*;
 
@@ -615,6 +617,7 @@ mod tests {
         IVec3::new(axis(), axis(), axis())
     }
 
+    #[cfg(feature = "map-oracle")]
     fn clustered_position(rng: &mut Rng) -> IVec3 {
         let chunk = IVec3::new(
             i32::try_from(rng.below(3)).unwrap_or(0).wrapping_sub(1),
@@ -630,6 +633,7 @@ mod tests {
         chunk.saturating_mul(IVec3::splat(8)).saturating_add(cell)
     }
 
+    #[cfg(feature = "map-oracle")]
     fn assert_agrees(region: &RegionStore, map: &ShardedMap) {
         assert_eq!(region.count(), map.count(), "voxel count");
         assert_eq!(region.bounds(), map.bounds(), "bounds");
@@ -664,6 +668,7 @@ mod tests {
         assert!(!store.contains(position));
     }
 
+    #[cfg(feature = "map-oracle")]
     #[test]
     fn randomized_writes_and_clears_match_the_map() {
         let mut rng = Rng::new(0x0303_0303);
@@ -693,6 +698,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "map-oracle")]
     #[test]
     fn clustered_random_edits_exercise_growth_and_reuse() {
         let mut rng = Rng::new(0x0404_0404);
@@ -987,40 +993,24 @@ mod tests {
         assert_eq!(store.count(), content(&store).len());
     }
 
-    fn assert_worlds_agree(region: &World, map: &World) {
-        assert_eq!(region.voxel_count(), map.voxel_count());
-        assert_eq!(region.voxel_bounds(), map.voxel_bounds());
-
-        let region_content: HashMap<IVec3, u8> = region.iter_voxels().collect();
-        let map_content: HashMap<IVec3, u8> = map.iter_voxels().collect();
-
-        assert_eq!(region_content, map_content);
-
-        for (position, material) in &region_content {
-            assert_eq!(region.get_voxel(position), Some(*material));
-            assert_eq!(map.get_voxel(position), Some(*material));
-            assert!(region.contains(position));
-            assert!(map.contains(position));
-        }
-    }
-
+    #[cfg(feature = "map-oracle")]
     fn asset_answers_match_the_map(path: &str) {
         let data = dot_vox::load(path).unwrap();
-        let (region, region_clipped) = World::new_clipped(&data);
-
-        let mut map = World::from_store(Box::new(ShardedMap::default()));
-        let map_clipped = crate::world::load::build::load_into(&mut map, &data, BoundsPolicy::Clip);
+        let (region, region_clipped) = World::new_clipped_with_store(&data, StoreKind::Region);
+        let (map, map_clipped) = World::new_clipped_with_store(&data, StoreKind::Map);
 
         assert_eq!(region_clipped, map_clipped, "clipped counts diverge");
-        assert_worlds_agree(&region, &map);
+        crate::world::test_support::assert_worlds_agree(&region, &map);
     }
 
+    #[cfg(feature = "map-oracle")]
     #[test]
     #[ignore = "asset: cargo test --release church_answers_match_the_map -- --ignored --nocapture"]
     fn church_answers_match_the_map() {
         asset_answers_match_the_map("assets/church.vox");
     }
 
+    #[cfg(feature = "map-oracle")]
     #[test]
     #[ignore = "asset: cargo test --release bistro_answers_match_the_map -- --ignored --nocapture"]
     fn bistro_answers_match_the_map() {

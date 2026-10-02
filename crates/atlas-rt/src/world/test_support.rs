@@ -58,6 +58,26 @@ pub(super) fn expect_error<T, E>(result: Result<T, E>, message: &str) -> E {
     }
 }
 
+/// Asserts two Worlds hold the same content, count, and bounds, whatever store
+/// backs each.
+#[cfg(feature = "map-oracle")]
+pub(crate) fn assert_worlds_agree(region: &World, map: &World) {
+    assert_eq!(region.voxel_count(), map.voxel_count(), "voxel count");
+    assert_eq!(region.voxel_bounds(), map.voxel_bounds(), "bounds");
+
+    let region_content: HashMap<IVec3, u8> = region.iter_voxels().collect();
+    let map_content: HashMap<IVec3, u8> = map.iter_voxels().collect();
+
+    assert_eq!(region_content, map_content, "content");
+
+    for (position, material) in &region_content {
+        assert_eq!(region.get_voxel(position), Some(*material));
+        assert_eq!(map.get_voxel(position), Some(*material));
+        assert!(region.contains(position));
+        assert!(map.contains(position));
+    }
+}
+
 fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
     let mut axis = || {
         if rng.below(8) == 0 {
