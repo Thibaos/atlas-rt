@@ -76,7 +76,9 @@
 //! the 1M budget row. At 60 Hz that is about 200,000 projected edits against
 //! about 800,000 unprojected overwrites. The renderer's CPU pack is about 100 ns
 //! per touched Micro-chunk, 0.4 ms over the 4096 chunks, a small share of the
-//! edit cost on these dense workloads; the upload, BLAS, and TLAS need a device.
+//! edit cost on these dense workloads. The upload, BLAS, and TLAS are
+//! `render::region::bench`'s `gpu_rebuild_timings`: a one-Region update is about
+//! 1.3 ms of pack and 0.6 ms of apply on church's widest Region.
 //!
 //! `rank_read_path_timings`, release, 2026-10-02, same host. `rank` scanned the
 //! mask from byte 0 on every random read and on every voxel `iter_voxels`
