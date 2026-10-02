@@ -11,24 +11,140 @@ const MICRO_CHUNK_AREA: usize = MICRO_CHUNK * MICRO_CHUNK;
 const MICRO_CHUNK_CELLS: usize = MICRO_CHUNK * MICRO_CHUNK * MICRO_CHUNK;
 const MICRO_CHUNKS_PER_REGION: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
 const MASK_BYTES: usize = MICRO_CHUNK_CELLS / 8;
-const OFFSET_SENTINEL: u32 = u32::MAX;
 
-/// A live Region: one blob offset per Micro-chunk, plus the occupied
+/// Blocks are 8-byte aligned and sized to an 8-byte class, so each index entry
+/// carries both its offset and its class rather than needing a second table.
+/// The low 25 bits hold `offset / 8` (a 256 MiB Region blob) and the top 7 hold
+/// `class + 1`, leaving zero as the empty sentinel.
+const BLOCK_ALIGN: usize = 8;
+const CLASS_MIN: usize = 72;
+const CLASS_STEP: usize = 8;
+const CLASS_MAX: usize = 576;
+const CLASS_COUNT: usize = (CLASS_MAX - CLASS_MIN) / CLASS_STEP + 1;
+const OFFSET_BITS: u32 = 25;
+const OFFSET_MASK: u32 = (1u32 << OFFSET_BITS) - 1;
+const CLASS_SHIFT: u32 = OFFSET_BITS;
+const NO_BLOCK: u32 = u32::MAX;
+
+const EMPTY: u32 = 0;
+
+/// The smallest class that holds `size` bytes, from a one-material Micro-chunk
+/// up to a full 576-byte entry.
+const fn class_of_size(size: usize) -> usize {
+    size.saturating_sub(CLASS_MIN).div_ceil(CLASS_STEP)
+}
+
+const fn class_size(class: usize) -> usize {
+    CLASS_MIN.strict_add(class.strict_mul(CLASS_STEP))
+}
+
+fn encode(offset: usize, class: usize) -> u32 {
+    let scaled = u32::try_from(offset.strict_div(BLOCK_ALIGN))
+        .ok()
+        .filter(|value| *value <= OFFSET_MASK)
+        .unwrap_or_else(|| panic!("Region blob offset {offset} exceeds the index range"));
+
+    let field = u32::try_from(class.strict_add(1)).unwrap_or(u32::MAX);
+
+    field.wrapping_shl(CLASS_SHIFT) | scaled
+}
+
+fn entry_offset(entry: u32) -> Option<usize> {
+    if entry == EMPTY {
+        return None;
+    }
+
+    Some(
+        usize::try_from(entry & OFFSET_MASK)
+            .unwrap_or(0)
+            .strict_mul(BLOCK_ALIGN),
+    )
+}
+
+fn entry_class(entry: u32) -> usize {
+    let field = entry >> CLASS_SHIFT;
+
+    usize::try_from(field.saturating_sub(1)).unwrap_or(0)
+}
+
+/// A live Region: one packed offset and class per Micro-chunk, plus the occupied
 /// Micro-chunks concatenated. Each entry is a 64-byte Occupancy mask followed
 /// by the material indices of its occupied cells in ascending cell order.
+///
+/// The blob is never compacted. An emptied entry goes onto its size class's
+/// free list at its existing offset, and a later first write pops an exact-fit
+/// block from that list before appending.
 struct Region {
     index: Box<[u32]>,
     blob: Vec<u8>,
+    free: [u32; CLASS_COUNT],
     count: usize,
 }
 
 impl Region {
     fn new() -> Self {
         Self {
-            index: vec![OFFSET_SENTINEL; MICRO_CHUNKS_PER_REGION].into_boxed_slice(),
+            index: vec![EMPTY; MICRO_CHUNKS_PER_REGION].into_boxed_slice(),
             blob: Vec::new(),
+            free: [NO_BLOCK; CLASS_COUNT],
             count: 0,
         }
+    }
+}
+
+fn read_head(blob: &[u8], offset: usize) -> u32 {
+    let Some(bytes) = blob.get(offset..offset.strict_add(4)) else {
+        return NO_BLOCK;
+    };
+
+    let mut array = [0u8; 4];
+    array.copy_from_slice(bytes);
+
+    u32::from_le_bytes(array)
+}
+
+fn write_head(blob: &mut [u8], offset: usize, value: u32) {
+    if let Some(slot) = blob.get_mut(offset..offset.strict_add(4)) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+fn pop_block(region: &mut Region, class: usize) -> Option<usize> {
+    let head = region.free.get(class).copied().unwrap_or(NO_BLOCK);
+
+    if head == NO_BLOCK {
+        return None;
+    }
+
+    let offset = usize::try_from(head).unwrap_or(0);
+    let next = read_head(&region.blob, offset);
+
+    if let Some(slot) = region.free.get_mut(class) {
+        *slot = next;
+    }
+
+    Some(offset)
+}
+
+fn alloc_block(region: &mut Region, class: usize) -> usize {
+    if let Some(offset) = pop_block(region, class) {
+        return offset;
+    }
+
+    let offset = region.blob.len();
+
+    region.blob.resize(offset.strict_add(class_size(class)), 0);
+
+    offset
+}
+
+fn free_block(region: &mut Region, class: usize, offset: usize) {
+    let head = region.free.get(class).copied().unwrap_or(NO_BLOCK);
+
+    write_head(&mut region.blob, offset, head);
+
+    if let Some(slot) = region.free.get_mut(class) {
+        *slot = u32::try_from(offset).unwrap_or(NO_BLOCK);
     }
 }
 
@@ -63,8 +179,8 @@ pub(in crate::world) fn region_slot(position: IVec3) -> usize {
     grid::region_id(grid::region_index_of(position)) as usize
 }
 
-/// The sort key that makes a serial build append: Micro-chunk ordinal first,
-/// then ascending cell index inside the Micro-chunk.
+/// The sort key that keeps a serial build's Micro-chunk writes contiguous:
+/// Micro-chunk ordinal first, then ascending cell index inside the Micro-chunk.
 pub(in crate::world) fn micro_chunk_key(position: IVec3) -> (usize, usize) {
     (micro_chunk_ordinal(position), cell_index(position))
 }
@@ -122,23 +238,6 @@ fn rank(mask: &[u8], cell: usize) -> usize {
     below.saturating_add(own.count_ones() as usize)
 }
 
-/// Moves every offset at or past `from` by `delta`.
-fn shift_offsets(index: &mut [u32], from: usize, delta: isize) {
-    for entry in index {
-        if *entry == OFFSET_SENTINEL {
-            continue;
-        }
-
-        let offset = usize::try_from(*entry).unwrap_or(usize::MAX);
-
-        if offset >= from {
-            let moved = offset.wrapping_add_signed(delta);
-
-            *entry = u32::try_from(moved).unwrap_or(OFFSET_SENTINEL);
-        }
-    }
-}
-
 fn entry_mask(region: &Region, offset: usize) -> &[u8] {
     region
         .blob
@@ -146,57 +245,36 @@ fn entry_mask(region: &Region, offset: usize) -> &[u8] {
         .unwrap_or(&[])
 }
 
-fn append_entry(region: &mut Region, ordinal: usize, position: IVec3, material: u8) {
-    let (byte, bit) = mask_bit(position);
-    let mut mask = [0u8; MASK_BYTES];
+fn entry_popcount(region: &Region, offset: usize) -> usize {
+    entry_mask(region, offset)
+        .iter()
+        .map(|value| value.count_ones() as usize)
+        .sum()
+}
 
-    if let Some(slot) = mask.get_mut(byte) {
+/// Claims a block for a Micro-chunk's first write, from the 72-byte class's
+/// free list if it holds one, else by appending.
+fn write_new_entry(region: &mut Region, ordinal: usize, position: IVec3, material: u8) {
+    let class = class_of_size(MASK_BYTES.strict_add(1));
+    let offset = alloc_block(region, class);
+
+    if let Some(mask) = region.blob.get_mut(offset..offset.strict_add(MASK_BYTES)) {
+        mask.fill(0);
+    }
+
+    let (byte, bit) = mask_bit(position);
+
+    if let Some(slot) = region.blob.get_mut(offset.strict_add(byte)) {
         *slot = bit;
     }
 
-    let offset = region.blob.len();
+    if let Some(slot) = region.blob.get_mut(offset.strict_add(MASK_BYTES)) {
+        *slot = material;
+    }
 
     if let Some(slot) = region.index.get_mut(ordinal) {
-        *slot = u32::try_from(offset).unwrap_or(OFFSET_SENTINEL);
+        *slot = encode(offset, class);
     }
-
-    region.blob.extend_from_slice(&mask);
-    region.blob.push(material);
-}
-
-/// Inserts a material index at `at`, shifting only when the entry is not the
-/// blob's tail. A build that writes Micro-chunks in ordinal order always
-/// appends.
-fn insert_material(region: &mut Region, at: usize, material: u8) {
-    if at == region.blob.len() {
-        region.blob.push(material);
-    } else {
-        region.blob.insert(at, material);
-        shift_offsets(&mut region.index, at, 1);
-    }
-}
-
-fn remove_material(region: &mut Region, at: usize) {
-    if at.strict_add(1) == region.blob.len() {
-        region.blob.pop();
-    } else {
-        region.blob.remove(at);
-        shift_offsets(&mut region.index, at, -1);
-    }
-}
-
-/// Drops an emptied Micro-chunk's entry and shifts the blob tail left.
-fn remove_entry(region: &mut Region, ordinal: usize, offset: usize) {
-    if let Some(slot) = region.index.get_mut(ordinal) {
-        *slot = OFFSET_SENTINEL;
-    }
-
-    region.blob.drain(offset..offset.strict_add(MASK_BYTES));
-    shift_offsets(
-        &mut region.index,
-        offset,
-        0isize.wrapping_sub(isize::try_from(MASK_BYTES).unwrap_or(0)),
-    );
 }
 
 fn cell_position(slot: usize, ordinal: usize, cell: usize) -> IVec3 {
@@ -272,18 +350,16 @@ impl Iterator for Voxels<'_> {
                 continue;
             }
 
-            let offset = region
+            let entry = region
                 .index
                 .get(self.ordinal)
                 .copied()
-                .unwrap_or(OFFSET_SENTINEL);
+                .unwrap_or(EMPTY);
 
-            if offset == OFFSET_SENTINEL {
+            let Some(offset) = entry_offset(entry) else {
                 self.advance_micro_chunk();
                 continue;
-            }
-
-            let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+            };
 
             let Some(mask) = region.blob.get(offset..offset.strict_add(MASK_BYTES)) else {
                 self.advance_micro_chunk();
@@ -329,45 +405,70 @@ impl VoxelStore for RegionStore {
         };
 
         let region = slot_region.get_or_insert_with(Region::new);
-        let offset = region
-            .index
-            .get(ordinal)
-            .copied()
-            .unwrap_or(OFFSET_SENTINEL);
+        let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
 
-        if offset == OFFSET_SENTINEL {
-            append_entry(region, ordinal, position, material);
+        if entry == EMPTY {
+            write_new_entry(region, ordinal, position, material);
             region.count = region.count.saturating_add(1);
             self.count = self.count.saturating_add(1);
 
             return false;
         }
 
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
-        let cell = cell_index(position);
+        let offset = entry_offset(entry).unwrap_or(0);
+        let class = entry_class(entry);
         let (byte, bit) = mask_bit(position);
         let occupied = region.blob.get(offset.strict_add(byte)).copied().unwrap_or(0) & bit != 0;
 
         if occupied {
-            let material_at = offset
+            let cell = cell_index(position);
+            let at = offset
                 .strict_add(MASK_BYTES)
                 .strict_add(rank(entry_mask(region, offset), cell));
 
-            if let Some(slot) = region.blob.get_mut(material_at) {
+            if let Some(slot) = region.blob.get_mut(at) {
                 *slot = material;
             }
 
             return true;
         }
 
-        if let Some(slot) = region.blob.get_mut(offset.strict_add(byte)) {
-            *slot |= bit;
-        }
+        let cell = cell_index(position);
+        let used = MASK_BYTES.strict_add(entry_popcount(region, offset));
+        let required = used.strict_add(1);
+
+        let offset = if required > class_size(class) {
+            let next_class = class_of_size(required);
+            let new_offset = alloc_block(region, next_class);
+
+            region
+                .blob
+                .copy_within(offset..offset.strict_add(used), new_offset);
+            free_block(region, class, offset);
+
+            if let Some(slot) = region.index.get_mut(ordinal) {
+                *slot = encode(new_offset, next_class);
+            }
+
+            new_offset
+        } else {
+            offset
+        };
 
         let at = offset
             .strict_add(MASK_BYTES)
             .strict_add(rank(entry_mask(region, offset), cell));
-        insert_material(region, at, material);
+        let content_end = offset.strict_add(used);
+
+        region.blob.copy_within(at..content_end, at.strict_add(1));
+
+        if let Some(slot) = region.blob.get_mut(offset.strict_add(byte)) {
+            *slot |= bit;
+        }
+
+        if let Some(slot) = region.blob.get_mut(at) {
+            *slot = material;
+        }
 
         region.count = region.count.saturating_add(1);
         self.count = self.count.saturating_add(1);
@@ -378,17 +479,12 @@ impl VoxelStore for RegionStore {
     fn get(&self, position: IVec3) -> Option<u8> {
         let slot = region_slot(position);
         let region = self.regions.get(slot)?.as_ref()?;
-        let offset = region
+        let entry = region
             .index
             .get(micro_chunk_ordinal(position))
             .copied()
-            .unwrap_or(OFFSET_SENTINEL);
-
-        if offset == OFFSET_SENTINEL {
-            return None;
-        }
-
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+            .unwrap_or(EMPTY);
+        let offset = entry_offset(entry)?;
         let (byte, bit) = mask_bit(position);
 
         if region.blob.get(offset.strict_add(byte)).copied().unwrap_or(0) & bit == 0 {
@@ -415,28 +511,27 @@ impl VoxelStore for RegionStore {
             return;
         };
 
-        let offset = region
-            .index
-            .get(ordinal)
-            .copied()
-            .unwrap_or(OFFSET_SENTINEL);
-
-        if offset == OFFSET_SENTINEL {
+        let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
+        let Some(offset) = entry_offset(entry) else {
             return;
-        }
+        };
 
-        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
-        let cell = cell_index(position);
         let (byte, bit) = mask_bit(position);
 
         if region.blob.get(offset.strict_add(byte)).copied().unwrap_or(0) & bit == 0 {
             return;
         }
 
-        let at = offset
-            .strict_add(MASK_BYTES)
-            .strict_add(rank(entry_mask(region, offset), cell));
-        remove_material(region, at);
+        let cell = cell_index(position);
+        let popcount = entry_popcount(region, offset);
+        let position_rank = rank(entry_mask(region, offset), cell);
+        let base = offset.strict_add(MASK_BYTES);
+        let content_end = base.strict_add(popcount);
+
+        region.blob.copy_within(
+            base.strict_add(position_rank).strict_add(1)..content_end,
+            base.strict_add(position_rank),
+        );
 
         if let Some(slot) = region.blob.get_mut(offset.strict_add(byte)) {
             *slot &= !bit;
@@ -444,15 +539,16 @@ impl VoxelStore for RegionStore {
 
         region.count = region.count.saturating_sub(1);
         self.count = self.count.saturating_sub(1);
-        let emptied = region.count == 0;
 
-        let empty = entry_mask(region, offset).iter().all(|value| *value == 0);
+        if popcount <= 1 {
+            free_block(region, entry_class(entry), offset);
 
-        if empty {
-            remove_entry(region, ordinal, offset);
+            if let Some(slot) = region.index.get_mut(ordinal) {
+                *slot = EMPTY;
+            }
         }
 
-        if emptied {
+        if region.count == 0 {
             *slot_region = None;
         }
     }
@@ -482,7 +578,7 @@ impl VoxelStore for RegionStore {
             .regions
             .iter()
             .flatten()
-            .map(|region| region.blob.capacity())
+            .map(|region| region.blob.len())
             .sum();
 
         table.saturating_add(index).saturating_add(blob)
@@ -505,10 +601,33 @@ mod tests {
         store.iter().collect()
     }
 
+    fn cell_in_chunk(index: usize) -> IVec3 {
+        let x = index % MICRO_CHUNK;
+        let y = (index / MICRO_CHUNK) % MICRO_CHUNK;
+        let z = index / MICRO_CHUNK_AREA;
+
+        IVec3::new(x as i32, y as i32, z as i32)
+    }
+
     fn random_position(rng: &mut Rng) -> IVec3 {
         let mut axis = || i32::try_from(rng.below(512)).unwrap_or(0).wrapping_sub(256);
 
         IVec3::new(axis(), axis(), axis())
+    }
+
+    fn clustered_position(rng: &mut Rng) -> IVec3 {
+        let chunk = IVec3::new(
+            i32::try_from(rng.below(3)).unwrap_or(0).wrapping_sub(1),
+            i32::try_from(rng.below(3)).unwrap_or(0).wrapping_sub(1),
+            i32::try_from(rng.below(3)).unwrap_or(0).wrapping_sub(1),
+        );
+        let cell = IVec3::new(
+            i32::try_from(rng.below(8)).unwrap_or(0),
+            i32::try_from(rng.below(8)).unwrap_or(0),
+            i32::try_from(rng.below(8)).unwrap_or(0),
+        );
+
+        chunk.saturating_mul(IVec3::splat(8)).saturating_add(cell)
     }
 
     fn assert_agrees(region: &RegionStore, map: &ShardedMap) {
@@ -575,6 +694,154 @@ mod tests {
     }
 
     #[test]
+    fn clustered_random_edits_exercise_growth_and_reuse() {
+        let mut rng = Rng::new(0x0404_0404);
+
+        for case in 0..16u32 {
+            let mut region = RegionStore::default();
+            let mut map = ShardedMap::default();
+
+            for _ in 0..2_000 {
+                let position = clustered_position(&mut rng);
+
+                if rng.below(3) == 0 {
+                    region.clear(position);
+                    map.clear(position);
+                } else {
+                    let material = u8_below(&mut rng, 256);
+
+                    assert_eq!(
+                        region.set(position, material),
+                        map.set(position, material),
+                        "case {case} set result at {position}"
+                    );
+                }
+            }
+
+            assert_agrees(&region, &map);
+        }
+    }
+
+    #[test]
+    fn emptied_micro_chunk_reuses_its_block_without_growing() {
+        let mut store = RegionStore::default();
+        let anchor = IVec3::new(0, 0, 0);
+        let recycled = IVec3::new(MICRO_CHUNK as i32, 0, 0);
+
+        store.set(anchor, 1);
+        store.set(recycled, 2);
+
+        let before = store.reserved_capacity();
+
+        store.clear(recycled);
+
+        assert_eq!(
+            store.reserved_capacity(),
+            before,
+            "clearing does not compact the blob"
+        );
+
+        store.set(recycled, 3);
+
+        assert_eq!(
+            store.reserved_capacity(),
+            before,
+            "the freed block is reclaimed instead of appended"
+        );
+        assert_eq!(store.get(recycled), Some(3));
+    }
+
+    #[test]
+    fn in_class_growth_does_not_grow_the_blob() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(0, 0, 0);
+
+        store.set(origin, 1);
+
+        let before = store.reserved_capacity();
+
+        for index in 1..8 {
+            store.set(origin.saturating_add(cell_in_chunk(index)), index as u8);
+        }
+
+        assert_eq!(
+            store.reserved_capacity(),
+            before,
+            "eight voxels fit one 72-byte block"
+        );
+        assert_eq!(store.get(origin.saturating_add(cell_in_chunk(7))), Some(7));
+    }
+
+    #[test]
+    fn crossing_a_class_grows_by_a_block_and_releases_the_old_one() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(0, 0, 0);
+
+        for index in 0..8 {
+            store.set(origin.saturating_add(cell_in_chunk(index)), 1);
+        }
+
+        let filled = store.reserved_capacity();
+
+        store.set(origin.saturating_add(cell_in_chunk(8)), 2);
+
+        let crossed = store.reserved_capacity();
+
+        assert!(crossed > filled, "the ninth voxel moves to the next class");
+        assert!(
+            crossed.saturating_sub(filled) <= CLASS_MAX,
+            "the move is bounded by one Micro-chunk block"
+        );
+        assert_eq!(store.get(origin), Some(1), "the copied mask survives");
+        assert_eq!(store.get(origin.saturating_add(cell_in_chunk(8))), Some(2));
+
+        store.set(IVec3::new(MICRO_CHUNK as i32, 0, 0), 9);
+
+        assert_eq!(
+            store.reserved_capacity(),
+            crossed,
+            "the released block is reclaimed by the next first write"
+        );
+    }
+
+    #[test]
+    fn cleared_then_refilled_region_reports_the_high_water_mark() {
+        let mut store = RegionStore::default();
+        let anchor = IVec3::new(0, 0, 0);
+
+        store.set(anchor, 1);
+
+        let fillers: Vec<IVec3> = (0..64)
+            .map(|index| IVec3::new((index % 8) * 8, (index / 8) * 8, 8))
+            .collect();
+
+        for filler in &fillers {
+            store.set(*filler, 2);
+        }
+
+        let high_water = store.reserved_capacity();
+
+        for filler in &fillers {
+            store.clear(*filler);
+        }
+
+        assert_eq!(
+            store.reserved_capacity(),
+            high_water,
+            "clearing leaves the high-water mark in place"
+        );
+
+        for index in 1..MICRO_CHUNK_CELLS {
+            store.set(anchor.saturating_add(cell_in_chunk(index)), 3);
+        }
+
+        assert!(
+            store.reserved_capacity() > high_water,
+            "refilling with larger entries raises the high-water mark"
+        );
+    }
+
+    #[test]
     fn iteration_is_region_then_micro_chunk_then_cell_order() {
         let mut rng = Rng::new(0x00A0_0A0A);
         let mut store = RegionStore::default();
@@ -633,7 +900,7 @@ mod tests {
 
         assert_ne!(
             region.index[micro_chunk_ordinal(first)],
-            OFFSET_SENTINEL,
+            EMPTY,
             "the first micro-chunk has an entry"
         );
 
@@ -646,7 +913,7 @@ mod tests {
 
         assert_eq!(
             region.index[micro_chunk_ordinal(first)],
-            OFFSET_SENTINEL,
+            EMPTY,
             "the emptied micro-chunk is released"
         );
         assert_eq!(store.count(), 1);
@@ -702,11 +969,10 @@ mod tests {
 
         for region in store.regions.iter().flatten() {
             for entry in region.index.iter() {
-                if *entry == OFFSET_SENTINEL {
+                let Some(offset) = entry_offset(*entry) else {
                     continue;
-                }
+                };
 
-                let offset = usize::try_from(*entry).unwrap_or(usize::MAX);
                 let mask = region
                     .blob
                     .get(offset..offset.strict_add(MASK_BYTES))

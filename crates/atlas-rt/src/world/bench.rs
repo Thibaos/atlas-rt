@@ -264,7 +264,7 @@ mod edit_bench {
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
         },
-        grid::{REGION_LENGTH, region_index_of},
+        grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_index_of},
         test_support::Rng,
     };
 
@@ -273,6 +273,7 @@ mod edit_bench {
     const SEED: u64 = 0x00ED_1704;
     const WORLD_MATERIAL: u8 = 1;
     const EDIT_MATERIAL: u8 = 2;
+    const FREE_LIST_WRITES: usize = 10_000;
 
     const REGION_CENTERS: [IVec3; 8] = [
         IVec3::new(0, 0, 0),
@@ -321,6 +322,26 @@ mod edit_bench {
 
     fn random_cell(origin: IVec3, rng: &mut Rng) -> IVec3 {
         origin + IVec3::new(random_axis(rng), random_axis(rng), random_axis(rng))
+    }
+
+    /// The Micro-chunk origin of the `index`th empty Micro-chunk in the dense
+    /// Region, skipping the filled block at Micro-chunk coordinates 12..20.
+    fn empty_micro_chunk_origin(index: usize) -> IVec3 {
+        let side = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
+        let filled = (DENSE_EDGE as u32 / MICRO_CHUNK_LENGTH) as usize;
+        let pad = (side - filled) / 2;
+        let span = side - filled;
+        let axis = |value: usize| {
+            let local = value % span;
+
+            if local < pad { local } else { local + filled }
+        };
+        let x = axis(index);
+        let y = axis(index / span);
+        let z = axis(index / (span * span));
+        let edge = MICRO_CHUNK_LENGTH as i32;
+
+        IVec3::new((x as i32) * edge, (y as i32) * edge, (z as i32) * edge)
     }
 
     fn set_edit(position: IVec3) -> VoxelEdit {
@@ -431,5 +452,56 @@ mod edit_bench {
                 );
             }
         }
+    }
+
+    fn measure_first_writes(world: &mut World, label: &str) {
+        let start = Instant::now();
+
+        for index in 0..FREE_LIST_WRITES {
+            world.set_voxel(empty_micro_chunk_origin(index), EDIT_MATERIAL);
+        }
+
+        let elapsed = start.elapsed();
+
+        println!(
+            "{label:9} {FREE_LIST_WRITES:>7} {elapsed:>10.3?} {:>9.1} ns/write",
+            per_unit(elapsed.as_nanos(), FREE_LIST_WRITES)
+        );
+    }
+
+    /// A first write claims a Micro-chunk-sized block, and an in-place clear and
+    /// set stay inside the Micro-chunk instead of shifting the Region's blob.
+    /// The same first writes land at the same cost whether the Region already
+    /// holds a dense block or is empty.
+    #[test]
+    #[ignore = "bench: cargo test --release free_list_edit_timings -- --ignored --nocapture"]
+    fn free_list_edit_timings() {
+        let origins = dense_origins();
+        let mut populated = dense_world(&origins[..1]);
+        let mut empty = World::default();
+
+        println!("populated voxels {}", populated.voxel_count());
+        println!();
+        println!("{:<9} {:>7} {:>10} {:>9}", "region", "writes", "elapsed", "ns/write");
+        measure_first_writes(&mut populated, "populated");
+        measure_first_writes(&mut empty, "empty");
+
+        let origin = origins.first().copied().unwrap_or(IVec3::ZERO);
+        let mut rng = Rng::new(SEED);
+        let start = Instant::now();
+
+        for _ in 0..FREE_LIST_WRITES {
+            let position = random_cell(origin, &mut rng);
+
+            populated.clear_voxel(position);
+            populated.set_voxel(position, EDIT_MATERIAL);
+        }
+
+        let toggle = start.elapsed();
+
+        println!(
+            "toggle pairs  {FREE_LIST_WRITES:>7} {toggle:>10.3?} {:>9.1} ns/toggle",
+            per_unit(toggle.as_nanos(), FREE_LIST_WRITES)
+        );
     }
 }

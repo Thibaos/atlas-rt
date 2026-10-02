@@ -10,9 +10,9 @@ use crate::world::{
 /// Places every model's voxels into a serial Region store.
 ///
 /// The scene-graph path stages each Region's voxels before writing them in
-/// Micro-chunk ordinal and cell order, so the store appends rather than
-/// shifting. A later placement at a shared cell overwrites an earlier one
-/// because the stable stage keeps the scene order.
+/// Micro-chunk ordinal and cell order, so each Micro-chunk is filled before
+/// the next and its entry grows in place. A later placement at a shared cell
+/// overwrites an earlier one because the stable stage keeps the scene order.
 pub(in crate::world) fn load(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (World, usize) {
     let mut world = World::default();
     let clipped = load_into(&mut world, voxel_data, policy);
