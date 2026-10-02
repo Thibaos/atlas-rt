@@ -1023,7 +1023,7 @@ mod tests {
         let (map, map_clipped) = World::new_clipped_with_store(&data, StoreKind::Map);
 
         assert_eq!(region_clipped, map_clipped, "clipped counts diverge");
-        crate::world::test_support::assert_worlds_agree(&region, &map);
+        crate::world::test_support::assert_worlds_agree(&region, &map, path);
     }
 
     #[cfg(feature = "map-oracle")]

@@ -10,6 +10,9 @@ pub mod vox;
 #[cfg(test)]
 mod bench;
 
+#[cfg(all(test, feature = "map-oracle"))]
+mod differential;
+
 use std::fmt::Display;
 
 use dot_vox::DotVoxData;
@@ -362,7 +365,7 @@ mod tests {
         let (map, map_clipped) = World::new_clipped_with_store(&data, StoreKind::Map);
 
         assert_eq!(region_clipped, map_clipped, "clipped counts");
-        test_support::assert_worlds_agree(&region, &map);
+        test_support::assert_worlds_agree(&region, &map, "loaded world");
     }
 
     #[cfg(feature = "map-oracle")]
@@ -392,6 +395,6 @@ mod tests {
             }
         }
 
-        test_support::assert_worlds_agree(&region, &map);
+        test_support::assert_worlds_agree(&region, &map, "randomized direct writes");
     }
 }

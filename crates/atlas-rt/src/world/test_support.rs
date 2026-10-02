@@ -59,22 +59,44 @@ pub(super) fn expect_error<T, E>(result: Result<T, E>, message: &str) -> E {
 }
 
 /// Asserts two Worlds hold the same content, count, and bounds, whatever store
-/// backs each.
+/// backs each. `case` names the failing input.
 #[cfg(feature = "map-oracle")]
-pub(crate) fn assert_worlds_agree(region: &World, map: &World) {
-    assert_eq!(region.voxel_count(), map.voxel_count(), "voxel count");
-    assert_eq!(region.voxel_bounds(), map.voxel_bounds(), "bounds");
+pub(crate) fn assert_worlds_agree(region: &World, map: &World, case: &str) {
+    assert_eq!(
+        region.voxel_count(),
+        map.voxel_count(),
+        "{case}: region and map voxel counts"
+    );
+    assert_eq!(
+        region.voxel_bounds(),
+        map.voxel_bounds(),
+        "{case}: region and map bounds"
+    );
 
     let region_content: HashMap<IVec3, u8> = region.iter_voxels().collect();
     let map_content: HashMap<IVec3, u8> = map.iter_voxels().collect();
 
-    assert_eq!(region_content, map_content, "content");
+    assert_eq!(
+        region_content, map_content,
+        "{case}: region and map content"
+    );
 
     for (position, material) in &region_content {
-        assert_eq!(region.get_voxel(position), Some(*material));
-        assert_eq!(map.get_voxel(position), Some(*material));
-        assert!(region.contains(position));
-        assert!(map.contains(position));
+        assert_eq!(
+            region.get_voxel(position),
+            Some(*material),
+            "{case}: region lookup at {position}"
+        );
+        assert_eq!(
+            map.get_voxel(position),
+            Some(*material),
+            "{case}: map lookup at {position}"
+        );
+        assert!(
+            region.contains(position),
+            "{case}: region misses {position}"
+        );
+        assert!(map.contains(position), "{case}: map misses {position}");
     }
 }
 
@@ -209,7 +231,7 @@ fn production_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     world.iter_voxels().collect()
 }
 
-fn random_specs(rng: &mut Rng, rotation: u8) -> Vec<ModelSpec> {
+pub(crate) fn random_specs(rng: &mut Rng, rotation: u8) -> Vec<ModelSpec> {
     let mut specs = Vec::new();
     for _ in 0..(1 + rng.below(4)) {
         let size = random_size(rng);
