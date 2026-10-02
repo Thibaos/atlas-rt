@@ -27,8 +27,9 @@ that path.
 
 A second index beside the storage still gains nothing. The Region store already
 holds one entry per Micro-chunk, and reading it directly is the fix the probes
-needed; the per-cell `rank` scan ticket 15 covers is now off the compile path,
-though it still sits behind `get_voxel` and `iter_voxels`. The reopen trigger is
+needed; the per-cell `rank` scan is off the compile path and, after ticket 15,
+out of `iter_voxels`, where a running counter replaces it, and word-based behind
+`get_voxel`. The reopen trigger is
 left standing exactly as ADR 0009 recorded it: scattered 10,000-plus edits per
 frame, or fills compiling more than roughly 1,500 chunks in one frame. The
 compile no longer gates it. At 100 ns per chunk the 1,500-chunk fill is about
@@ -92,8 +93,11 @@ now shares. Amended (region-backed voxel store ticket 13, 2026-10-02) to record
 the compile as it was installed then. Amended again (ticket 14, 2026-10-02): the
 entry-copy compile is installed, at about 100 ns per touched Micro-chunk, and
 the 512-probe path is the fallback for the sharded map oracle and for an
-entryless Micro-chunk in the Region store.
-Ticket 15 still covers the `rank` scan behind `get_voxel` and `iter_voxels`.
+entryless Micro-chunk in the Region store. Amended (ticket 15, 2026-10-02):
+`rank` was a byte scan from zero on every call. `iter_voxels` now carries its
+rank as it walks, and random-access `rank` reads the 8-byte word holding the
+cell. `get_voxel` fell from 20.4 to 10.3 ns and `iter_voxels` from 18.4 to 3.0
+ns per voxel on the dense fixture; bistro's emission fell from 4.119 to 2.781 s.
 [0004](0004-sharded-world-map.md)'s sharded map is amended separately and
 survives as the differential oracle.
 
@@ -117,6 +121,13 @@ survives as the differential oracle.
 - **Return to hashing for sparse Worlds**. Rejected: the sparse case is real
   but the regression is bounded and measured, and a denser index shape addresses
   it without giving up the arithmetic read path.
+- **A stored per-entry rank prefix**. Considered when the compile's 512 probes
+  read back through the mask's per-cell `rank` scan (ticket 15). Rejected: the
+  running counter in `iter_voxels` and the word popcount in random-access `rank`
+  remove the scan without storage, and a prefix over the eight 64-bit words is 16
+  bytes per entry, which pushes the full 576-byte entry past the free list's
+  class ceiling and adds about 2.8% to a full Region's blob. Storage is what this
+  layout exists to save.
 
 ## Consequences
 

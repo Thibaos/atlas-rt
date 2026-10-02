@@ -314,20 +314,43 @@ fn mask_bit(position: IVec3) -> (usize, u8) {
     (cell.strict_div(8), 1u8.wrapping_shl(bit))
 }
 
+fn mask_word(mask: &[u8], start: usize) -> u64 {
+    let Some(bytes) = mask.get(start..start.strict_add(8)) else {
+        return 0;
+    };
+
+    let mut array = [0u8; 8];
+    array.copy_from_slice(bytes);
+
+    u64::from_le_bytes(array)
+}
+
 /// The number of set mask bits before `cell`, which indexes the material
-/// indices.
-fn rank(mask: &[u8], cell: usize) -> usize {
+/// indices. The 8-byte word holding the cell is read once and masked to the
+/// bits below it, so the scan is popcounts of whole words, not of every byte.
+pub(in crate::world) fn rank(mask: &[u8], cell: usize) -> usize {
     let byte = cell.strict_div(8);
+    let word_index = byte.strict_div(8);
+
+    let mut below = 0usize;
+
+    for index in 0..word_index {
+        below = below.saturating_add(mask_word(mask, index.strict_mul(8)).count_ones() as usize);
+    }
+
     let bit = u32::try_from(cell.strict_rem(8)).unwrap_or(0);
+    let keep = u32::try_from(byte.strict_rem(8))
+        .unwrap_or(0)
+        .strict_mul(8)
+        .strict_add(bit);
+    let target = mask_word(mask, word_index.strict_mul(8));
+    let partial = if keep == 0 {
+        0
+    } else {
+        target & ((1u64 << keep).wrapping_sub(1))
+    };
 
-    let below: usize = mask
-        .iter()
-        .take(byte)
-        .map(|value| value.count_ones() as usize)
-        .sum();
-    let own = mask.get(byte).copied().unwrap_or(0) & 1u8.wrapping_shl(bit).wrapping_sub(1);
-
-    below.saturating_add(own.count_ones() as usize)
+    below.saturating_add(partial.count_ones() as usize)
 }
 
 fn entry_mask(region: &Region, offset: usize) -> &[u8] {
@@ -402,6 +425,7 @@ struct Voxels<'a> {
     slot: usize,
     ordinal: usize,
     cell: usize,
+    rank: usize,
 }
 
 impl<'a> Voxels<'a> {
@@ -411,6 +435,7 @@ impl<'a> Voxels<'a> {
             slot: 0,
             ordinal: 0,
             cell: 0,
+            rank: 0,
         }
     }
 
@@ -418,11 +443,13 @@ impl<'a> Voxels<'a> {
         self.slot = self.slot.saturating_add(1);
         self.ordinal = 0;
         self.cell = 0;
+        self.rank = 0;
     }
 
     const fn advance_micro_chunk(&mut self) {
         self.ordinal = self.ordinal.saturating_add(1);
         self.cell = 0;
+        self.rank = 0;
     }
 }
 
@@ -475,11 +502,13 @@ impl Iterator for Voxels<'_> {
             }
 
             let cell = self.cell;
+            let rank = self.rank;
             self.cell = self.cell.strict_add(1);
+            self.rank = self.rank.strict_add(1);
 
             let material = region
                 .blob
-                .get(offset.strict_add(MASK_BYTES).strict_add(rank(mask, cell)))
+                .get(offset.strict_add(MASK_BYTES).strict_add(rank))
                 .copied()?;
 
             return Some((cell_position(self.slot, self.ordinal, cell), material));

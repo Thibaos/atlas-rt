@@ -39,6 +39,37 @@
 //! probe's 10.5 µs, a factor of about 100, and lifts the probe-bound ceiling on
 //! ADR 0009's reopen trigger. The probe column matches ADR 0009's ~10 µs figure;
 //! the older 11 to 17 µs `mut+compile` figures included mutation and assembly.
+//!
+//! `rank_read_path_timings`, release, 2026-10-02, same host. `rank` scanned the
+//! mask from byte 0 on every random read and on every voxel `iter_voxels`
+//! yielded. Ticket 15 removed it from the walk with a running counter and made
+//! the random-access form read the 8-byte word holding the cell. Dense fixture,
+//! eight 64^3 blocks, one per Region, minimum of eight passes. The before column
+//! is the pre-change measurement on the same host and fixture; the test times
+//! the current path only:
+//!
+//! | path                 | before rank scan | after |
+//! | -------------------- | ---------------- | ----- |
+//! | get_voxel ns/get     |            20.40 | 10.26 |
+//! | iter_voxels ns/voxel |            18.39 |  3.04 |
+//! | rank ns/call         |            16.23 |  4.65 |
+//!
+//! On the assets, the store scan and the emitter separate. `scan` is a bare
+//! `iter_voxels` fold; `emit - scan` approximates the emitter's per-voxel record
+//! construction, bucketing, and final sort, so it is the emitter's own cost and
+//! not the store read:
+//!
+//! | asset  | scan ns/vox | emit ns/vox | emit - scan ns/vox |
+//! | ------ | ----------- | ----------- | ------------------ |
+//! | church |   24.5 → 8.6 | 41.5 → 25.8 |   16.9 → 17.2      |
+//! | bistro |   22.6 → 8.1 | 41.8 → 28.2 |   19.1 → 20.1      |
+//!
+//! Removing `rank` from the walk took bistro's emit from 4.119 s to 2.781 s, a
+//! 32% cut, and the emitter's own share is now the larger term, as the storage
+//! spec predicted. A stored per-entry rank prefix was rejected: the running
+//! counter costs nothing on iteration, the word popcount needs no storage, and a
+//! 16-byte prefix would push the full 576-byte entry past the free list's class
+//! ceiling and add about 2.8% to a full Region's blob.
 
 mod load_bench {
     use std::time::{Duration, Instant};
@@ -642,5 +673,203 @@ mod edit_bench {
             "toggle pairs  {FREE_LIST_WRITES:>7} {toggle:>10.3?} {:>9.1} ns/toggle",
             per_unit(toggle.as_nanos(), FREE_LIST_WRITES)
         );
+    }
+}
+
+/// The `rank` scan's cost on each read path, and the emission stage split into
+/// the store scan and the emitter's own record, bucket, and sort work.
+///
+/// The three paths are `get_voxel` over occupied cells, `iter_voxels` over the
+/// world, and `emit_snapshots`, which walks `iter_voxels`. `rank` is timed
+/// directly over the occupied cells of every live Micro-chunk to give its
+/// per-call floor. `scan` is a bare `iter_voxels` fold on the asset, so
+/// `emit - scan` is the emitter's per-voxel record construction, bucketing, and
+/// final sort rather than the store read.
+mod read_bench {
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+
+    use glam::IVec3;
+    use rustc_hash::FxHashSet;
+
+    use crate::world::{
+        World,
+        diff::snapshot::emit_snapshots,
+        grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, grid_origin},
+        store::region::rank,
+    };
+
+    const DENSE_EDGE: i32 = 64;
+    const DENSE_CENTERS: [(i32, i32, i32); 8] = [
+        (0, 0, 0),
+        (1, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+        (1, 1, 0),
+    ];
+    const DENSE_REPEATS: usize = 8;
+    const ASSET_REPEATS: usize = 3;
+    const CELLS: usize = (MICRO_CHUNK_LENGTH * MICRO_CHUNK_LENGTH * MICRO_CHUNK_LENGTH) as usize;
+
+    fn per_unit(nanos: u128, count: usize) -> f64 {
+        nanos as f64 / count.max(1) as f64
+    }
+
+    fn best(count: usize, mut run: impl FnMut() -> u64) -> (Duration, u64) {
+        let mut best = Duration::MAX;
+        let mut result = 0;
+
+        for _ in 0..count {
+            let start = Instant::now();
+            result = black_box(run());
+            let elapsed = start.elapsed();
+
+            if elapsed < best {
+                best = elapsed;
+            }
+        }
+
+        (best, result)
+    }
+
+    /// One full 64^3 block per Region, so every touched Micro-chunk is dense and
+    /// the scan has its worst case.
+    fn dense_world() -> World {
+        let edge = REGION_LENGTH as i32;
+        let pad = (edge - DENSE_EDGE) / 2;
+        let mut world = World::default();
+
+        for (x, y, z) in DENSE_CENTERS {
+            let origin = IVec3::new(x, y, z).saturating_mul(IVec3::splat(edge)) + IVec3::splat(pad);
+
+            for dx in 0..DENSE_EDGE {
+                for dy in 0..DENSE_EDGE {
+                    for dz in 0..DENSE_EDGE {
+                        world.set_voxel(origin + IVec3::new(dx, dy, dz), 1);
+                    }
+                }
+            }
+        }
+
+        world
+    }
+
+    fn chunk_origins(world: &World) -> Vec<IVec3> {
+        let mut seen: FxHashSet<IVec3> = FxHashSet::default();
+        let mut origins: Vec<IVec3> = Vec::new();
+
+        for (position, _) in world.iter_voxels() {
+            let origin = grid_origin(position, MICRO_CHUNK_LENGTH);
+
+            if seen.insert(origin) {
+                origins.push(origin);
+            }
+        }
+
+        origins
+    }
+
+    #[test]
+    #[ignore = "bench: cargo test --release rank_read_path_timings -- --ignored --nocapture"]
+    fn rank_read_path_timings() {
+        let world = dense_world();
+        let positions: Vec<IVec3> = world.iter_voxels().map(|(position, _)| position).collect();
+        let origins = chunk_origins(&world);
+        let voxels = positions.len();
+
+        println!("dense voxels    {voxels}");
+        println!("dense chunks    {}", origins.len());
+
+        let (get, material) = best(DENSE_REPEATS, || {
+            positions
+                .iter()
+                .map(|position| u64::from(world.get_voxel(position).unwrap_or(0)))
+                .sum()
+        });
+        println!(
+            "get_voxel       {:>10.3?} {:>9.2} ns/get  {material}",
+            get,
+            per_unit(get.as_nanos(), voxels)
+        );
+
+        let (iter, count) = best(DENSE_REPEATS, || {
+            world
+                .iter_voxels()
+                .map(|(_, material)| u64::from(material))
+                .sum()
+        });
+        println!(
+            "iter_voxels     {:>10.3?} {:>9.2} ns/voxel  {count}",
+            iter,
+            per_unit(iter.as_nanos(), voxels)
+        );
+
+        let mut rank_calls = 0usize;
+        let (ranked, sum) = best(DENSE_REPEATS, || {
+            let mut total = 0u64;
+            let mut calls = 0usize;
+
+            for origin in &origins {
+                let Some(entry) = world.chunk_entry(*origin) else {
+                    continue;
+                };
+
+                for cell in 0..CELLS {
+                    let set = entry
+                        .mask
+                        .get(cell / 8)
+                        .is_some_and(|byte| byte & (1u8 << (cell % 8)) != 0);
+
+                    if set {
+                        total = total.wrapping_add(rank(entry.mask, cell) as u64);
+                        calls = calls.saturating_add(1);
+                    }
+                }
+            }
+
+            rank_calls = calls;
+
+            total
+        });
+        println!(
+            "rank            {:>10.3?} {:>9.2} ns/call  {sum}",
+            ranked,
+            per_unit(ranked.as_nanos(), rank_calls)
+        );
+
+        for path in ["assets/church.vox", "assets/bistro.vox"] {
+            let Ok(data) = dot_vox::load(path) else {
+                println!("{path} missing");
+                continue;
+            };
+
+            let (world, _) = World::new_clipped(&data);
+            let voxels = world.voxel_count();
+
+            let (scan, scanned) = best(ASSET_REPEATS, || {
+                world
+                    .iter_voxels()
+                    .map(|(_, material)| u64::from(material))
+                    .sum()
+            });
+            let (emit, snapshots) = best(ASSET_REPEATS, || {
+                emit_snapshots(&world).unwrap().len() as u64
+            });
+
+            let scan_per = per_unit(scan.as_nanos(), voxels);
+            let emit_per = per_unit(emit.as_nanos(), voxels);
+            let emitter = emit.saturating_sub(scan);
+            let emitter_per = per_unit(emitter.as_nanos(), voxels);
+
+            println!();
+            println!("asset           {path}");
+            println!("voxels          {voxels}  chunks {snapshots}  scanned {scanned}");
+            println!("scan            {scan:>10.3?} {scan_per:>9.2} ns/voxel");
+            println!("emit            {emit:>10.3?} {emit_per:>9.2} ns/voxel");
+            println!("emit - scan     {emitter:>10.3?} {emitter_per:>9.2} ns/voxel");
+        }
     }
 }
