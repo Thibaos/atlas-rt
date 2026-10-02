@@ -56,27 +56,33 @@
 //! `edit_workload_timings`. The older 11 to 17 µs figures included mutation and
 //! assembly.
 //!
-//! `edit_workload_timings`, release, same host. `edit_world` alone over 100,000
-//! and 1,000,000 edits on the dense fixture, by path, with the renderer's CPU
+//! `edit_workload_timings`, release, same host. `edit_world` alone over 1,000 to
+//! 1,000,000 edits on the dense fixture, by path, with the renderer's whole-Region
 //! pack beside it. `tracked` is the same batch with the touched chunks in the
 //! tracked set. `budget` forces the projection `edit_world` runs once a cell
-//! threshold is set; in production `cell_budget()` is `usize::MAX`, so the
-//! projection is skipped and this row is the cost the day a number lands:
+//! threshold is set; in production `cell_budget()` is `usize::MAX`, so it is
+//! skipped and this row is the cost the day a number lands:
 //!
-//! | workload  | 100k ns/edit | 1M ns/edit | 1M edit_world |
-//! | --------- | ------------ | ---------- | ------------- |
-//! | overwrite |         34.0 |       21.0 |      21.038 ms |
-//! | mixed     |         58.2 |       40.8 |      40.847 ms |
-//! | tracked   |         32.9 |       21.2 |      21.233 ms |
-//! | budget    |         85.1 |       78.1 |      78.071 ms |
+//! | workload  |  1k ns/edit | 10k ns/edit | 100k ns/edit | 1M ns/edit |
+//! | --------- | ----------- | ----------- | ------------ | ---------- |
+//! | overwrite |       301.7 |       157.6 |         41.6 |       22.0 |
+//! | mixed     |       337.4 |       162.4 |         58.2 |       40.6 |
+//! | tracked   |       279.4 |       165.3 |         40.2 |       21.4 |
+//! | budget    |       377.2 |       263.3 |         99.2 |       76.9 |
 //!
-//! A clear roughly doubles the per-edit cost, a populated tracked set is within
-//! noise, and the budget projection is the large one: it hashes every edit into
-//! a pending overlay and reads the world once per distinct cell, about 57 ms of
-//! the 1M budget row. At 60 Hz that is about 200,000 projected edits against
-//! about 800,000 unprojected overwrites. The renderer's CPU pack is about 100 ns
-//! per touched Micro-chunk, 0.4 ms over the 4096 chunks, a small share of the
-//! edit cost on these dense workloads. The upload, BLAS, and TLAS are
+//! The small sizes are dominated by the fixed batch overhead, so the per-edit
+//! figures converge downward. A clear roughly doubles the per-edit cost, a
+//! populated tracked set is within noise, and the budget projection is the large
+//! one: it hashes every edit into a pending overlay and reads the world once per
+//! distinct cell, about 55 ms of the 1M budget row. At 60 Hz that is about
+//! 200,000 projected edits against about 800,000 unprojected overwrites.
+//!
+//! The pack is the dirty Regions' whole resident content, not the batch's touched
+//! chunks: at 1,000 edits it packs 4,096 chunks against the 877 touched ones,
+//! because the renderer rebuilds a Region wholesale. It lands at 0.33 to 0.52 ms
+//! at every size, since the eight dense Regions hold 4,096 chunks regardless of
+//! the edit count. So at 1,000 edits the pack exceeds `edit_world` (0.39 against
+//! 0.30 ms), and at 1,000,000 it is under 2%. The upload, BLAS, and TLAS are
 //! `render::region::bench`'s `gpu_rebuild_timings`: a one-Region update is about
 //! 1.3 ms of pack and 0.6 ms of apply on church's widest Region.
 //!
@@ -403,7 +409,7 @@ mod edit_bench {
                 edit::{
                     VoxelChange, VoxelEdit, chunks_touched, compile_chunk, edit_world, probe_chunk,
                 },
-                snapshot::MicroChunkSnapshot,
+                snapshot::{MicroChunkSnapshot, emit_snapshots},
             },
             grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_index_of},
             test_support::Rng,
@@ -562,7 +568,8 @@ mod edit_bench {
 
     /// Mutation and compile cost of a Voxel edit batch on the Region store,
     /// split by placement and batch size, with the entry-copy compile beside
-    /// the installed probe compile.
+    /// the installed probe compile. `region` is the touched Region count and
+    /// `chunks` the touched Micro-chunks.
     ///
     /// `mut+compile` is the whole `edit_world` call. The `probe` and `entry`
     /// columns are the compile alone over the same touched chunks: `probe_chunk`
@@ -589,9 +596,10 @@ mod edit_bench {
         println!("frame budget    {:.3?} (60 Hz)", FRAME_BUDGET);
         println!();
         println!(
-            "{:<9} {:>7} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9} {:>11} {:>9} {:>8}",
+            "{:<9} {:>7} {:>6} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9} {:>11} {:>9} {:>8}",
             "placement",
             "edits",
+            "region",
             "chunks",
             "mutation",
             "ns/edit",
@@ -674,13 +682,13 @@ mod edit_bench {
                 let frame_per = full.as_secs_f64() / FRAME_BUDGET.as_secs_f64() * 100.0;
 
                 println!(
-                    "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0} {frame_per:>7.0}%"
+                    "{placement:9} {size:>7} {touched_regions:>6} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0} {frame_per:>7.0}%"
                 );
             }
         }
     }
 
-    const WORKLOAD_SIZES: [usize; 2] = [100_000, 1_000_000];
+    const WORKLOAD_SIZES: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
     const PACK_REPEATS: usize = 3;
 
     fn scattered_positions(rng: &mut Rng, origins: &[IVec3], count: usize) -> Vec<IVec3> {
@@ -714,9 +722,9 @@ mod edit_bench {
             .collect()
     }
 
-    /// The fastest of [`PACK_REPEATS`] renderer-side packs of the batch's
-    /// snapshots. This is the CPU half of the rebuild; the buffer upload, BLAS,
-    /// and TLAS need a Vulkan device.
+    /// The fastest of [`PACK_REPEATS`] renderer-side packs of the whole resident
+    /// content of the dirty Regions. This is the CPU half of the rebuild; the
+    /// buffer upload, BLAS, and TLAS are `render::region::bench`.
     fn best_pack(snapshots: &[MicroChunkSnapshot]) -> Duration {
         let mut best = Duration::MAX;
 
@@ -735,30 +743,46 @@ mod edit_bench {
         best
     }
 
+    /// Returns the dirty Regions, the batch's touched chunks, the dirty Regions'
+    /// resident chunks, the `edit_world` time, and the resident pack time. The
+    /// pack is over the whole resident content of each dirty Region, not just the
+    /// batch's touched chunks, because the renderer repacks a Region wholesale.
     fn run_workload(
         edits: &[VoxelEdit],
         tracked: &TrackedCoords,
         budget: bool,
-    ) -> (usize, Duration, Duration) {
+    ) -> (usize, usize, usize, Duration, Duration) {
         let mut world = dense_world(&dense_origins());
         let _guard = budget.then(|| set_cell_budget(usize::MAX - 1));
+
+        let dirty: FxHashSet<IVec3> = edits
+            .iter()
+            .map(|edit| region_index_of(edit.position))
+            .collect();
 
         let start = Instant::now();
         let batch = edit_world(&mut world, edits, tracked).unwrap();
         let full = start.elapsed();
 
-        let chunks = batch.snapshots.len();
-        let pack = best_pack(&batch.snapshots);
+        let resident: Vec<MicroChunkSnapshot> = emit_snapshots(&world)
+            .unwrap()
+            .into_iter()
+            .filter(|snapshot| dirty.contains(&region_index_of(snapshot.global_coords)))
+            .collect();
 
-        (chunks, full, pack)
+        let pack = best_pack(&resident);
+
+        (dirty.len(), batch.snapshots.len(), resident.len(), full, pack)
     }
 
     /// The edit call across the workloads `edit_path_timings` does not cover:
     /// clears through `edit_world`, a populated tracked set, and the budget
     /// projection. First writes into empty Micro-chunks are not here because
     /// they are per touched chunk rather than per edit, and
-    /// `free_list_edit_timings` already times them. The pack column is the
-    /// renderer's CPU rebuild of the touched Regions beside the edit cost.
+    /// `free_list_edit_timings` already times them. `chunks` is the batch's
+    /// touched chunks and `packed` is the dirty Regions' resident chunks, which
+    /// the renderer repacks whole; the two differ when a batch touches only part
+    /// of a Region. `pack` is the wall time of that repack.
     #[test]
     #[ignore = "bench: cargo test --release edit_workload_timings -- --ignored --nocapture"]
     fn edit_workload_timings() {
@@ -768,8 +792,17 @@ mod edit_bench {
         println!("frame budget    {:.3?} (60 Hz)", FRAME_BUDGET);
         println!();
         println!(
-            "{:<10} {:>7} {:>7} {:>11} {:>9} {:>9} {:>11} {:>8}",
-            "workload", "edits", "chunks", "edit_world", "ns/edit", "ns/chunk", "pack ns/chunk", "frame %"
+            "{:<10} {:>7} {:>6} {:>7} {:>7} {:>11} {:>9} {:>10} {:>9} {:>8}",
+            "workload",
+            "edits",
+            "region",
+            "chunks",
+            "packed",
+            "edit_world",
+            "ns/edit",
+            "pack",
+            "ns/chunk",
+            "frame %"
         );
 
         for size in WORKLOAD_SIZES {
@@ -784,14 +817,14 @@ mod edit_bench {
                 ("tracked", &sets, &tracked, false),
                 ("budget", &sets, &TrackedCoords::default(), true),
             ] {
-                let (chunks, full, pack) = run_workload(edits, tracked, budget);
+                let (regions, chunks, packed, full, pack) =
+                    run_workload(edits, tracked, budget);
                 let full_per = per_unit(full.as_nanos(), size);
-                let chunk_per = per_unit(full.as_nanos(), chunks);
-                let pack_per = per_unit(pack.as_nanos(), chunks);
+                let pack_per = per_unit(pack.as_nanos(), packed);
                 let frame_per = full.as_secs_f64() / FRAME_BUDGET.as_secs_f64() * 100.0;
 
                 println!(
-                    "{workload:<10} {size:>7} {chunks:>7} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {pack_per:>11.0} {frame_per:>7.0}%"
+                    "{workload:<10} {size:>7} {regions:>6} {chunks:>7} {packed:>7} {full:>11.3?} {full_per:>9.1} {pack:>10.3?} {pack_per:>9.1} {frame_per:>7.0}%"
                 );
             }
         }
