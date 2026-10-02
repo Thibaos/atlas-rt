@@ -263,37 +263,203 @@ pub fn edit_world(
     Ok(plan_edit(snapshots, tracked))
 }
 
-/// The World's count after `edits` apply, without mutating it. A repeated
-/// position folds through the pending overlay, so a set of a fresh cell
-/// followed by its clear nets to no change.
-fn projected_count(world: &World, edits: &[VoxelEdit]) -> usize {
+/// The World's count after `edits` apply, without mutating it.
+///
+/// Each touched Micro-chunk folds its edits onto a copy of its Occupancy mask,
+/// and the result is the starting count plus the sum of the chunks' popcount
+/// deltas. A repeated position is idempotent against the mask. A chunk the
+/// store keeps no entry for falls back to a per-position overlay.
+pub(in crate::world) fn projected_count(world: &World, edits: &[VoxelEdit]) -> usize {
     let mut projected = world.voxel_count();
-    let mut pending: FxHashMap<IVec3, bool> = FxHashMap::default();
+    let mut masks: FxHashMap<IVec3, ([u8; MICRO_BYTES], usize)> = FxHashMap::default();
+    let mut fallback: FxHashMap<IVec3, bool> = FxHashMap::default();
+    let mut fallback_chunks: FxHashSet<IVec3> = FxHashSet::default();
 
     for edit in edits {
-        let occupied = *pending
-            .entry(edit.position)
-            .or_insert_with(|| world.contains(&edit.position));
+        let origin = grid_origin(edit.position, MICRO_CHUNK_LENGTH);
 
-        match edit.change {
-            VoxelChange::Set(_) => {
-                if !occupied {
-                    projected = projected.saturating_add(1);
-                }
+        if let Some((mask, _)) = masks.get_mut(&origin) {
+            set_mask_bit(mask, edit.position.saturating_sub(origin), edit.change);
+            continue;
+        }
 
-                pending.insert(edit.position, true);
-            }
-            VoxelChange::Clear => {
-                if occupied {
-                    projected = projected.saturating_sub(1);
-                }
+        if fallback_chunks.contains(&origin) {
+            fold(&mut fallback, &mut projected, world, edit);
+            continue;
+        }
 
-                pending.insert(edit.position, false);
-            }
+        let entry = world.chunk_entry(origin);
+        let bytes = entry
+            .as_ref()
+            .and_then(|entry| <&[u8; MICRO_BYTES]>::try_from(entry.mask).ok());
+
+        if let (Some(entry), Some(bytes)) = (entry.as_ref(), bytes) {
+            let mut mask = *bytes;
+            let before_cells = entry.materials.len();
+            set_mask_bit(&mut mask, edit.position.saturating_sub(origin), edit.change);
+            masks.insert(origin, (mask, before_cells));
+        } else {
+            fallback_chunks.insert(origin);
+            fold(&mut fallback, &mut projected, world, edit);
         }
     }
 
+    for (mask, before_cells) in masks.values() {
+        let after_cells: usize = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+        projected = projected
+            .saturating_add(after_cells)
+            .saturating_sub(*before_cells);
+    }
+
     projected
+}
+
+fn fold(
+    pending: &mut FxHashMap<IVec3, bool>,
+    projected: &mut usize,
+    world: &World,
+    edit: &VoxelEdit,
+) {
+    let occupied = *pending
+        .entry(edit.position)
+        .or_insert_with(|| world.contains(&edit.position));
+
+    match edit.change {
+        VoxelChange::Set(_) => {
+            if !occupied {
+                *projected = projected.saturating_add(1);
+            }
+
+            pending.insert(edit.position, true);
+        }
+        VoxelChange::Clear => {
+            if occupied {
+                *projected = projected.saturating_sub(1);
+            }
+
+            pending.insert(edit.position, false);
+        }
+    }
+}
+
+fn mask_index(local: IVec3) -> usize {
+    let x = usize::try_from(local.x).unwrap_or(0);
+    let y = usize::try_from(local.y).unwrap_or(0);
+    let z = usize::try_from(local.z).unwrap_or(0);
+
+    x.strict_add(y.strict_mul(MICRO_EDGE))
+        .strict_add(z.strict_mul(MICRO_AREA))
+}
+
+fn set_mask_bit(mask: &mut [u8; MICRO_BYTES], local: IVec3, change: VoxelChange) {
+    let index = mask_index(local);
+
+    if let Some(slot) = mask.get_mut(index / MICRO_EDGE) {
+        let bit = 1u8 << (index % MICRO_EDGE);
+
+        match change {
+            VoxelChange::Set(_) => *slot |= bit,
+            VoxelChange::Clear => *slot &= !bit,
+        }
+    }
+}
+
+/// The refusal-check shapes the decision measured against the installed
+/// per-Micro-chunk fold: the original per-position overlay, a sorted fold, and
+/// an apply-then-rollback. `budget_projection_timings` compares their counts
+/// against [`projected_count`] and times them.
+#[cfg(test)]
+pub(in crate::world) mod projection_candidates {
+    use glam::IVec3;
+    use rustc_hash::FxHashMap;
+
+    use crate::world::{
+        World,
+        diff::edit::{VoxelChange, VoxelEdit},
+    };
+
+    use super::fold;
+
+    /// The per-position overlay `edit_world` ran before the per-Micro-chunk fold
+    /// was installed.
+    pub(in crate::world) fn overlay(world: &World, edits: &[VoxelEdit]) -> usize {
+        let mut projected = world.voxel_count();
+        let mut pending: FxHashMap<IVec3, bool> = FxHashMap::default();
+
+        for edit in edits {
+            fold(&mut pending, &mut projected, world, edit);
+        }
+
+        projected
+    }
+
+    /// Sorts the edits by position, so the last edit of a position decides its
+    /// final occupancy and the World is read once per distinct position.
+    pub(in crate::world) fn sorted(world: &World, edits: &[VoxelEdit]) -> usize {
+        let mut order: Vec<(IVec3, u32)> = edits
+            .iter()
+            .enumerate()
+            .map(|(index, edit)| (edit.position, u32::try_from(index).unwrap_or(u32::MAX)))
+            .collect();
+
+        order.sort_unstable_by_key(|&(position, index)| (position.to_array(), index));
+
+        let mut projected = world.voxel_count();
+        let mut start = 0;
+
+        while start < order.len() {
+            let position = order[start].0;
+            let mut end = start;
+
+            while end < order.len() && order[end].0 == position {
+                end += 1;
+            }
+
+            let last = edits[order[end - 1].1 as usize].change;
+            let occupied = world.contains(&position);
+
+            match last {
+                VoxelChange::Set(_) if !occupied => projected = projected.saturating_add(1),
+                VoxelChange::Clear if occupied => projected = projected.saturating_sub(1),
+                _ => {}
+            }
+
+            start = end;
+        }
+
+        projected
+    }
+
+    /// Applies the batch in place, reads the maintained cell counter, and
+    /// restores every touched position from its captured original. The bench
+    /// rolls back unconditionally so the World it measures against is
+    /// unchanged; production would roll back only on a refusal.
+    pub(in crate::world) fn apply_then_rollback(
+        world: &mut World,
+        edits: &[VoxelEdit],
+    ) -> usize {
+        let mut originals: Vec<Option<u8>> = Vec::with_capacity(edits.len());
+
+        for edit in edits {
+            originals.push(world.get_voxel(&edit.position));
+
+            match edit.change {
+                VoxelChange::Set(material) => world.set_voxel(edit.position, material),
+                VoxelChange::Clear => world.clear_voxel(edit.position),
+            }
+        }
+
+        let projected = world.voxel_count();
+
+        for (edit, original) in edits.iter().zip(originals).rev() {
+            match original {
+                Some(material) => world.set_voxel(edit.position, material),
+                None => world.clear_voxel(edit.position),
+            }
+        }
+
+        projected
+    }
 }
 
 fn validate(edit: &VoxelEdit) -> Result<(), EditError> {

@@ -65,26 +65,69 @@
 //!
 //! | workload  |  1k ns/edit | 10k ns/edit | 100k ns/edit | 1M ns/edit |
 //! | --------- | ----------- | ----------- | ------------ | ---------- |
-//! | overwrite |       301.7 |       157.6 |         41.6 |       22.0 |
-//! | mixed     |       337.4 |       162.4 |         58.2 |       40.6 |
-//! | tracked   |       279.4 |       165.3 |         40.2 |       21.4 |
-//! | budget    |       377.2 |       263.3 |         99.2 |       76.9 |
+//! | overwrite |       224.4 |       135.0 |         29.0 |       20.9 |
+//! | mixed     |       221.3 |       140.8 |         52.2 |       39.4 |
+//! | tracked   |       206.8 |       109.7 |         29.4 |       21.0 |
+//! | budget    |       382.3 |       176.5 |         40.5 |       25.2 |
 //!
 //! The small sizes are dominated by the fixed batch overhead, so the per-edit
-//! figures converge downward. A clear roughly doubles the per-edit cost, a
-//! populated tracked set is within noise, and the budget projection is the large
-//! one: it hashes every edit into a pending overlay and reads the world once per
-//! distinct cell, about 55 ms of the 1M budget row. At 60 Hz that is about
-//! 200,000 projected edits against about 800,000 unprojected overwrites.
+//! figures converge downward. A clear roughly doubles the per-edit cost and a
+//! populated tracked set is within noise. The `budget` row carries the installed
+//! projection, a per-Micro-chunk mask fold; its cost and the shapes it replaced
+//! are `budget_projection_timings` below. The 1k row is noisy enough that a
+//! single sample is not comparable to the others.
 //!
 //! The pack is the dirty Regions' whole resident content, not the batch's touched
 //! chunks: at 1,000 edits it packs 4,096 chunks against the 877 touched ones,
-//! because the renderer rebuilds a Region wholesale. It lands at 0.33 to 0.52 ms
+//! because the renderer rebuilds a Region wholesale. It lands at 0.33 to 0.47 ms
 //! at every size, since the eight dense Regions hold 4,096 chunks regardless of
-//! the edit count. So at 1,000 edits the pack exceeds `edit_world` (0.39 against
-//! 0.30 ms), and at 1,000,000 it is under 2%. The upload, BLAS, and TLAS are
+//! the edit count. So at 1,000 edits the pack exceeds `edit_world` (0.47 against
+//! 0.22 ms), and at 1,000,000 it is under 2%. The upload, BLAS, and TLAS are
 //! `render::region::bench`'s `gpu_rebuild_timings`: a one-Region update is about
 //! 1.3 ms of pack and 0.6 ms of apply on church's widest Region.
+//!
+//! `budget_projection_timings`, release, same host and 2026-10-02, dense
+//! fixture: `edit_world`'s budget projection timed alone over the scattered
+//! batches `edit_workload_timings` runs, minimum of eight passes, ns/edit:
+//!
+//! | workload |     edits | overlay | chunked | sorted | apply |
+//! | -------- | --------- | ------- | ------- | ------ | ----- |
+//! | set      |     1,000 |    25.6 |    75.4 |   19.5 |  36.6 |
+//! | mixed    |     1,000 |    25.6 |    75.3 |   19.7 |  74.4 |
+//! | set      |    10,000 |    29.3 |    62.1 |   43.2 |  42.0 |
+//! | mixed    |    10,000 |    29.4 |    62.3 |   44.0 |  88.6 |
+//! | set      |   100,000 |    40.3 |     9.8 |   53.1 |  45.7 |
+//! | mixed    |   100,000 |    41.0 |     9.9 |   53.4 |  90.3 |
+//! | set      | 1,000,000 |    49.7 |     3.7 |   57.8 |  46.4 |
+//! | mixed    | 1,000,000 |    41.7 |     3.5 |   56.9 |  83.4 |
+//!
+//! `overlay` is the original per-position `FxHashMap<IVec3, bool>`, seeded once
+//! per distinct position with `world.contains`. `sorted` sorts the edits by
+//! (position, input index), takes the last edit of each position, and reads the
+//! World once per distinct position. `chunked` folds the edits onto a copy of
+//! each touched Micro-chunk's Occupancy mask and sums the popcount delta,
+//! falling back to `overlay` for a chunk with no entry. `apply` applies the
+//! batch, reads the maintained cell counter, and restores each position from
+//! its captured original; the bench rolls back unconditionally, so production
+//! would pay its apply without the rollback on every accepted batch.
+//!
+//! The projection is `chunked`. It loses to `overlay` below about 30,000 edits
+//! per batch (75 against 26 ns/edit at 1,000) and wins above it (3.5 to 3.7
+//! against 42 to 50 ns/edit at 1,000,000), so it holds the large batches a
+//! budget exists to guard inside a frame. Its cost is one mask read per touched
+//! Micro-chunk, so its worst case is a batch scattering one edit across very
+//! many chunks; that is the Region layout's own sparse case, where every edit is
+//! a first write whose cost is larger than the projection.
+//!
+//! End to end, the installed projection adds about 4 ns/edit to the 1M
+//! `edit_workload_timings` budget row (25.2 against 20.9 for an overwrite),
+//! against about 57 ns/edit for the overlay it replaces.
+//!
+//! `sorted` was rejected as slower at every size. `apply` looks cheapest but
+//! allocates the whole batch into the World before the check, so it does not
+//! bound the runaway allocation a budget is for. The batch-length bound is one
+//! `edits.len()` comparison, O(1) and below timer resolution, and was rejected
+//! because it refuses a long batch of overwrites that would not grow the count.
 //!
 //! `rank_read_path_timings`, release, 2026-10-02, same host. `rank` scanned the
 //! mask from byte 0 on every random read and on every voxel `iter_voxels`
@@ -408,6 +451,7 @@ mod edit_bench {
                 batch::TrackedCoords,
                 edit::{
                     VoxelChange, VoxelEdit, chunks_touched, compile_chunk, edit_world, probe_chunk,
+                    projected_count, projection_candidates,
                 },
                 snapshot::{MicroChunkSnapshot, emit_snapshots},
             },
@@ -879,6 +923,87 @@ mod edit_bench {
             "toggle pairs  {FREE_LIST_WRITES:>7} {toggle:>10.3?} {:>9.1} ns/toggle",
             per_unit(toggle.as_nanos(), FREE_LIST_WRITES)
         );
+    }
+
+    const PROJECTION_REPEATS: usize = 8;
+
+    fn best_projection(mut project: impl FnMut() -> usize) -> u128 {
+        let mut best = u128::MAX;
+
+        for _ in 0..PROJECTION_REPEATS {
+            let start = Instant::now();
+            let count = project();
+            let elapsed = start.elapsed().as_nanos();
+
+            black_box(count);
+            best = best.min(elapsed);
+        }
+
+        best
+    }
+
+    /// The refusal-check shapes measured over the batches `edit_workload_timings`
+    /// runs through the budget row. `overlay` is the per-position overlay the
+    /// budget path ran before; `chunked` is the installed per-Micro-chunk fold;
+    /// `sorted` folds the batch in position order; `apply` applies the batch,
+    /// reads the counter, and restores the captured originals. Every candidate's
+    /// count is asserted equal to the installed one, so a cheap-but-wrong shape
+    /// cannot pass.
+    #[test]
+    #[ignore = "bench: cargo test --release budget_projection_timings -- --ignored --nocapture"]
+    fn budget_projection_timings() {
+        let origins = dense_origins();
+        let mut rng = Rng::new(SEED);
+        let mut world = dense_world(&origins);
+
+        println!("dense edge      {DENSE_EDGE}");
+        println!("voxels          {}", world.voxel_count());
+        println!();
+        println!(
+            "{:<10} {:>7} {:>9} {:>9} {:>9} {:>9}",
+            "workload", "edits", "overlay", "chunked", "sorted", "apply"
+        );
+
+        for size in WORKLOAD_SIZES {
+            let positions = scattered_positions(&mut rng, &origins, size);
+            let sets = set_batch(&positions);
+            let mixed = mixed_batch(&positions);
+
+            for (workload, edits) in [("set", &sets), ("mixed", &mixed)] {
+                let expected = projected_count(&world, edits);
+
+                assert_eq!(
+                    projection_candidates::overlay(&world, edits),
+                    expected,
+                    "{workload} overlay at {size} diverged from the installed fold"
+                );
+                assert_eq!(
+                    projection_candidates::sorted(&world, edits),
+                    expected,
+                    "{workload} sorted at {size} diverged from the installed fold"
+                );
+                assert_eq!(
+                    projection_candidates::apply_then_rollback(&mut world, edits),
+                    expected,
+                    "{workload} apply at {size} diverged from the installed fold"
+                );
+
+                let overlay = best_projection(|| projection_candidates::overlay(&world, edits));
+                let chunked = best_projection(|| projected_count(&world, edits));
+                let sorted = best_projection(|| projection_candidates::sorted(&world, edits));
+                let apply = best_projection(|| {
+                    projection_candidates::apply_then_rollback(&mut world, edits)
+                });
+
+                println!(
+                    "{workload:<10} {size:>7} {:>9.1} {:>9.1} {:>9.1} {:>9.1}",
+                    per_unit(overlay, size),
+                    per_unit(chunked, size),
+                    per_unit(sorted, size),
+                    per_unit(apply, size)
+                );
+            }
+        }
     }
 }
 

@@ -11,7 +11,7 @@ use crate::world::{
     StoreKind, World,
     diff::{
         batch::TrackedCoords,
-        edit::{VoxelChange, VoxelEdit, edit_world},
+        edit::{VoxelChange, VoxelEdit, edit_world, projected_count},
         snapshot::{MicroChunkSnapshot, emit_snapshots},
     },
     grid::{MICRO_CHUNK_LENGTH, grid_origin},
@@ -25,6 +25,7 @@ const DIRECT_SEED: u64 = 0x0702_DA7A;
 const EDIT_SEED: u64 = 0x0703_ED17;
 const EMIT_SEED: u64 = 0x0704_3A17;
 const PROPERTY_SEED: u64 = 0x0705_9A0F;
+const PROJECTION_SEED: u64 = 0x0706_9A0F;
 
 fn scattered_position(rng: &mut Rng) -> IVec3 {
     let mut axis = || i32::try_from(rng.below(512)).unwrap_or(0).wrapping_sub(256);
@@ -253,6 +254,50 @@ fn randomized_edit_batches_agree_across_stores() {
             "{context}: Tracked sets"
         );
         assert_worlds_agree(&region, &map, &context);
+    }
+}
+
+/// The projection's count has to equal the count the same edits leave in the
+/// World, on both stores: the Region store folds per Micro-chunk mask, the map
+/// store falls back to the per-position overlay. Randomized mixed edits with
+/// repeats exercise both paths.
+#[test]
+fn randomized_projections_match_the_applied_count_across_stores() {
+    let mut rng = Rng::new(PROJECTION_SEED);
+
+    for case in 0..32u32 {
+        let clustered = case % 2 == 1;
+        let (mut region, mut map) = randomized_worlds(&mut rng, clustered);
+        let origins = chunk_origins(&mut rng, &region);
+        let edits = random_mixed_edits(&mut rng, &origins);
+        let context =
+            format!("projection seed {PROJECTION_SEED:#x} case {case} (clustered: {clustered})");
+
+        let region_projected = projected_count(&region, &edits);
+        let map_projected = projected_count(&map, &edits);
+
+        assert_eq!(
+            region_projected, map_projected,
+            "{context}: projected counts differ across stores"
+        );
+
+        let tracked: TrackedCoords = origins.iter().copied().step_by(2).collect();
+
+        let _region = edit_world(&mut region, &edits, &tracked)
+            .unwrap_or_else(|error| panic!("{context}: region batch rejected: {error}"));
+        let _map = edit_world(&mut map, &edits, &tracked)
+            .unwrap_or_else(|error| panic!("{context}: map batch rejected: {error}"));
+
+        assert_eq!(
+            region.voxel_count(),
+            region_projected,
+            "{context}: the projection did not match the applied count"
+        );
+        assert_eq!(
+            map.voxel_count(),
+            map_projected,
+            "{context}: the map projection did not match the applied count"
+        );
     }
 }
 
