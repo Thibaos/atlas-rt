@@ -42,7 +42,7 @@ impl<'a> Field<'a> {
             return None;
         }
 
-        self.world.material_at(&cell)
+        self.world.get_voxel(&cell)
     }
 
     /// The Falling granular material at the cell.
@@ -66,7 +66,7 @@ impl<'a> Field<'a> {
             return true;
         }
 
-        let Some(material) = self.world.material_at(&cell) else {
+        let Some(material) = self.world.get_voxel(&cell) else {
             return false;
         };
 
@@ -86,7 +86,7 @@ impl<'a> Field<'a> {
             return true;
         }
 
-        self.world.material_at(&cell).is_some_and(|material| {
+        self.world.get_voxel(&cell).is_some_and(|material| {
             let physical = self.table.get(material);
 
             physical.solid

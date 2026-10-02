@@ -28,12 +28,6 @@ pub struct FreeLists {
     pub(crate) blas: Vec<FreedBlas>,
 }
 
-#[derive(Default)]
-pub struct PendingFrees {
-    pub(crate) pools: Vec<FreedPool>,
-    pub(crate) blas: Vec<FreedBlas>,
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AllocStats {
     pub pool_allocations: u64,
@@ -181,7 +175,7 @@ mod tests {
 
     #[test]
     fn pending_frees_release_into_reusable_lists() {
-        let mut pending = PendingFrees::default();
+        let mut pending = FreeLists::default();
         pending.pools.push(FreedPool {
             buffer_id: Id::INVALID,
             capacity: 64,

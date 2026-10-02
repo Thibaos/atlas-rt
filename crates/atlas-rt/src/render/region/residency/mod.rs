@@ -24,7 +24,7 @@ use crate::{
         context::RenderContext,
         pipeline::task::{default_scene, production_raygen},
         region::{
-            alloc::{AllocStats, FreeLists, PendingFrees},
+            alloc::{AllocStats, FreeLists},
             pack::{REGION_COUNT, RegionData},
             queue::RendererInput,
             rebuild::{RebuildLogEntry, RebuildPlan},
@@ -92,7 +92,7 @@ pub struct RegionStore {
     regions: Vec<Option<ResidentRegion>>,
     table_addresses: Vec<u64>,
     free: FreeLists,
-    pending_free: PendingFrees,
+    pending_free: FreeLists,
     dummy_blas: Arc<AccelerationStructure>,
     alloc_stats: AllocStats,
 }
@@ -123,7 +123,7 @@ impl RegionStore {
             regions: (0..REGION_COUNT).map(|_| None).collect(),
             table_addresses: vec![0; REGION_COUNT],
             free: FreeLists::default(),
-            pending_free: PendingFrees::default(),
+            pending_free: FreeLists::default(),
             dummy_blas,
             alloc_stats: AllocStats::default(),
         };

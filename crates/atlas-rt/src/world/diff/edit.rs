@@ -41,7 +41,7 @@ impl VoxelEdit {
             return true;
         }
 
-        let held = world.material_at(&self.position);
+        let held = world.get_voxel(&self.position);
 
         match self.change {
             VoxelChange::Set(material) => held != Some(material),
@@ -336,7 +336,7 @@ fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
     let mut materials = Vec::new();
 
     for index in 0..MICRO_CELLS {
-        let Some(material) = world.material_at(&origin.saturating_add(cell_offset(index))) else {
+        let Some(material) = world.get_voxel(&origin.saturating_add(cell_offset(index))) else {
             continue;
         };
 
@@ -419,7 +419,7 @@ mod tests {
             )
             .as_ivec3();
 
-            let Some(material) = world.material_at(&snapshot.global_coords.saturating_add(local))
+            let Some(material) = world.get_voxel(&snapshot.global_coords.saturating_add(local))
             else {
                 continue;
             };

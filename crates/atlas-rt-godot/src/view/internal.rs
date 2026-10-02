@@ -1,9 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_rt::world::diff::batch::{self};
-use atlas_rt::world::diff::edit::{
-    MICRO_AREA, MICRO_CELLS, MICRO_EDGE, VoxelChange, VoxelEdit, edit_world,
-};
+use atlas_rt::world::diff::edit::{MICRO_BYTES, MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
@@ -14,9 +12,7 @@ use atlas_rt::render::{
     output::delivery::{DeviceMemory, SLOT_COUNT},
     pipeline::task::RenderMode,
 };
-use atlas_rt::world::World;
 use atlas_rt::world::grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH};
-use glam::IVec3;
 
 use crate::view::api::AtlasRtView;
 use crate::view::{ATLAS_FRAME_UNIFORM, REJECT, VoxFile, camera_view};
@@ -383,7 +379,7 @@ impl AtlasRtView {
     /// Diffs validated chunks against the stored world, applies the edit
     /// primitive, and submits its batch. Does not suppress the display or touch
     /// the job. Refuses without a world or without a pipeline before mutating.
-    pub(super) fn submit_edits(&mut self, edits: Result<Vec<ValidatedChunk>, String>) -> bool {
+    pub(super) fn submit_edits(&mut self, edits: Result<Vec<MicroChunkEdit>, String>) -> bool {
         let chunks = match edits {
             Ok(chunks) => chunks,
             Err(reason) => {
@@ -403,10 +399,18 @@ impl AtlasRtView {
             return false;
         };
 
-        let voxel_edits: Vec<VoxelEdit> = chunks
-            .iter()
-            .flat_map(|chunk| chunk_edits(world, chunk))
-            .collect();
+        let mut voxel_edits: Vec<VoxelEdit> = Vec::new();
+
+        for chunk in &chunks {
+            match chunk.diff(world) {
+                Ok(edits) => voxel_edits.extend(edits),
+                Err(err) => {
+                    godot_error!("{}{}", REJECT, err);
+
+                    return false;
+                }
+            }
+        }
 
         let planned = match edit_world(world, &voxel_edits, &self.world_chunks) {
             Ok(planned) => planned,
@@ -439,7 +443,7 @@ impl AtlasRtView {
         submitted
     }
 
-    pub(super) fn validate_edits(edits: &Array<Variant>) -> Result<Vec<ValidatedChunk>, String> {
+    pub(super) fn validate_edits(edits: &Array<Variant>) -> Result<Vec<MicroChunkEdit>, String> {
         let mut chunks = Vec::with_capacity(edits.len());
 
         for (index, edit) in edits.iter_shared().enumerate() {
@@ -473,7 +477,7 @@ impl AtlasRtView {
         coords: Vector3i,
         mask: &PackedByteArray,
         materials: &PackedByteArray,
-    ) -> Result<ValidatedChunk, String> {
+    ) -> Result<MicroChunkEdit, String> {
         let half = LATTICE_HALF_EXTENT.cast_signed();
         let inside = coords.x >= -half
             && coords.x < half
@@ -494,9 +498,9 @@ impl AtlasRtView {
             return Err(format!("coords {coords} not a multiple of 8"));
         }
 
-        if mask.len() != MASK_BYTES {
+        if mask.len() != MICRO_BYTES {
             return Err(format!(
-                "mask has {} bytes; expected {MASK_BYTES}",
+                "mask has {} bytes; expected {MICRO_BYTES}",
                 mask.len()
             ));
         }
@@ -514,7 +518,7 @@ impl AtlasRtView {
             ));
         }
 
-        let mut mask_bytes = [0u8; MASK_BYTES];
+        let mut mask_bytes = [0u8; MICRO_BYTES];
 
         for (index, byte) in mask.to_vec().iter().copied().enumerate() {
             if let Some(entry) = mask_bytes.get_mut(index) {
@@ -522,73 +526,12 @@ impl AtlasRtView {
             }
         }
 
-        Ok(ValidatedChunk {
+        Ok(MicroChunkEdit {
             origin: glam::IVec3::new(coords.x, coords.y, coords.z),
             mask: mask_bytes,
             materials: materials.to_vec(),
         })
     }
-}
-
-const MASK_BYTES: usize = MICRO_CELLS / 8;
-
-/// A Micro-chunk that passed the GDScript boundary checks, ready to diff.
-/// Only the edit primitive builds Snapshots.
-pub(super) struct ValidatedChunk {
-    origin: IVec3,
-    mask: [u8; MASK_BYTES],
-    materials: Vec<u8>,
-}
-
-/// The Set and Clear edits that turn `world`'s copy of `chunk` into the
-/// incoming mask and materials. Cells walk in ascending index order;
-/// `materials` is consumed only for set bits, matching Snapshot packing.
-fn chunk_edits(world: &World, chunk: &ValidatedChunk) -> Vec<VoxelEdit> {
-    let ValidatedChunk {
-        origin,
-        mask,
-        materials,
-    } = chunk;
-    let mut edits = Vec::new();
-    let mut next_material = 0;
-
-    for index in 0..MICRO_CELLS {
-        let offset = IVec3::new(
-            i32::try_from(index % MICRO_EDGE).unwrap_or(0),
-            i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
-            i32::try_from(index / MICRO_AREA).unwrap_or(0),
-        );
-        let position = origin.saturating_add(offset);
-
-        let occupied = mask
-            .get(index / MICRO_EDGE)
-            .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0);
-
-        let incoming = if occupied {
-            let material = materials.get(next_material).copied();
-            next_material = next_material.saturating_add(1);
-            material
-        } else {
-            None
-        };
-
-        let current = world.get_voxel(&position);
-
-        match (incoming, current) {
-            (Some(material), Some(existing)) if material == existing => {}
-            (Some(material), _) => edits.push(VoxelEdit {
-                position,
-                change: VoxelChange::Set(material),
-            }),
-            (None, Some(_)) => edits.push(VoxelEdit {
-                position,
-                change: VoxelChange::Clear,
-            }),
-            (None, None) => {}
-        }
-    }
-
-    edits
 }
 
 #[cfg(test)]
@@ -597,25 +540,23 @@ mod tests {
         World,
         diff::{
             batch::TrackedCoords,
-            edit::{VoxelChange, VoxelEdit, edit_world},
+            edit::{MICRO_BYTES, MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
         },
     };
     use glam::IVec3;
 
-    use super::{MASK_BYTES, ValidatedChunk, chunk_edits};
-
     const ORIGIN: IVec3 = IVec3::ZERO;
 
-    fn chunk(origin: IVec3, mask: [u8; MASK_BYTES], materials: Vec<u8>) -> ValidatedChunk {
-        ValidatedChunk {
+    fn chunk(origin: IVec3, mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> MicroChunkEdit {
+        MicroChunkEdit {
             origin,
             mask,
             materials,
         }
     }
 
-    fn mask_for(indices: &[u32]) -> [u8; MASK_BYTES] {
-        let mut mask = [0u8; MASK_BYTES];
+    fn mask_for(indices: &[u32]) -> [u8; MICRO_BYTES] {
+        let mut mask = [0u8; MICRO_BYTES];
 
         for index in indices {
             if let Some(byte) = mask.get_mut((*index / 8) as usize) {
@@ -663,7 +604,7 @@ mod tests {
     fn a_zero_mask_clears_every_occupied_cell() {
         let world = world_with(&[(0, 3), (7, 4), (511, 5)]);
 
-        let edits = chunk_edits(&world, &chunk(ORIGIN, [0u8; MASK_BYTES], Vec::new()));
+        let edits = must(chunk(ORIGIN, [0u8; MICRO_BYTES], Vec::new()).diff(&world));
 
         assert_eq!(
             edits,
@@ -689,7 +630,7 @@ mod tests {
     fn a_chunk_identical_to_the_world_produces_no_edits() {
         let world = world_with(&[(0, 9), (64, 2)]);
 
-        let edits = chunk_edits(&world, &chunk(ORIGIN, mask_for(&[0, 64]), vec![9, 2]));
+        let edits = must(chunk(ORIGIN, mask_for(&[0, 64]), vec![9, 2]).diff(&world));
 
         assert!(edits.is_empty());
     }
@@ -698,7 +639,7 @@ mod tests {
     fn a_material_change_emits_set_for_that_cell_only() {
         let world = world_with(&[(0, 9), (1, 4)]);
 
-        let edits = chunk_edits(&world, &chunk(ORIGIN, mask_for(&[0, 1]), vec![9, 7]));
+        let edits = must(chunk(ORIGIN, mask_for(&[0, 1]), vec![9, 7]).diff(&world));
 
         assert_eq!(
             edits,
@@ -711,7 +652,7 @@ mod tests {
 
     #[test]
     fn cells_the_world_lacks_emit_set() {
-        let edits = chunk_edits(&World::default(), &chunk(ORIGIN, mask_for(&[3]), vec![6]));
+        let edits = must(chunk(ORIGIN, mask_for(&[3]), vec![6]).diff(&World::default()));
 
         assert_eq!(
             edits,
@@ -726,9 +667,8 @@ mod tests {
     fn materials_are_walked_in_mask_bit_order() {
         let indices = [0, 7, 64, 511];
 
-        let edits = chunk_edits(
-            &World::default(),
-            &chunk(ORIGIN, mask_for(&indices), vec![1, 2, 3, 4]),
+        let edits = must(
+            chunk(ORIGIN, mask_for(&indices), vec![1, 2, 3, 4]).diff(&World::default()),
         );
 
         assert_eq!(
@@ -759,7 +699,7 @@ mod tests {
         let origin = IVec3::new(8, -16, 24);
         let world = world_at(origin, &[(0, 1)]);
 
-        let edits = chunk_edits(&world, &chunk(origin, mask_for(&[0]), vec![5]));
+        let edits = must(chunk(origin, mask_for(&[0]), vec![5]).diff(&world));
 
         assert_eq!(
             edits,
@@ -804,9 +744,8 @@ mod tests {
         let input = must(RendererInput::new());
         let origin = ORIGIN;
 
-        let edits = chunk_edits(
-            &world,
-            &chunk(origin, mask_for(&[0, 7, 64, 100]), vec![1, 2, 3, 9]),
+        let edits = must(
+            chunk(origin, mask_for(&[0, 7, 64, 100]), vec![1, 2, 3, 9]).diff(&world),
         );
 
         let batch = must(edit_world(&mut world, &edits, &TrackedCoords::default()));
@@ -838,7 +777,7 @@ mod tests {
         must(input.submit_batch(batch.snapshots));
         must(input.wait_until_idle());
 
-        let edits = chunk_edits(&world, &chunk(ORIGIN, [0u8; MASK_BYTES], Vec::new()));
+        let edits = must(chunk(ORIGIN, [0u8; MICRO_BYTES], Vec::new()).diff(&world));
         let batch = must(edit_world(&mut world, &edits, &tracked));
         tracked = batch.tracked;
 

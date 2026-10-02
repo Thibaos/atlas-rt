@@ -66,7 +66,7 @@ fn column_feet(world: &World, min: IVec3, max: IVec3, profile: PlayerProfile) ->
 fn column_top(world: &World, x: i32, z: i32, from: i32, to: i32) -> Option<i32> {
     (from..=to)
         .rev()
-        .find(|y| world.material_at(&IVec3::new(x, *y, z)).is_some())
+        .find(|y| world.get_voxel(&IVec3::new(x, *y, z)).is_some())
 }
 
 fn depenetrate(field: &Field, feet: Vec3, profile: PlayerProfile) -> Vec3 {

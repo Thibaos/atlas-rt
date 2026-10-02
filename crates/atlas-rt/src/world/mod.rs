@@ -136,11 +136,6 @@ impl World {
         self.store.clear(position);
     }
 
-    #[must_use]
-    pub(crate) fn material_at(&self, position: &IVec3) -> Option<u8> {
-        self.get_voxel(position)
-    }
-
     pub fn iter_voxels(&self) -> impl Iterator<Item = (IVec3, u8)> + '_ {
         self.store.iter()
     }
