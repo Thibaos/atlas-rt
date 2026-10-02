@@ -51,10 +51,32 @@
 //!
 //! The batch is pre-applied to the world before `edit_world` is timed, so every
 //! edit here overwrites an already-occupied cell in a dense Region. First writes
-//! into empty Micro-chunks, clears, growth between size classes, a non-empty
-//! tracked set, and the budget projection are all outside these figures, and so
-//! is the renderer's per-Region rebuild after the batch. The older 11 to 17 µs
-//! figures included mutation and assembly.
+//! and growth between size classes are `free_list_edit_timings`; clears, a
+//! populated tracked set, the budget projection, and the renderer's CPU pack are
+//! `edit_workload_timings`. The older 11 to 17 µs figures included mutation and
+//! assembly.
+//!
+//! `edit_workload_timings`, release, same host. `edit_world` alone over 100,000
+//! and 1,000,000 edits on the dense fixture, by path, with the renderer's CPU
+//! pack beside it. `tracked` is the same batch with the touched chunks in the
+//! tracked set. `budget` forces the projection `edit_world` runs once a cell
+//! threshold is set; in production `cell_budget()` is `usize::MAX`, so the
+//! projection is skipped and this row is the cost the day a number lands:
+//!
+//! | workload  | 100k ns/edit | 1M ns/edit | 1M edit_world |
+//! | --------- | ------------ | ---------- | ------------- |
+//! | overwrite |         34.0 |       21.0 |      21.038 ms |
+//! | mixed     |         58.2 |       40.8 |      40.847 ms |
+//! | tracked   |         32.9 |       21.2 |      21.233 ms |
+//! | budget    |         85.1 |       78.1 |      78.071 ms |
+//!
+//! A clear roughly doubles the per-edit cost, a populated tracked set is within
+//! noise, and the budget projection is the large one: it hashes every edit into
+//! a pending overlay and reads the world once per distinct cell, about 57 ms of
+//! the 1M budget row. At 60 Hz that is about 200,000 projected edits against
+//! about 800,000 unprojected overwrites. The renderer's CPU pack is about 100 ns
+//! per touched Micro-chunk, 0.4 ms over the 4096 chunks, a small share of the
+//! edit cost on these dense workloads; the upload, BLAS, and TLAS need a device.
 //!
 //! `rank_read_path_timings`, release, 2026-10-02, same host. `rank` scanned the
 //! mask from byte 0 on every random read and on every voxel `iter_voxels`
@@ -363,22 +385,27 @@ mod load_bench {
 }
 
 mod edit_bench {
+    use std::hint::black_box;
     use std::time::{Duration, Instant};
 
     use glam::IVec3;
     use rustc_hash::FxHashSet;
 
-    use crate::world::{
-        World,
-        diff::{
-            batch::TrackedCoords,
-            edit::{
-                VoxelChange, VoxelEdit, chunks_touched, compile_chunk, edit_world, probe_chunk,
+    use crate::{
+        render::region::pack::pack_regions,
+        world::{
+            World,
+            budget::set_cell_budget,
+            diff::{
+                batch::TrackedCoords,
+                edit::{
+                    VoxelChange, VoxelEdit, chunks_touched, compile_chunk, edit_world, probe_chunk,
+                },
+                snapshot::MicroChunkSnapshot,
             },
-            snapshot::MicroChunkSnapshot,
+            grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_index_of},
+            test_support::Rng,
         },
-        grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_index_of},
-        test_support::Rng,
     };
 
     const BATCH_SIZES: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
@@ -646,6 +673,123 @@ mod edit_bench {
 
                 println!(
                     "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0} {frame_per:>7.0}%"
+                );
+            }
+        }
+    }
+
+    const WORKLOAD_SIZES: [usize; 2] = [100_000, 1_000_000];
+    const PACK_REPEATS: usize = 3;
+
+    fn scattered_positions(rng: &mut Rng, origins: &[IVec3], count: usize) -> Vec<IVec3> {
+        let mut cycle = origins.iter().cycle();
+
+        (0..count)
+            .map(|_| {
+                let origin = cycle.next().copied().unwrap_or(IVec3::ZERO);
+
+                random_cell(origin, rng)
+            })
+            .collect()
+    }
+
+    fn set_batch(positions: &[IVec3]) -> Vec<VoxelEdit> {
+        positions.iter().copied().map(set_edit).collect()
+    }
+
+    fn mixed_batch(positions: &[IVec3]) -> Vec<VoxelEdit> {
+        positions
+            .iter()
+            .enumerate()
+            .map(|(index, position)| VoxelEdit {
+                position: *position,
+                change: if index.is_multiple_of(2) {
+                    VoxelChange::Set(EDIT_MATERIAL)
+                } else {
+                    VoxelChange::Clear
+                },
+            })
+            .collect()
+    }
+
+    /// The fastest of [`PACK_REPEATS`] renderer-side packs of the batch's
+    /// snapshots. This is the CPU half of the rebuild; the buffer upload, BLAS,
+    /// and TLAS need a Vulkan device.
+    fn best_pack(snapshots: &[MicroChunkSnapshot]) -> Duration {
+        let mut best = Duration::MAX;
+
+        for _ in 0..PACK_REPEATS {
+            let start = Instant::now();
+            let packed = pack_regions(snapshots).unwrap();
+            let elapsed = start.elapsed();
+
+            black_box(packed.len());
+
+            if elapsed < best {
+                best = elapsed;
+            }
+        }
+
+        best
+    }
+
+    fn run_workload(
+        edits: &[VoxelEdit],
+        tracked: &TrackedCoords,
+        budget: bool,
+    ) -> (usize, Duration, Duration) {
+        let mut world = dense_world(&dense_origins());
+        let _guard = budget.then(|| set_cell_budget(usize::MAX - 1));
+
+        let start = Instant::now();
+        let batch = edit_world(&mut world, edits, tracked).unwrap();
+        let full = start.elapsed();
+
+        let chunks = batch.snapshots.len();
+        let pack = best_pack(&batch.snapshots);
+
+        (chunks, full, pack)
+    }
+
+    /// The edit call across the workloads `edit_path_timings` does not cover:
+    /// clears through `edit_world`, a populated tracked set, and the budget
+    /// projection. First writes into empty Micro-chunks are not here because
+    /// they are per touched chunk rather than per edit, and
+    /// `free_list_edit_timings` already times them. The pack column is the
+    /// renderer's CPU rebuild of the touched Regions beside the edit cost.
+    #[test]
+    #[ignore = "bench: cargo test --release edit_workload_timings -- --ignored --nocapture"]
+    fn edit_workload_timings() {
+        let origins = dense_origins();
+        let mut rng = Rng::new(SEED);
+
+        println!("frame budget    {:.3?} (60 Hz)", FRAME_BUDGET);
+        println!();
+        println!(
+            "{:<10} {:>7} {:>7} {:>11} {:>9} {:>9} {:>11} {:>8}",
+            "workload", "edits", "chunks", "edit_world", "ns/edit", "ns/chunk", "pack ns/chunk", "frame %"
+        );
+
+        for size in WORKLOAD_SIZES {
+            let positions = scattered_positions(&mut rng, &origins, size);
+            let sets = set_batch(&positions);
+            let mixed = mixed_batch(&positions);
+            let tracked: TrackedCoords = chunks_touched(&sets).into_iter().collect();
+
+            for (workload, edits, tracked, budget) in [
+                ("overwrite", &sets, &TrackedCoords::default(), false),
+                ("mixed", &mixed, &TrackedCoords::default(), false),
+                ("tracked", &sets, &tracked, false),
+                ("budget", &sets, &TrackedCoords::default(), true),
+            ] {
+                let (chunks, full, pack) = run_workload(edits, tracked, budget);
+                let full_per = per_unit(full.as_nanos(), size);
+                let chunk_per = per_unit(full.as_nanos(), chunks);
+                let pack_per = per_unit(pack.as_nanos(), chunks);
+                let frame_per = full.as_secs_f64() / FRAME_BUDGET.as_secs_f64() * 100.0;
+
+                println!(
+                    "{workload:<10} {size:>7} {chunks:>7} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {pack_per:>11.0} {frame_per:>7.0}%"
                 );
             }
         }
