@@ -15,7 +15,8 @@ use tracing::error;
 use crate::{
     host::display_gate::DisplayGate,
     world::{
-        World,
+        BoundsPolicy, StoreKind, World,
+        budget::cell_budget,
         diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
         load::progress::{Progress, Stage},
         material::{PhysicalMaterialTable, load_table},
@@ -233,10 +234,13 @@ impl WorldUpdateJob {
 
         let (sender, receiver) = mpsc::channel();
         let progress = Arc::clone(&self.progress);
+        let budget = cell_budget();
 
         let thread = spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run_pipeline(&progress, &*source)))
-                .unwrap_or_else(|_| Err(String::from("the loader panicked")));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                run_pipeline(&progress, &*source, budget)
+            }))
+            .unwrap_or_else(|_| Err(String::from("the loader panicked")));
 
             let _ = sender.send(result);
         });
@@ -465,7 +469,11 @@ impl Drop for WorldUpdateJob {
 /// The load pipeline, from a world's bytes to the snapshots the renderer takes.
 /// Its only output is plain data, so it runs on a thread with no renderer
 /// access.
-fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResult, String> {
+fn run_pipeline(
+    progress: &Progress,
+    source: &dyn WorldSource,
+    budget: usize,
+) -> Result<RunResult, String> {
     let name = source.name();
     let bytes = source
         .read()
@@ -483,7 +491,15 @@ fn run_pipeline(progress: &Progress, source: &dyn WorldSource) -> Result<RunResu
 
     let materials = load_table(source.filesystem_path().as_deref());
 
-    let (world, clipped) = World::new_clipped(&voxel_data);
+    let (world, clipped) =
+        match super::build::load(&voxel_data, BoundsPolicy::Clip, StoreKind::Region, budget) {
+            Ok((world, clipped)) => (world, clipped),
+            Err(refused) => {
+                return Err(format!(
+                    "the world needs {refused} cells, above the cell budget of {budget}"
+                ));
+            }
+        };
 
     progress.end_stage(Stage::Build);
 
@@ -860,6 +876,35 @@ mod tests {
         assert_eq!(job.status(), Status::Failed);
         assert!(job.error().is_some(), "the failure carries a reason");
         assert!(job.take_loaded().is_none(), "no world came out of it");
+
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+
+        assert_eq!(
+            poll_until(&mut job),
+            Finished::Loaded,
+            "the next job runs on a live thread"
+        );
+    }
+
+    #[test]
+    fn a_load_past_the_budget_fails_and_the_next_job_runs() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        let budget = crate::world::budget::set_cell_budget(0);
+
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Failed);
+        assert_eq!(job.status(), Status::Failed);
+        assert!(
+            job.error()
+                .is_some_and(|error| error.contains("needs 1 cells")),
+            "the failure names the refused cell count"
+        );
+        assert!(job.take_loaded().is_none(), "no world came out of it");
+
+        drop(budget);
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 

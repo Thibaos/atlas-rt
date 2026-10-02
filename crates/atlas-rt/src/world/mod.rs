@@ -1,3 +1,4 @@
+pub(crate) mod budget;
 pub mod diff;
 pub mod grid;
 pub mod load;
@@ -94,16 +95,23 @@ impl World {
 
     #[must_use]
     pub fn new_with_store(voxel_data: &DotVoxData, store: StoreKind) -> Self {
-        let (world, clipped, _attempts) = load::build::load(voxel_data, BoundsPolicy::Panic, store);
+        let (world, clipped) = Self::build(voxel_data, BoundsPolicy::Panic, store);
         debug_assert_eq!(clipped, 0);
         world
     }
 
     #[must_use]
     pub fn new_clipped_with_store(voxel_data: &DotVoxData, store: StoreKind) -> (Self, usize) {
-        let (world, clipped, _attempts) = load::build::load(voxel_data, BoundsPolicy::Clip, store);
+        Self::build(voxel_data, BoundsPolicy::Clip, store)
+    }
 
-        (world, clipped)
+    /// Builds a store with no cell budget: a direct constructor has no way to
+    /// report a refusal, so it never refuses. The load job reads the budget.
+    fn build(voxel_data: &DotVoxData, policy: BoundsPolicy, store: StoreKind) -> (Self, usize) {
+        match load::build::load(voxel_data, policy, store, usize::MAX) {
+            Ok((world, clipped)) => (world, clipped),
+            Err(refused) => panic!("the loader refused {refused} cells with no cell budget set"),
+        }
     }
 
     #[must_use]

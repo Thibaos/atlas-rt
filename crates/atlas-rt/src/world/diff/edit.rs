@@ -1,10 +1,11 @@
 use std::{error::Error, fmt, fmt::Display};
 
 use glam::IVec3;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::world::{
     World,
+    budget::cell_budget,
     diff::{
         batch::{Batch, TrackedCoords, plan_edit},
         snapshot::MicroChunkSnapshot,
@@ -120,17 +121,11 @@ fn validate_chunk(chunk: &MicroChunkEdit) -> Result<(), EditError> {
     let position = chunk.origin;
 
     if !in_lattice(position) {
-        return Err(EditError {
-            position,
-            reason: EditReason::OutsideLattice,
-        });
+        return Err(EditError::rejected(position, EditReason::OutsideLattice));
     }
 
     if grid_origin(position, MICRO_CHUNK_LENGTH) != position {
-        return Err(EditError {
-            position,
-            reason: EditReason::NotChunkOrigin,
-        });
+        return Err(EditError::rejected(position, EditReason::NotChunkOrigin));
     }
 
     let occupied: usize = chunk
@@ -140,13 +135,13 @@ fn validate_chunk(chunk: &MicroChunkEdit) -> Result<(), EditError> {
         .sum();
 
     if occupied != chunk.materials.len() {
-        return Err(EditError {
+        return Err(EditError::rejected(
             position,
-            reason: EditReason::MaterialCount {
+            EditReason::MaterialCount {
                 occupied,
                 given: chunk.materials.len(),
             },
-        });
+        ));
     }
 
     Ok(())
@@ -170,33 +165,51 @@ pub(crate) enum EditReason {
     MaterialCount { occupied: usize, given: usize },
 }
 
+/// Why a Voxel edit batch was refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct EditError {
-    position: IVec3,
-    reason: EditReason,
+enum Refusal {
+    Rejected { position: IVec3, reason: EditReason },
+    OverBudget { count: usize, limit: usize },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditError(Refusal);
+
+impl EditError {
+    const fn rejected(position: IVec3, reason: EditReason) -> Self {
+        Self(Refusal::Rejected { position, reason })
+    }
+
+    const fn over_budget(count: usize, limit: usize) -> Self {
+        Self(Refusal::OverBudget { count, limit })
+    }
 }
 
 impl Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self { position, reason } = self;
-
-        match reason {
-            EditReason::OutsideLattice => write!(f, "voxel {position} is outside the lattice"),
-            EditReason::RegionOutsideLattice => {
-                write!(
-                    f,
-                    "the region holding voxel {position} is outside the lattice"
-                )
-            }
-            EditReason::NotChunkOrigin => {
-                write!(f, "voxel {position} is not a Micro-chunk origin")
-            }
-            EditReason::MaterialCount { occupied, given } => {
-                write!(
-                    f,
-                    "the mask marks {occupied} cells but carries {given} materials"
-                )
-            }
+        match self.0 {
+            Refusal::Rejected { position, reason } => match reason {
+                EditReason::OutsideLattice => write!(f, "voxel {position} is outside the lattice"),
+                EditReason::RegionOutsideLattice => {
+                    write!(
+                        f,
+                        "the region holding voxel {position} is outside the lattice"
+                    )
+                }
+                EditReason::NotChunkOrigin => {
+                    write!(f, "voxel {position} is not a Micro-chunk origin")
+                }
+                EditReason::MaterialCount { occupied, given } => {
+                    write!(
+                        f,
+                        "the mask marks {occupied} cells but carries {given} materials"
+                    )
+                }
+            },
+            Refusal::OverBudget { count, limit } => write!(
+                f,
+                "the batch would leave {count} cells, above the cell budget of {limit}"
+            ),
         }
     }
 }
@@ -206,14 +219,16 @@ impl Error for EditError {}
 /// Mutates `world`, compiles every Micro-chunk the edits touch, and returns the
 /// snapshots to submit with the tracked set they leave behind.
 ///
-/// The edits are validated from the starting world before any of them is
-/// applied, so a rejected batch leaves the world, the tracked set, and the
-/// snapshots exactly as they were.
+/// The edits are validated, and the batch is checked against the World's cell
+/// budget, from the starting world before any of them is applied, so a refused
+/// batch leaves the world, the tracked set, and the snapshots exactly as they
+/// were.
 ///
 /// # Errors
 ///
 /// Returns an [`EditError`] naming the position when an edit lies outside the
-/// voxel lattice or its Micro-chunk lies outside the renderer lattice.
+/// voxel lattice or its Micro-chunk lies outside the renderer lattice, and
+/// naming the count when the batch would carry the World past its cell budget.
 pub fn edit_world(
     world: &mut World,
     edits: &[VoxelEdit],
@@ -221,6 +236,16 @@ pub fn edit_world(
 ) -> Result<Batch, EditError> {
     for edit in edits {
         validate(edit)?;
+    }
+
+    let limit = cell_budget();
+
+    if limit != usize::MAX {
+        let projected = projected_count(world, edits);
+
+        if projected > limit {
+            return Err(EditError::over_budget(projected, limit));
+        }
     }
 
     for edit in edits {
@@ -238,13 +263,41 @@ pub fn edit_world(
     Ok(plan_edit(snapshots, tracked))
 }
 
+/// The World's count after `edits` apply, without mutating it. A repeated
+/// position folds through the pending overlay, so a set of a fresh cell
+/// followed by its clear nets to no change.
+fn projected_count(world: &World, edits: &[VoxelEdit]) -> usize {
+    let mut projected = world.voxel_count();
+    let mut pending: FxHashMap<IVec3, bool> = FxHashMap::default();
+
+    for edit in edits {
+        let occupied = *pending
+            .entry(edit.position)
+            .or_insert_with(|| world.contains(&edit.position));
+
+        match edit.change {
+            VoxelChange::Set(_) => {
+                if !occupied {
+                    projected = projected.saturating_add(1);
+                }
+
+                pending.insert(edit.position, true);
+            }
+            VoxelChange::Clear => {
+                if occupied {
+                    projected = projected.saturating_sub(1);
+                }
+
+                pending.insert(edit.position, false);
+            }
+        }
+    }
+
+    projected
+}
+
 fn validate(edit: &VoxelEdit) -> Result<(), EditError> {
-    let fail = |reason| {
-        Err(EditError {
-            position: edit.position,
-            reason,
-        })
-    };
+    let fail = |reason| Err(EditError::rejected(edit.position, reason));
 
     if !in_lattice(edit.position) {
         return fail(EditReason::OutsideLattice);
@@ -309,6 +362,7 @@ mod tests {
 
     use crate::world::{
         World,
+        budget::set_cell_budget,
         diff::{
             batch::TrackedCoords,
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},
@@ -548,13 +602,102 @@ mod tests {
     }
 
     #[test]
+    fn a_batch_past_the_budget_is_refused_whole() {
+        let mut world = World::default();
+        world.set_voxel(IVec3::ZERO, 4);
+
+        let tracked: TrackedCoords = [IVec3::ZERO].into_iter().collect();
+        let before = emit_snapshots(&world).unwrap();
+        let _budget = set_cell_budget(1);
+
+        let error = edit_world(&mut world, &[set(1, 0, 0, 8)], &tracked).unwrap_err();
+
+        assert_eq!(
+            error,
+            EditError::over_budget(2, 1),
+            "the failure names the projected count and the limit"
+        );
+        assert!(
+            error.to_string().contains("2 cells"),
+            "the message names the refused count"
+        );
+        assert_eq!(world.voxel_count(), 1, "the world was not mutated");
+        assert!(world.get_voxel(&IVec3::new(1, 0, 0)).is_none());
+        assert_eq!(
+            emit_snapshots(&world).unwrap(),
+            before,
+            "the emission is unchanged"
+        );
+
+        // tracked is only borrowed, so a refusal cannot change it
+        assert_eq!(tracked, [IVec3::ZERO].into_iter().collect());
+    }
+
+    #[test]
+    fn a_batch_at_the_budget_applies() {
+        let mut world = World::default();
+        world.set_voxel(IVec3::ZERO, 4);
+
+        let _budget = set_cell_budget(2);
+
+        let batch = edit_world(&mut world, &[set(1, 0, 0, 8)], &TrackedCoords::default()).unwrap();
+
+        assert_eq!(world.voxel_count(), 2, "the batch lands at the limit");
+        assert_eq!(world.get_voxel(&IVec3::new(1, 0, 0)), Some(8));
+        assert_eq!(batch.tracked, [IVec3::ZERO].into_iter().collect());
+    }
+
+    #[test]
+    fn a_batch_that_stays_within_the_budget_by_clearing_applies() {
+        let mut world = World::default();
+        world.set_voxel(IVec3::ZERO, 4);
+
+        let _budget = set_cell_budget(1);
+
+        let batch = edit_world(
+            &mut world,
+            &[set(1, 0, 0, 5), clear(0, 0, 0)],
+            &TrackedCoords::default(),
+        )
+        .unwrap();
+
+        assert_eq!(world.voxel_count(), 1, "the clear offsets the set");
+        assert_eq!(world.get_voxel(&IVec3::new(1, 0, 0)), Some(5));
+        assert!(world.get_voxel(&IVec3::ZERO).is_none());
+        assert_eq!(batch.tracked, [IVec3::ZERO].into_iter().collect());
+    }
+
+    #[test]
+    fn overwrites_and_repeated_positions_project_the_net_count() {
+        let mut world = World::default();
+        world.set_voxel(IVec3::ZERO, 4);
+
+        let _budget = set_cell_budget(1);
+
+        // the overwrite nets to nothing and the set-then-clear of the fresh
+        // cell nets to nothing, so the batch lands at the limit
+        let batch = edit_world(
+            &mut world,
+            &[set(0, 0, 0, 9), set(2, 0, 0, 3), clear(2, 0, 0)],
+            &TrackedCoords::default(),
+        )
+        .unwrap();
+
+        assert_eq!(world.voxel_count(), 1);
+        assert_eq!(
+            world.get_voxel(&IVec3::ZERO),
+            Some(9),
+            "the overwrite landed"
+        );
+        assert!(world.get_voxel(&IVec3::new(2, 0, 0)).is_none());
+        assert_eq!(batch.tracked, [IVec3::ZERO].into_iter().collect());
+    }
+
+    #[test]
     fn the_offending_position_is_named_in_the_error() {
         // the region arm is unreachable through `apply` while the voxel lattice
         // is the tighter bound, so the wording is checked on the error itself
-        let error = EditError {
-            position: IVec3::new(-1, 2, -3),
-            reason: EditReason::RegionOutsideLattice,
-        };
+        let error = EditError::rejected(IVec3::new(-1, 2, -3), EditReason::RegionOutsideLattice);
 
         assert_eq!(
             error.to_string(),

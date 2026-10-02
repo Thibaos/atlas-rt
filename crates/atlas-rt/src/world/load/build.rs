@@ -17,22 +17,23 @@ struct Batch<'scene> {
     region_bounds: (IVec3, IVec3),
 }
 
-/// Places every model's voxels and reports the clipped count and the
-/// in-lattice attempt count.
+/// Places every model's voxels and reports the clipped count.
 ///
 /// A scene graph is partitioned by Region: the 4096 Region slots are split
 /// across worker threads, each slot has exactly one owner thread, and a Region
 /// is written into its own blob rather than into a staged copy. Placements are
 /// walked in serial order inside every Region, so a later placement at a shared
-/// cell still wins. The attempt count is summed before any Region blob is
-/// allocated, for a budget check to read.
+/// cell still wins. The in-lattice attempt count is summed before any Region
+/// blob is allocated, and a load above `budget` is refused with that count
+/// before the allocation.
 pub(in crate::world) fn load(
     voxel_data: &DotVoxData,
     policy: BoundsPolicy,
     store: StoreKind,
-) -> (World, usize, usize) {
+    budget: usize,
+) -> Result<(World, usize), usize> {
     if voxel_data.scenes.is_empty() {
-        return load_without_scene(voxel_data, policy, store);
+        return load_without_scene(voxel_data, policy, store, budget);
     }
 
     let (traverse_clipped, models) = collect_models(voxel_data, policy);
@@ -59,8 +60,14 @@ pub(in crate::world) fn load(
 
     clipped = clipped.saturating_add(clipped_voxels(&batches, policy));
 
+    let attempts = usize::try_from(attempts).unwrap_or(usize::MAX);
+
     if batches.is_empty() || attempts == 0 {
-        return (World::empty(store), clipped, 0);
+        return Ok((World::empty(store), clipped));
+    }
+
+    if attempts > budget {
+        return Err(attempts);
     }
 
     let world = match store {
@@ -69,11 +76,7 @@ pub(in crate::world) fn load(
         StoreKind::Map => build_map(batches),
     };
 
-    (
-        world,
-        clipped,
-        usize::try_from(attempts).unwrap_or(usize::MAX),
-    )
+    Ok((world, clipped))
 }
 
 /// The no-scene path: every model is inserted straight through the traverser.
@@ -81,12 +84,17 @@ fn load_without_scene(
     voxel_data: &DotVoxData,
     policy: BoundsPolicy,
     store: StoreKind,
-) -> (World, usize, usize) {
+    budget: usize,
+) -> Result<(World, usize), usize> {
     let attempts = voxel_data
         .models
         .iter()
-        .map(|model| model.voxels.len() as u64)
-        .fold(0u64, u64::saturating_add);
+        .map(|model| model.voxels.len())
+        .fold(0usize, usize::saturating_add);
+
+    if attempts > budget {
+        return Err(attempts);
+    }
 
     let mut world = World::empty(store);
     let mut loader = SceneGraphTraverser {
@@ -99,11 +107,7 @@ fn load_without_scene(
     let clipped = loader.traverse();
     drop(loader);
 
-    (
-        world,
-        clipped,
-        usize::try_from(attempts).unwrap_or(usize::MAX),
-    )
+    Ok((world, clipped))
 }
 
 fn collect_models(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (usize, Vec<PlacedModel<'_>>) {
