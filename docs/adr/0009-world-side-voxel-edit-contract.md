@@ -23,7 +23,7 @@ material. `None` reads as "do nothing here" as easily as "clear here", and the
 two must not be confusable at a call site. Materials are `u8` because the
 Palette has 256 entries, the snapshot carries bytes, and
 [0004](0004-sharded-world-map.md) requires material indices to fit a byte;
-`World` stores `u32` and widens on write.
+`World` stores one material byte per cell.
 
 Validation runs first and is all-or-nothing. An out-of-lattice position, or a
 position whose Micro-chunk would fall outside the region lattice, rejects the
@@ -34,14 +34,15 @@ panicking as `World::assert_in_lattice` does. The primitive must never produce
 a snapshot that `RendererInput::submit_batch` rejects, because that path
 asserts.
 
-The compile reads the world back per touched chunk: 512 `get_voxel` probes,
-mask bits for the occupied cells, materials in ascending cell order, and a
-cleared snapshot for a chunk left empty. `World` keeps no chunk occupancy
+The compile reads the world back per touched chunk: the Micro-chunk's entry,
+mask bits for the occupied cells followed by materials in ascending cell order,
+and a cleared snapshot for a chunk left empty. `World` keeps no chunk occupancy
 index. `edit_path_timings` put the on-thread cost at about 10 µs per touched
 chunk, so the measured fallback, a locked or worker-owned `World` plus a chunk
 index, was not taken. It reopens if scattered 10,000-plus edits per frame or
 fills compiling more than roughly 1,500 chunks in one frame become real
-targets.
+targets. [0016](0016-world-microchunk-storage-format.md) supersedes the 10 µs
+figure the probes produced and leaves this trigger standing.
 
 The tracked coordinate set is caller-owned and updated by the primitive. It
 means what the renderer holds after the last submitted batch, and the `World`
@@ -59,7 +60,12 @@ shape generators.
 
 ## Status
 
-accepted (voxel-edits ticket 06, 2026-09-22)
+accepted (voxel-edits ticket 06, 2026-09-22). Amended (region-backed voxel
+store, 2026-10-02): the World stores one material byte per cell, and the compile
+reads the Micro-chunk's entry rather than 512 `get_voxel` probes. The measured
+compile cost is superseded by
+[0016](0016-world-microchunk-storage-format.md); the rejection of a
+supplementary chunk occupancy index and its reopen trigger still stand.
 
 ## Considered Options
 
