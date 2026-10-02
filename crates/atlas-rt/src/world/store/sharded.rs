@@ -99,11 +99,6 @@ impl VoxelStore for ShardedMap {
     fn count(&self) -> usize {
         self.shards.iter().map(HashMap::len).sum()
     }
-
-    #[cfg(test)]
-    fn reserved_capacity(&self) -> usize {
-        self.shards.iter().map(HashMap::capacity).sum()
-    }
 }
 
 #[cfg(test)]

@@ -4,6 +4,9 @@ use glam::IVec3;
 
 use crate::world::{grid, store::VoxelStore};
 
+#[cfg(test)]
+use crate::world::store::StorageSize;
+
 const MICRO_CHUNK: usize = grid::MICRO_CHUNK_LENGTH as usize;
 const MICRO_CHUNK_SIDE: usize = (grid::REGION_LENGTH / grid::MICRO_CHUNK_LENGTH) as usize;
 const MICRO_CHUNK_SIDE_AREA: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
@@ -585,26 +588,28 @@ impl VoxelStore for RegionStore {
     }
 
     #[cfg(test)]
-    fn reserved_capacity(&self) -> usize {
-        let table = self
-            .regions
-            .len()
-            .saturating_mul(std::mem::size_of::<Option<Region>>());
-        let index = self
-            .regions
-            .iter()
-            .flatten()
-            .count()
-            .saturating_mul(MICRO_CHUNKS_PER_REGION)
-            .saturating_mul(std::mem::size_of::<u32>());
-        let blob: usize = self
-            .regions
-            .iter()
-            .flatten()
-            .map(|region| region.blob.len())
-            .sum();
+    fn storage_size(&self) -> StorageSize {
+        let mut index = 0usize;
+        let mut blob = 0usize;
 
-        table.saturating_add(index).saturating_add(blob)
+        for region in self.regions.iter().flatten() {
+            index = index.saturating_add(
+                region
+                    .index
+                    .len()
+                    .saturating_mul(std::mem::size_of::<u32>()),
+            );
+            blob = blob.saturating_add(region.blob.len());
+        }
+
+        StorageSize {
+            table: self
+                .regions
+                .len()
+                .saturating_mul(std::mem::size_of::<Option<Region>>()),
+            index,
+            blob,
+        }
     }
 }
 
@@ -635,6 +640,171 @@ mod tests {
         let z = index / MICRO_CHUNK_AREA;
 
         IVec3::new(x as i32, y as i32, z as i32)
+    }
+
+    /// The most bytes one Region table slot may take; 4096 slots at this cap
+    /// are a negligible share of the storage.
+    const REGION_SLOT_MAX: usize = 512;
+
+    /// A full 64^3 dense block: eight Micro-chunks per axis, well inside one
+    /// Region.
+    const DENSE_EDGE: i32 = 64;
+
+    fn dense_chunk_origins() -> Vec<IVec3> {
+        let mut origins = Vec::new();
+
+        for z in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
+            for y in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
+                for x in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
+                    origins.push(IVec3::new(x, y, z));
+                }
+            }
+        }
+
+        origins
+    }
+
+    /// A write-only dense fixture: one full 64^3 block per Region, laid out
+    /// along x so every Region is distinct. Returns the store and its
+    /// Micro-chunk count.
+    fn dense_fixture(regions: usize) -> (RegionStore, usize) {
+        let mut store = RegionStore::default();
+        let local = dense_chunk_origins();
+        let mut chunks = 0usize;
+
+        for region in 0..regions {
+            let offset = region * grid::REGION_LENGTH as usize;
+            let base = IVec3::new(i32::try_from(offset).unwrap_or(0), 0, 0);
+
+            for origin in &local {
+                fill_micro_chunk(&mut store, base.saturating_add(*origin));
+                chunks = chunks.saturating_add(1);
+            }
+        }
+
+        (store, chunks)
+    }
+
+    fn fill_micro_chunk(store: &mut RegionStore, origin: IVec3) {
+        for z in 0..MICRO_CHUNK as i32 {
+            for y in 0..MICRO_CHUNK as i32 {
+                for x in 0..MICRO_CHUNK as i32 {
+                    store.set(origin.saturating_add(IVec3::new(x, y, z)), 1);
+                }
+            }
+        }
+    }
+
+    /// A full Micro-chunk's 576-byte entry.
+    fn full_entry() -> usize {
+        class_size(class_of_size(MASK_BYTES + MICRO_CHUNK_CELLS))
+    }
+
+    /// A one-voxel Micro-chunk's entry: 65 bytes padded to 72.
+    fn single_entry() -> usize {
+        class_size(class_of_size(MASK_BYTES + 1))
+    }
+
+    /// The bytes a Micro-chunk's growth from empty to full leaves allocated:
+    /// one block per class from 72 to 576 bytes.
+    fn growth_ladder_bytes() -> usize {
+        (0..CLASS_COUNT).map(class_size).sum()
+    }
+
+    #[test]
+    fn full_region_layout_arithmetic() {
+        let entry = full_entry();
+        let blob = MICRO_CHUNKS_PER_REGION * entry;
+        let index = MICRO_CHUNKS_PER_REGION * std::mem::size_of::<u32>();
+        let voxels = MICRO_CHUNKS_PER_REGION * MICRO_CHUNK_CELLS;
+
+        assert_eq!(MICRO_CHUNKS_PER_REGION, 32_768);
+        assert_eq!(entry, 576, "a full Micro-chunk entry is 576 bytes");
+        assert_eq!(blob, 18 * 1024 * 1024, "18 MiB of blob");
+        assert_eq!(index, 128 * 1024, "128 KiB of index");
+        assert_eq!(voxels, 16_777_216);
+
+        let per_voxel = (blob + index) as f64 / voxels as f64;
+
+        assert!(
+            (per_voxel - 1.133).abs() < 0.001,
+            "18.125 MiB over 16.78 Mi voxels is about 1.133 bytes each"
+        );
+    }
+
+    #[test]
+    fn dense_fixture_asserts_bytes_per_occupied_voxel() {
+        let regions = 2usize;
+        let (store, chunks) = dense_fixture(regions);
+        let voxels = store.count();
+        let size = store.storage_size();
+
+        let entry = full_entry();
+        let live_blob = chunks * entry;
+        // The first full Micro-chunk in a Region allocates every size class;
+        // each later Micro-chunk reuses them and appends only its own entry.
+        let expected_blob = regions * growth_ladder_bytes() + (chunks - regions) * entry;
+        let expected_index = regions * MICRO_CHUNKS_PER_REGION * std::mem::size_of::<u32>();
+        let table_cap = grid::REGION_COUNT * REGION_SLOT_MAX;
+
+        assert_eq!(voxels, chunks * MICRO_CHUNK_CELLS);
+        assert_eq!(size.index, expected_index, "one index per live Region");
+        assert_eq!(
+            size.blob, expected_blob,
+            "the write-only blob high-water mark"
+        );
+        assert!(
+            size.table <= table_cap,
+            "the Region table stays under its cap"
+        );
+
+        let layout_per_voxel = (live_blob + size.index) as f64 / voxels as f64;
+
+        assert!(
+            (layout_per_voxel - 1.625).abs() < 0.001,
+            "the dense layout is about 1.625 bytes per voxel"
+        );
+
+        let high_water_per_voxel = (size.blob + size.index) as f64 / voxels as f64;
+
+        assert!(
+            (high_water_per_voxel - 1.702).abs() < 0.001,
+            "the free list's growth ladder adds the rest of the high-water figure"
+        );
+    }
+
+    #[test]
+    fn sparse_fixture_asserts_the_padded_bound() {
+        let mut store = RegionStore::default();
+        let edge = grid::REGION_LENGTH as i32;
+        let mut chunks = 0usize;
+
+        for z in (0..edge).step_by(MICRO_CHUNK) {
+            for y in (0..edge).step_by(MICRO_CHUNK) {
+                for x in (0..edge).step_by(MICRO_CHUNK) {
+                    store.set(IVec3::new(x, y, z), 1);
+                    chunks = chunks.saturating_add(1);
+                }
+            }
+        }
+
+        let voxels = store.count();
+        let size = store.storage_size();
+        let padded = single_entry();
+        let index = MICRO_CHUNKS_PER_REGION * std::mem::size_of::<u32>();
+
+        assert_eq!(chunks, MICRO_CHUNKS_PER_REGION);
+        assert_eq!(voxels, chunks);
+        assert_eq!(padded, 72, "a one-voxel entry pads 65 bytes to 72");
+        assert!(size.blob <= chunks * padded, "the padded blob bound");
+        assert_eq!(size.index, index, "one index for the Region");
+
+        let per_voxel = (size.blob + size.index) as f64 / voxels as f64;
+
+        assert!(
+            per_voxel <= 76.5,
+            "one voxel per Micro-chunk stays under the looser padded bound"
+        );
     }
 
     fn random_position(rng: &mut Rng) -> IVec3 {
@@ -763,12 +933,12 @@ mod tests {
         store.set(anchor, 1);
         store.set(recycled, 2);
 
-        let before = store.reserved_capacity();
+        let before = store.storage_size().total();
 
         store.clear(recycled);
 
         assert_eq!(
-            store.reserved_capacity(),
+            store.storage_size().total(),
             before,
             "clearing does not compact the blob"
         );
@@ -776,7 +946,7 @@ mod tests {
         store.set(recycled, 3);
 
         assert_eq!(
-            store.reserved_capacity(),
+            store.storage_size().total(),
             before,
             "the freed block is reclaimed instead of appended"
         );
@@ -790,14 +960,14 @@ mod tests {
 
         store.set(origin, 1);
 
-        let before = store.reserved_capacity();
+        let before = store.storage_size().total();
 
         for index in 1..8 {
             store.set(origin.saturating_add(cell_in_chunk(index)), index as u8);
         }
 
         assert_eq!(
-            store.reserved_capacity(),
+            store.storage_size().total(),
             before,
             "eight voxels fit one 72-byte block"
         );
@@ -813,11 +983,11 @@ mod tests {
             store.set(origin.saturating_add(cell_in_chunk(index)), 1);
         }
 
-        let filled = store.reserved_capacity();
+        let filled = store.storage_size().total();
 
         store.set(origin.saturating_add(cell_in_chunk(8)), 2);
 
-        let crossed = store.reserved_capacity();
+        let crossed = store.storage_size().total();
 
         assert!(crossed > filled, "the ninth voxel moves to the next class");
         assert!(
@@ -830,14 +1000,14 @@ mod tests {
         store.set(IVec3::new(MICRO_CHUNK as i32, 0, 0), 9);
 
         assert_eq!(
-            store.reserved_capacity(),
+            store.storage_size().total(),
             crossed,
             "the released block is reclaimed by the next first write"
         );
     }
 
     #[test]
-    fn cleared_then_refilled_region_reports_the_high_water_mark() {
+    fn cleared_and_refilled_fixture_holds_the_high_water_mark() {
         let mut store = RegionStore::default();
         let anchor = IVec3::new(0, 0, 0);
 
@@ -851,25 +1021,45 @@ mod tests {
             store.set(*filler, 2);
         }
 
-        let high_water = store.reserved_capacity();
+        let size = store.storage_size();
+        let high_water = size.blob;
+        let single = single_entry();
+
+        assert_eq!(
+            high_water,
+            (fillers.len() + 1) * single,
+            "65 one-voxel entries pad to 65 blocks"
+        );
 
         for filler in &fillers {
             store.clear(*filler);
         }
 
+        let cleared = store.storage_size();
+
         assert_eq!(
-            store.reserved_capacity(),
-            high_water,
+            cleared.blob, high_water,
             "clearing leaves the high-water mark in place"
+        );
+        assert_eq!(
+            cleared.index, size.index,
+            "the Region keeps its index while the anchor voxel holds it live"
         );
 
         for index in 1..MICRO_CHUNK_CELLS {
             store.set(anchor.saturating_add(cell_in_chunk(index)), 3);
         }
 
+        let refilled = store.storage_size();
+
         assert!(
-            store.reserved_capacity() > high_water,
+            refilled.blob > high_water,
             "refilling with larger entries raises the high-water mark"
+        );
+        assert_eq!(
+            refilled.blob,
+            high_water + growth_ladder_bytes() - single,
+            "the refill appends every class above the reused one-voxel block"
         );
     }
 

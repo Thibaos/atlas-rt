@@ -12,6 +12,25 @@ pub use region::RegionStore;
 #[cfg(feature = "map-oracle")]
 pub use sharded::ShardedMap;
 
+/// A store's storage size: the flat Region table, every live Region's
+/// Micro-chunk index, and every live Region's blob at its high-water mark.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StorageSize {
+    pub(crate) table: usize,
+    pub(crate) index: usize,
+    pub(crate) blob: usize,
+}
+
+#[cfg(test)]
+impl StorageSize {
+    pub(crate) const fn total(self) -> usize {
+        self.table
+            .saturating_add(self.index)
+            .saturating_add(self.blob)
+    }
+}
+
 /// The World's voxel storage.
 ///
 /// Positions are in-lattice. `insert` is the one operation that resolves the
@@ -49,8 +68,12 @@ pub trait VoxelStore: Debug + Send + Sync {
         bounds
     }
 
+    /// The Region store's three size terms. The map oracle has no Region
+    /// layout, so it keeps the default.
     #[cfg(test)]
-    fn reserved_capacity(&self) -> usize;
+    fn storage_size(&self) -> StorageSize {
+        StorageSize::default()
+    }
 
     /// The World's `insert`: the `BoundsPolicy` is resolved and the material
     /// narrowed before the write. A clipped position never reaches storage.

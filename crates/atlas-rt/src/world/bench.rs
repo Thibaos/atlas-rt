@@ -173,7 +173,7 @@ mod load_bench {
         let start = Instant::now();
         let (world, clipped) = World::new_clipped(&data);
         let world_new = start.elapsed();
-        let reserved = world.reserved_capacity();
+        let size = world.storage_size();
 
         let start = Instant::now();
         let snapshots = emit_snapshots(&world).unwrap();
@@ -198,7 +198,9 @@ mod load_bench {
         println!("regions         {}", packed.len());
         println!("parse           {parse:10.3?}");
         println!("world_new       {world_new:10.3?}");
-        println!("reserved        {reserved}");
+        println!("storage table   {}", size.table);
+        println!("storage index   {}", size.index);
+        println!("storage blob    {}", size.blob);
         println!("emit_snapshots  {emit:10.3?}");
         println!("pack            {pack:10.3?}");
         println!("total           {total:10.3?}");

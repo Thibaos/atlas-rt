@@ -148,8 +148,8 @@ impl World {
     }
 
     #[cfg(test)]
-    pub(crate) fn reserved_capacity(&self) -> usize {
-        self.store.reserved_capacity()
+    pub(crate) fn storage_size(&self) -> store::StorageSize {
+        self.store.storage_size()
     }
 }
 
