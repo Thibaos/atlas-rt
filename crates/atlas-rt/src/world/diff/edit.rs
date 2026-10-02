@@ -314,7 +314,7 @@ fn validate(edit: &VoxelEdit) -> Result<(), EditError> {
 }
 
 /// The Micro-chunks the edits touch, in first-touch order and deduplicated.
-fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
+pub(in crate::world) fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
     let mut seen: FxHashSet<IVec3> = FxHashSet::default();
     let mut touched: Vec<IVec3> = Vec::with_capacity(edits.len());
 
@@ -329,9 +329,29 @@ fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
     touched
 }
 
-/// The chunk's content read back out of `world`, cell index `x + 8y + 64z` from
-/// the origin, which is the order `ChunkBuf::into_snapshot` emits materials in.
-fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
+/// The chunk's content as `world` holds it, cell index `x + 8y + 64z` from the
+/// origin, which is the order `ChunkBuf::into_snapshot` emits materials in. A
+/// store that keeps one entry per Micro-chunk copies its mask and compacted
+/// materials straight out; a store with no entry shape probes every cell.
+pub(in crate::world) fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
+    if let Some(entry) = world.chunk_entry(origin) {
+        let Ok(mask) = <&[u8; MICRO_BYTES]>::try_from(entry.mask) else {
+            return probe_chunk(world, origin);
+        };
+
+        return MicroChunkSnapshot {
+            global_coords: origin,
+            mask: *mask,
+            materials: entry.materials.to_vec(),
+        };
+    }
+
+    probe_chunk(world, origin)
+}
+
+/// The compile for a store with no Micro-chunk entry: 512 `get_voxel` probes,
+/// one per cell, assembling the mask and the materials in cell order.
+pub(in crate::world) fn probe_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
     let mut mask = [0u8; MICRO_BYTES];
     let mut materials = Vec::new();
 

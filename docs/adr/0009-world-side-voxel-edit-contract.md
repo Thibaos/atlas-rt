@@ -34,18 +34,20 @@ panicking as `World::assert_in_lattice` does. The primitive must never produce
 a snapshot that `RendererInput::submit_batch` rejects, because that path
 asserts.
 
-The compile reads the world back per touched chunk as 512 `get_voxel` probes,
-one per cell, and assembles the mask bits for the occupied cells followed by
-their materials in ascending cell order, with a cleared snapshot for a chunk
-left empty. `World` keeps no chunk occupancy index. `edit_path_timings` puts the
-on-thread cost against the Region store at about 11 µs per touched Micro-chunk
-(ticket 14), so the measured fallback, a locked or worker-owned `World` plus a
-chunk index, was not taken. It reopens if scattered
-10,000-plus edits per frame or fills compiling more than roughly 1,500 chunks in
-one frame become real targets. [0016](0016-world-microchunk-storage-format.md)
-re-measures the figure the probes produced and leaves this trigger standing;
-ticket 14 decides whether to replace the probes with a read of the Micro-chunk's
-entry.
+The compile reads each touched Micro-chunk's entry out of the Region store: one
+64-byte mask plus the compacted materials, in ascending cell order. A touched
+Micro-chunk that holds no voxels has no entry, so the compile falls through to
+the probe and yields a cleared snapshot. `edit_path_timings` puts the entry read
+at about 100 ns per touched Micro-chunk, against about 10.5 µs for the 512
+`get_voxel` probes it replaced (ticket 14). `World` keeps no chunk occupancy
+index, and the measured fallback that would add one, a locked or worker-owned
+`World` plus a chunk index, is not used. The probe path survives as the fallback
+for a store with no entry: the sharded map oracle, and an entryless Micro-chunk
+in the Region store. The reopen trigger is a workload target, not a cost the
+storage layout imposes: scattered 10,000-plus edits per frame or fills compiling
+more than roughly 1,500 chunks in one frame, which at 100 ns per chunk is about
+0.15 ms. [0016](0016-world-microchunk-storage-format.md) records the superseded
+probe figure.
 
 The tracked coordinate set is caller-owned and updated by the primitive. It
 means what the renderer holds after the last submitted batch, and the `World`
@@ -64,12 +66,12 @@ shape generators.
 ## Status
 
 accepted (voxel-edits ticket 06, 2026-09-22). Amended (region-backed voxel
-store, 2026-10-02): the World stores one material byte per cell, and the compile
-still reads the world back as 512 `get_voxel` probes, one per cell; the
-entry-copy rewrite was not built.
-[0016](0016-world-microchunk-storage-format.md) re-measures the cost at about
-11 µs per touched Micro-chunk and ticket 14 decides the rewrite. The rejection
-of a supplementary chunk occupancy index and its reopen trigger still stand.
+store, 2026-10-02): the World stores one material byte per cell and the compile
+reads each touched Micro-chunk's entry, at about 100 ns per chunk against the
+about 10.5 µs the 512 `get_voxel` probes cost (ticket 14). The probe path is the
+fallback: the sharded map oracle has no entry, and the Region store has none for
+an entryless Micro-chunk. The rejection of a supplementary chunk occupancy index
+and its reopen trigger still stand.
 
 ## Considered Options
 

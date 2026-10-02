@@ -150,6 +150,12 @@ impl World {
         self.store.count()
     }
 
+    /// The Micro-chunk entry `origin` names, if the store keeps one.
+    #[must_use]
+    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<store::ChunkEntry<'_>> {
+        self.store.chunk_entry(origin)
+    }
+
     #[cfg(test)]
     pub(crate) fn storage_size(&self) -> store::StorageSize {
         self.store.storage_size()

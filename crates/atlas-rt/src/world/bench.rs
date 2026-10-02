@@ -17,6 +17,28 @@
 //! The budgets below are these figures with headroom for run-to-run variance.
 //! Emission dominates, and its per-voxel record reserve, `total / 256` per
 //! bucket and 8 bytes per voxel overall, is the largest remaining CPU cost.
+//!
+//! `edit_path_timings`, release, AMD Ryzen 7 9800X3D, 2026-10-02. The compile
+//! is measured alone over the touched chunks, with the mutation, validation,
+//! budget, and assemble `edit_world` also does left out of both columns, and the
+//! minimum of eight passes taken. The probe reads all 512 cells of a touched
+//! Micro-chunk through `world.get_voxel`; the entry copy reads the Region store's
+//! 64-byte mask and compacted materials in one pass. The entry copy is installed,
+//! so `edit_world` uses it:
+//!
+//! | placement | edits | chunks | probe ns/chunk | entry ns/chunk |
+//! | --------- | ----- | ------ | -------------- | -------------- |
+//! | clustered |  1,000 |   447 | 10,456 |  96 |
+//! | scattered |  1,000 |   894 | 10,477 | 104 |
+//! | clustered | 10,000 |   512 | 10,465 |  98 |
+//! | scattered | 10,000 | 3,717 | 10,573 | 110 |
+//! | clustered |100,000 |   512 | 10,514 |  98 |
+//! | scattered |100,000 | 4,096 | 10,681 | 103 |
+//!
+//! The entry copy runs at about 100 ns per touched Micro-chunk against the
+//! probe's 10.5 µs, a factor of about 100, and lifts the probe-bound ceiling on
+//! ADR 0009's reopen trigger. The probe column matches ADR 0009's ~10 µs figure;
+//! the older 11 to 17 µs `mut+compile` figures included mutation and assembly.
 
 mod load_bench {
     use std::time::{Duration, Instant};
@@ -294,7 +316,7 @@ mod load_bench {
 }
 
 mod edit_bench {
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use glam::IVec3;
     use rustc_hash::FxHashSet;
@@ -303,7 +325,10 @@ mod edit_bench {
         World,
         diff::{
             batch::TrackedCoords,
-            edit::{VoxelChange, VoxelEdit, edit_world},
+            edit::{
+                VoxelChange, VoxelEdit, chunks_touched, compile_chunk, edit_world, probe_chunk,
+            },
+            snapshot::MicroChunkSnapshot,
         },
         grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, region_index_of},
         test_support::Rng,
@@ -424,12 +449,49 @@ mod edit_bench {
         nanos as f64 / count.max(1) as f64
     }
 
+    const COMPILE_REPEATS: usize = 8;
+
+    /// The fastest of [`COMPILE_REPEATS`] compile passes over every touched
+    /// Micro-chunk, with the total occupied count for a correctness check. The
+    /// minimum absorbs a scheduler hiccup, and the allocation per chunk keeps
+    /// the call from being optimised away.
+    fn best_compile(
+        world: &World,
+        touched: &[IVec3],
+        compile: fn(&World, IVec3) -> MicroChunkSnapshot,
+    ) -> (Duration, usize) {
+        let mut best = Duration::MAX;
+        let mut occupied = 0usize;
+
+        for _ in 0..COMPILE_REPEATS {
+            let start = Instant::now();
+            let mut total = 0usize;
+
+            for origin in touched {
+                total = total.saturating_add(compile(world, *origin).occupied_count());
+            }
+
+            let elapsed = start.elapsed();
+
+            if elapsed < best {
+                best = elapsed;
+            }
+
+            occupied = total;
+        }
+
+        (best, occupied)
+    }
+
     /// Mutation and compile cost of a Voxel edit batch on the Region store,
-    /// split by placement and batch size. Re-measured 2026-10-02, the compile
-    /// alone is about 11 µs per touched Micro-chunk for clustered and scattered
-    /// edits alike, close to the ~10 µs ADR 0009 recorded for the 512-probe map
-    /// compile. The probes are gone; the per-chunk snapshot allocation and
-    /// Material copy cost about the same.
+    /// split by placement and batch size, with the entry-copy compile beside
+    /// the installed probe compile.
+    ///
+    /// `mut+compile` is the whole `edit_world` call. The `probe` and `entry`
+    /// columns are the compile alone over the same touched chunks: `probe_chunk`
+    /// reads all 512 cells through `world.get_voxel`, and `compile_chunk` reads
+    /// the Region store's 64-byte mask and compacted materials in one pass. The
+    /// entry-copy compile is installed, so `mut+compile` uses it too.
     #[test]
     #[ignore = "bench: cargo test --release edit_path_timings -- --ignored --nocapture"]
     fn edit_path_timings() {
@@ -442,7 +504,7 @@ mod edit_bench {
         println!("voxels          {}", world.voxel_count());
         println!();
         println!(
-            "{:<9} {:>7} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9}",
+            "{:<9} {:>7} {:>7} {:>10} {:>9} {:>11} {:>9} {:>9} {:>11} {:>9}",
             "placement",
             "edits",
             "chunks",
@@ -450,7 +512,9 @@ mod edit_bench {
             "ns/edit",
             "mut+compile",
             "ns/edit",
-            "ns/chunk"
+            "ns/chunk",
+            "probe",
+            "entry"
         );
 
         let first = origins.first().copied().unwrap_or(IVec3::ZERO);
@@ -483,7 +547,33 @@ mod edit_bench {
 
                 let chunks = batch.snapshots.len();
                 let touched_regions = regions_touched(&edits);
+                let touched = chunks_touched(&edits);
 
+                let probed: Vec<MicroChunkSnapshot> = touched
+                    .iter()
+                    .map(|origin| probe_chunk(&world, *origin))
+                    .collect();
+                let copied: Vec<MicroChunkSnapshot> = touched
+                    .iter()
+                    .map(|origin| compile_chunk(&world, *origin))
+                    .collect();
+
+                assert_eq!(
+                    probed, copied,
+                    "{placement} at {size} edits: the entry-copy compile diverged from the probe"
+                );
+                assert_eq!(
+                    copied, batch.snapshots,
+                    "{placement} at {size} edits: the compile diverged from edit_world"
+                );
+
+                let (probe, probe_voxels) = best_compile(&world, &touched, probe_chunk);
+                let (copy, copy_voxels) = best_compile(&world, &touched, compile_chunk);
+
+                assert_eq!(
+                    probe_voxels, copy_voxels,
+                    "{placement} at {size} edits: probe and entry compile disagree on occupancy"
+                );
                 assert_eq!(
                     touched_regions, expected_regions,
                     "{placement} at {size} edits must span {expected_regions} regions"
@@ -493,9 +583,11 @@ mod edit_bench {
                 let mutate_per = per_unit(mutate.as_nanos(), size);
                 let full_per = per_unit(full.as_nanos(), size);
                 let chunk_per = per_unit(full.as_nanos(), chunks);
+                let probe_per = per_unit(probe.as_nanos(), chunks);
+                let copy_per = per_unit(copy.as_nanos(), chunks);
 
                 println!(
-                    "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1}"
+                    "{placement:9} {size:>7} {chunks:>7} {mutate:>10.3?} {mutate_per:>9.1} {full:>11.3?} {full_per:>9.1} {chunk_per:>9.1} {probe_per:>11.0} {copy_per:>9.0}"
                 );
             }
         }

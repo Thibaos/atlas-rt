@@ -17,27 +17,23 @@ layout itself is the region-backed store spec, not restated here.
 [0009](0009-world-side-voxel-edit-contract.md) rejected a chunk occupancy index
 on a measured figure: the compile read the world back per touched Micro-chunk as
 512 `get_voxel` probes, at about 10 µs per touched chunk, and a supplementary
-index was not worth adding to avoid that. The Region store did not change how the
-compile reads. `compile_chunk` in `world/diff/edit.rs` still walks all 512 cells
-and calls `world.get_voxel` on each, exactly as it did against the sharded map.
-The spec predicted the compile would become a copy of the Micro-chunk's entry,
-but that rewrite was never built.
+index was not worth adding to avoid that. The Region store keeps one entry per
+Micro-chunk, so the compile now copies that entry instead. `compile_chunk` in
+`world/diff/edit.rs` reads the 64-byte mask and the compacted materials in one
+pass, at about 100 ns per touched Micro-chunk on the `edit_path_timings` fixture
+(2026-10-02), against about 10.5 µs for the probes. A store with no entry, and an
+entryless Micro-chunk, fall back to the 512 probes; the sharded map oracle takes
+that path.
 
-The figure moved anyway. Measured 2026-10-02 on the `edit_path_timings` fixture,
-the probe compile is about 11 µs per touched Micro-chunk for clustered and
-scattered edits alike. The compile is probe-bound, and the Region store's probes
-cost more than the map's did, so the storage change did not make it cheap. Ticket
-14 decides whether to build the entry-copy compile and ticket 15 covers the
-`rank` scan behind each probe.
-
-The measured basis is superseded; the conclusion survives it. A second index
-beside the storage still gains nothing. The Region store already holds one entry
-per Micro-chunk, so the fix is to read that entry directly (ticket 14, which
-decides the entry-copy rewrite) or make the per-cell read cheap (ticket 15), not
-to maintain a parallel structure. The reopen trigger is left standing exactly as
-ADR 0009 recorded it: scattered 10,000-plus edits per frame, or fills compiling
-more than roughly 1,500 chunks in one frame. The compile cost is still the
-barrier to it, at about 11 µs per touched Micro-chunk.
+A second index beside the storage still gains nothing. The Region store already
+holds one entry per Micro-chunk, and reading it directly is the fix the probes
+needed; the per-cell `rank` scan ticket 15 covers is now off the compile path,
+though it still sits behind `get_voxel` and `iter_voxels`. The reopen trigger is
+left standing exactly as ADR 0009 recorded it: scattered 10,000-plus edits per
+frame, or fills compiling more than roughly 1,500 chunks in one frame. The
+compile no longer gates it. At 100 ns per chunk the 1,500-chunk fill is about
+0.15 ms, so the barrier to the trigger is the remaining work per edit and the
+storage cost, not the compile.
 
 ## The break-even arithmetic
 
@@ -92,11 +88,14 @@ tests over church and bistro are where the density question is read.
 accepted (region-backed voxel store ticket 12, 2026-10-02). Supersedes the
 measured compile cost in [0009](0009-world-side-voxel-edit-contract.md) and
 cites [0001](0001-gpu-voxel-representation.md) as the format precedent the World
-now shares. Amended (region-backed voxel store ticket 13, 2026-10-02): the
-entry-copy compile was never built, so the compile still probes and the compile
-cost is still the barrier to the reopen trigger; ticket 14 decides the rewrite
-and ticket 15 covers the `rank` scan. [0004](0004-sharded-world-map.md)'s sharded
-map is amended separately and survives as the differential oracle.
+now shares. Amended (region-backed voxel store ticket 13, 2026-10-02) to record
+the compile as it was installed then. Amended again (ticket 14, 2026-10-02): the
+entry-copy compile is installed, at about 100 ns per touched Micro-chunk, and
+the 512-probe path is the fallback for the sharded map oracle and for an
+entryless Micro-chunk in the Region store.
+Ticket 15 still covers the `rank` scan behind `get_voxel` and `iter_voxels`.
+[0004](0004-sharded-world-map.md)'s sharded map is amended separately and
+survives as the differential oracle.
 
 ## Considered Options
 
@@ -110,8 +109,8 @@ map is amended separately and survives as the differential oracle.
   and gains nothing from a second structure. The reopen trigger is left as ADR
   0009 recorded it.
 - **Keep the map and only change the measured compile cost**. Rejected: the
-  memory cost is the reason for the change, and the compile re-measures close to
-  the old figure either way.
+  memory cost is the reason for the change, and the map has no Micro-chunk entry
+  to copy, so its compile stays probe-bound.
 - **Dense fixed 512-byte slabs per Micro-chunk**. Rejected by
   [0001](0001-gpu-voxel-representation.md), which this decision adopts rather
   than reopens: a slab wastes about 8x on a sparse Micro-chunk.
@@ -125,11 +124,10 @@ map is amended separately and survives as the differential oracle.
   no translation step sits between them.
 - The voxel read type narrows to `u8`: `get_voxel` returns `Option<u8>` and
   `iter_voxels` yields `(IVec3, u8)`.
-- The compile still probes: `compile_chunk` reads all 512 cells of a touched
-  Micro-chunk through `world.get_voxel`. The entry-copy rewrite the spec
-  predicted was not built, so ADR 0009's reopen trigger is still gated by
-  compile cost, about 11 µs per touched Micro-chunk. Tickets 14 and 15 decide
-  the fix.
+- The compile copies the touched Micro-chunk's entry: `compile_chunk` reads the
+  Region store's 64-byte mask and compacted materials, about 100 ns per chunk
+  against the 512 `get_voxel` probes' about 10.5 µs. The sharded map oracle, and
+  an entryless Micro-chunk, fall back to the probes.
 - A touched but barely filled Region costs 128 KiB of index, which is the one
   case the layout handles worse than a map tuned for scatter. The ignored asset
   tests record where the repository's content sits against it.

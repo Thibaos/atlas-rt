@@ -31,6 +31,13 @@ impl StorageSize {
     }
 }
 
+/// A Micro-chunk as a store holds it: the Occupancy mask and the materials of
+/// the occupied cells in ascending cell order, borrowed from the store.
+pub struct ChunkEntry<'a> {
+    pub mask: &'a [u8],
+    pub materials: &'a [u8],
+}
+
 /// The World's voxel storage.
 ///
 /// Positions are in-lattice. `insert` is the one operation that resolves the
@@ -53,6 +60,14 @@ pub trait VoxelStore: Debug + Send + Sync {
 
     #[must_use]
     fn count(&self) -> usize;
+
+    /// The Micro-chunk entry `origin` names, if the store keeps one. The default
+    /// is `None`, so a store with no entry shape, and an entryless Micro-chunk,
+    /// both fall back to probing the 512 cells.
+    #[must_use]
+    fn chunk_entry(&self, _origin: IVec3) -> Option<ChunkEntry<'_>> {
+        None
+    }
 
     #[must_use]
     fn bounds(&self) -> Option<(IVec3, IVec3)> {

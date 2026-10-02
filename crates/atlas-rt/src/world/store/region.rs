@@ -2,7 +2,10 @@ use std::fmt;
 
 use glam::IVec3;
 
-use crate::world::{grid, store::VoxelStore};
+use crate::world::{
+    grid,
+    store::{ChunkEntry, VoxelStore},
+};
 
 #[cfg(test)]
 use crate::world::store::StorageSize;
@@ -585,6 +588,23 @@ impl VoxelStore for RegionStore {
 
     fn count(&self) -> usize {
         self.count
+    }
+
+    fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>> {
+        let region = self.regions.get(region_slot(origin))?.as_ref()?;
+        let entry = region
+            .index
+            .get(micro_chunk_ordinal(origin))
+            .copied()
+            .unwrap_or(EMPTY);
+        let offset = entry_offset(entry)?;
+
+        let mask = region.blob.get(offset..offset.strict_add(MASK_BYTES))?;
+        let populated = entry_popcount(region, offset);
+        let base = offset.strict_add(MASK_BYTES);
+        let materials = region.blob.get(base..base.strict_add(populated))?;
+
+        Some(ChunkEntry { mask, materials })
     }
 
     #[cfg(test)]
