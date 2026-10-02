@@ -339,6 +339,34 @@ fn serial_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
     map
 }
 
+fn serial_bounds(map: &HashMap<IVec3, u8>) -> Option<(IVec3, IVec3)> {
+    map.keys().copied().fold(None, |bounds, position| {
+        Some(match bounds {
+            Some((min, max)) => (min.min(position), max.max(position)),
+            None => (position, position),
+        })
+    })
+}
+
+/// Asserts the live Region build equals the serial placement oracle in content,
+/// count, and bounds.
+fn assert_matches_serial(data: &DotVoxData, case: &str) {
+    let (world, _) = World::new_clipped(data);
+    let serial = serial_map(data);
+
+    assert_eq!(world.voxel_count(), serial.len(), "voxel count, {case}");
+    assert_eq!(
+        world.voxel_bounds(),
+        serial_bounds(&serial),
+        "bounds, {case}"
+    );
+    assert_eq!(
+        world.iter_voxels().collect::<HashMap<IVec3, u8>>(),
+        serial,
+        "content, {case}"
+    );
+}
+
 fn content_hash(map: &HashMap<IVec3, u8>) -> u64 {
     let mut hash = 0u64;
 
@@ -367,10 +395,9 @@ fn parallel_load_matches_serial_oracle_on_randomized_scenes() {
         for _ in 0..4 {
             let specs = random_specs(&mut rng, *rotation);
             let data = scene_fixture(&specs);
-            assert_eq!(
-                production_map(&data),
-                serial_map(&data),
-                "rotation {rotation:#010b}, specs {specs:?}"
+            assert_matches_serial(
+                &data,
+                &format!("rotation {rotation:#010b}, specs {specs:?}"),
             );
         }
     }
@@ -390,7 +417,7 @@ fn parallel_load_matches_serial_oracle_on_randomized_scenes() {
             })
             .collect();
         let data = scene_fixture(&specs);
-        assert_eq!(production_map(&data), serial_map(&data), "specs {specs:?}");
+        assert_matches_serial(&data, &format!("specs {specs:?}"));
     }
 }
 

@@ -1,91 +1,214 @@
-use dot_vox::DotVoxData;
-use glam::IVec3;
+use dot_vox::{DotVoxData, Rotation, Voxel};
+use glam::{IVec3, UVec3};
+use rayon::prelude::*;
 
 use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
 use crate::world::{
     BoundsPolicy, StoreKind, World, grid,
-    store::region::{micro_chunk_key, region_slot},
+    store::region::{Region, RegionStore},
 };
 
-/// Places every model's voxels into a serial store of the requested kind.
+type PlacedModel<'scene> = (IVec3, Rotation, UVec3, &'scene [Voxel]);
+
+/// One model placement and the Region-index box its positions can reach.
+struct Batch<'scene> {
+    placement: VoxelPlacement,
+    voxels: &'scene [Voxel],
+    region_bounds: (IVec3, IVec3),
+}
+
+/// Places every model's voxels and reports the clipped count and the
+/// in-lattice attempt count.
 ///
-/// The scene-graph path stages each Region's voxels before writing them in
-/// Micro-chunk ordinal and cell order, so each Micro-chunk is filled before
-/// the next and its entry grows in place. A later placement at a shared cell
-/// overwrites an earlier one because the stable stage keeps the scene order.
+/// A scene graph is partitioned by Region: the 4096 Region slots are split
+/// across worker threads, each slot has exactly one owner thread, and a Region
+/// is written into its own blob rather than into a staged copy. Placements are
+/// walked in serial order inside every Region, so a later placement at a shared
+/// cell still wins. The attempt count is summed before any Region blob is
+/// allocated, for a budget check to read.
 pub(in crate::world) fn load(
     voxel_data: &DotVoxData,
     policy: BoundsPolicy,
     store: StoreKind,
-) -> (World, usize) {
-    let mut world = World::empty(store);
-    let clipped = load_into(&mut world, voxel_data, policy);
-
-    (world, clipped)
-}
-
-pub(in crate::world) fn load_into(
-    world: &mut World,
-    voxel_data: &DotVoxData,
-    policy: BoundsPolicy,
-) -> usize {
-    let mut loader = SceneGraphTraverser {
-        world,
-        policy,
-        scene: voxel_data,
-        models: vec![],
-    };
-
-    let clipped = loader.traverse();
-    let models = std::mem::take(&mut loader.models);
-    drop(loader);
-
-    if models.is_empty() {
-        return clipped;
+) -> (World, usize, usize) {
+    if voxel_data.scenes.is_empty() {
+        return load_without_scene(voxel_data, policy, store);
     }
 
-    let mut staged: Vec<Vec<(IVec3, u8)>> = (0..grid::REGION_COUNT).map(|_| Vec::new()).collect();
-    let mut staged_clipped = 0usize;
+    let (traverse_clipped, models) = collect_models(voxel_data, policy);
+    let mut clipped = traverse_clipped;
+    let mut attempts = 0u64;
+    let mut batches: Vec<Batch<'_>> = Vec::new();
 
     for (translation, rotation, size, voxels) in models {
         let placement = VoxelPlacement::new(translation, rotation, size);
 
         if policy == BoundsPolicy::Clip && placement.misses_lattice() {
-            staged_clipped = staged_clipped.saturating_add(voxels.len());
+            clipped = clipped.saturating_add(voxels.len());
+
             continue;
         }
 
-        for voxel in voxels {
-            let position = placement.place(*voxel);
+        attempts = attempts.saturating_add(placement.in_lattice_capacity(voxels.len() as u64));
+        batches.push(Batch {
+            region_bounds: placement.region_bounds(),
+            placement,
+            voxels,
+        });
+    }
+
+    clipped = clipped.saturating_add(clipped_voxels(&batches, policy));
+
+    if batches.is_empty() || attempts == 0 {
+        return (World::empty(store), clipped, 0);
+    }
+
+    let world = match store {
+        StoreKind::Region => World::from_store(Box::new(build_region(&batches))),
+        #[cfg(feature = "map-oracle")]
+        StoreKind::Map => build_map(batches),
+    };
+
+    (
+        world,
+        clipped,
+        usize::try_from(attempts).unwrap_or(usize::MAX),
+    )
+}
+
+/// The no-scene path: every model is inserted straight through the traverser.
+fn load_without_scene(
+    voxel_data: &DotVoxData,
+    policy: BoundsPolicy,
+    store: StoreKind,
+) -> (World, usize, usize) {
+    let attempts = voxel_data
+        .models
+        .iter()
+        .map(|model| model.voxels.len() as u64)
+        .fold(0u64, u64::saturating_add);
+
+    let mut world = World::empty(store);
+    let mut loader = SceneGraphTraverser {
+        world: &mut world,
+        policy,
+        scene: voxel_data,
+        models: Vec::new(),
+    };
+
+    let clipped = loader.traverse();
+    drop(loader);
+
+    (
+        world,
+        clipped,
+        usize::try_from(attempts).unwrap_or(usize::MAX),
+    )
+}
+
+fn collect_models(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (usize, Vec<PlacedModel<'_>>) {
+    let mut world = World::empty(StoreKind::Region);
+    let mut loader = SceneGraphTraverser {
+        world: &mut world,
+        policy,
+        scene: voxel_data,
+        models: Vec::new(),
+    };
+
+    let clipped = loader.traverse();
+
+    (clipped, std::mem::take(&mut loader.models))
+}
+
+/// Counts the voxels that leave the lattice, or asserts they do not, in
+/// parallel over placements. A placement whose Region bounds are inside the
+/// lattice contributes nothing.
+fn clipped_voxels(batches: &[Batch<'_>], policy: BoundsPolicy) -> usize {
+    batches
+        .par_iter()
+        .map(|batch| {
+            if region_bounds_in_lattice(batch.region_bounds.0, batch.region_bounds.1) {
+                return 0;
+            }
+
+            match policy {
+                BoundsPolicy::Panic => {
+                    for voxel in batch.voxels {
+                        grid::assert_in_lattice(batch.placement.place(*voxel));
+                    }
+
+                    0
+                }
+                BoundsPolicy::Clip => batch
+                    .voxels
+                    .iter()
+                    .filter(|voxel| !grid::in_lattice(batch.placement.place(**voxel)))
+                    .count(),
+            }
+        })
+        .sum()
+}
+
+/// Builds the Region store with one owner thread per Region slot. Each thread
+/// scans the placements whose bounds cover its slot and writes the in-lattice
+/// voxels that land in the slot, in placement order. No two threads write one
+/// Region, so the writes need no lock.
+fn build_region(batches: &[Batch<'_>]) -> RegionStore {
+    let mut store = RegionStore::default();
+
+    store
+        .slots_mut()
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(slot, slot_region)| {
+            let region_index = grid::region_index_from_id(u32::try_from(slot).unwrap_or(0));
+
+            for batch in batches {
+                let (min, max) = batch.region_bounds;
+
+                if !region_contains(&region_index, &min, &max) {
+                    continue;
+                }
+
+                for voxel in batch.voxels {
+                    let position = batch.placement.place(*voxel);
+
+                    if grid::in_lattice(position) && grid::region_index_of(position) == region_index
+                    {
+                        slot_region
+                            .get_or_insert_with(Region::new)
+                            .set(position, voxel.i);
+                    }
+                }
+            }
+        });
+
+    store.recount();
+
+    store
+}
+
+#[cfg(feature = "map-oracle")]
+fn build_map(batches: Vec<Batch<'_>>) -> World {
+    let mut world = World::empty(StoreKind::Map);
+
+    for batch in batches {
+        for voxel in batch.voxels {
+            let position = batch.placement.place(*voxel);
 
             if grid::in_lattice(position) {
-                if let Some(bucket) = staged.get_mut(region_slot(position)) {
-                    bucket.push((position, voxel.i));
-                }
-            } else {
-                match policy {
-                    BoundsPolicy::Panic => grid::assert_in_lattice(position),
-                    BoundsPolicy::Clip => staged_clipped = staged_clipped.saturating_add(1),
-                }
+                world.set_voxel(position, voxel.i);
             }
         }
     }
 
-    for bucket in &mut staged {
-        write_bucket(world, bucket);
-    }
-
-    clipped.saturating_add(staged_clipped)
+    world
 }
 
-fn write_bucket(world: &mut World, bucket: &mut Vec<(IVec3, u8)>) {
-    if bucket.is_empty() {
-        return;
-    }
+fn region_contains(region: &IVec3, min: &IVec3, max: &IVec3) -> bool {
+    region.cmpge(*min).all() && region.cmple(*max).all()
+}
 
-    bucket.sort_by_key(|(position, _)| micro_chunk_key(*position));
-
-    for (position, material) in bucket.drain(..) {
-        world.set_voxel(position, material);
-    }
+fn region_bounds_in_lattice(min: IVec3, max: IVec3) -> bool {
+    grid::region_index_in_lattice(min) && grid::region_index_in_lattice(max)
 }

@@ -270,6 +270,24 @@ impl VoxelPlacement {
             .min(voxels)
     }
 
+    /// The Region-index bounding box of every position this placement can
+    /// produce, from the two opposite model corners.
+    #[must_use]
+    pub fn region_bounds(&self) -> (IVec3, IVec3) {
+        let corner =
+            |extent: u32| i32::try_from(extent.min(256).saturating_sub(1)).unwrap_or(i32::MAX);
+        let low = self.project(0, 0, 0);
+        let high = self.project(
+            corner(self.size.x),
+            corner(self.size.y),
+            corner(self.size.z),
+        );
+        let min = low.min(high);
+        let max = low.max(high);
+
+        (grid::region_index_of(min), grid::region_index_of(max))
+    }
+
     #[must_use]
     pub fn place(&self, voxel: Voxel) -> IVec3 {
         self.project(i32::from(voxel.x), i32::from(voxel.y), i32::from(voxel.z))

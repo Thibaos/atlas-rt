@@ -91,14 +91,16 @@ impl World {
 
     #[must_use]
     pub fn new_with_store(voxel_data: &DotVoxData, store: StoreKind) -> Self {
-        let (world, clipped) = load::build::load(voxel_data, BoundsPolicy::Panic, store);
+        let (world, clipped, _attempts) = load::build::load(voxel_data, BoundsPolicy::Panic, store);
         debug_assert_eq!(clipped, 0);
         world
     }
 
     #[must_use]
     pub fn new_clipped_with_store(voxel_data: &DotVoxData, store: StoreKind) -> (Self, usize) {
-        load::build::load(voxel_data, BoundsPolicy::Clip, store)
+        let (world, clipped, _attempts) = load::build::load(voxel_data, BoundsPolicy::Clip, store);
+
+        (world, clipped)
     }
 
     #[must_use]
