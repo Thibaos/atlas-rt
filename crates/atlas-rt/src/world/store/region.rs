@@ -618,6 +618,9 @@ mod tests {
     use crate::world::{StoreKind, World};
 
     #[cfg(feature = "map-oracle")]
+    use crate::world::diff::snapshot::emit_snapshots;
+
+    #[cfg(feature = "map-oracle")]
     use crate::world::store::ShardedMap;
 
     use super::*;
@@ -1024,18 +1027,30 @@ mod tests {
 
         assert_eq!(region_clipped, map_clipped, "clipped counts diverge");
         crate::world::test_support::assert_worlds_agree(&region, &map, path);
+
+        let region_snapshots = emit_snapshots(&region)
+            .unwrap_or_else(|error| panic!("{path}: region emission: {error}"));
+        let map_snapshots =
+            emit_snapshots(&map).unwrap_or_else(|error| panic!("{path}: map emission: {error}"));
+
+        assert_eq!(
+            region_snapshots, map_snapshots,
+            "{path}: emitted Snapshots diverge"
+        );
+
+        crate::world::test_support::report_region_density(&region, path);
     }
 
     #[cfg(feature = "map-oracle")]
     #[test]
-    #[ignore = "asset: cargo test --release church_answers_match_the_map -- --ignored --nocapture"]
+    #[ignore = "asset: cargo test --release --features map-oracle church_answers_match_the_map -- --ignored --nocapture"]
     fn church_answers_match_the_map() {
         asset_answers_match_the_map("assets/church.vox");
     }
 
     #[cfg(feature = "map-oracle")]
     #[test]
-    #[ignore = "asset: cargo test --release bistro_answers_match_the_map -- --ignored --nocapture"]
+    #[ignore = "asset: cargo test --release --features map-oracle bistro_answers_match_the_map -- --ignored --nocapture"]
     fn bistro_answers_match_the_map() {
         asset_answers_match_the_map("assets/bistro.vox");
     }

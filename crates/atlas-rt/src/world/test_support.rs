@@ -7,6 +7,8 @@ use tracing::info;
 
 use std::hash::{Hash, Hasher};
 
+#[cfg(feature = "map-oracle")]
+use rustc_hash::FxHashMap;
 use rustc_hash::FxHasher;
 
 use super::grid;
@@ -98,6 +100,63 @@ pub(crate) fn assert_worlds_agree(region: &World, map: &World, case: &str) {
         );
         assert!(map.contains(position), "{case}: map misses {position}");
     }
+}
+
+/// The per-Region break-even from the storage spec: a touched Region needs
+/// about this many voxels to offset its index and blob.
+#[cfg(feature = "map-oracle")]
+pub(crate) const REGION_BREAK_EVEN_VOXELS: usize = 4_000;
+
+/// The per-Micro-chunk form of the same break-even, from the storage spec.
+#[cfg(feature = "map-oracle")]
+pub(crate) const MICRO_CHUNK_BREAK_EVEN_CELLS: usize = 15;
+
+/// Prints the voxels a World holds per touched Region and per touched
+/// Micro-chunk, with how many of each fall below the storage spec's break-even,
+/// so an asset test records where the asset sits.
+#[cfg(feature = "map-oracle")]
+pub(crate) fn report_region_density(world: &World, case: &str) {
+    let mut per_region = vec![0usize; grid::REGION_COUNT];
+    let mut per_chunk: FxHashMap<[i32; 3], usize> = FxHashMap::default();
+
+    for (position, _) in world.iter_voxels() {
+        let slot = grid::region_id(grid::region_index_of(position)) as usize;
+
+        if let Some(count) = per_region.get_mut(slot) {
+            *count = count.saturating_add(1);
+        }
+
+        let chunk = per_chunk
+            .entry(grid::grid_origin(position, grid::MICRO_CHUNK_LENGTH).to_array())
+            .or_default();
+
+        *chunk = chunk.saturating_add(1);
+    }
+
+    let voxels = world.voxel_count();
+    let regions: Vec<usize> = per_region.into_iter().filter(|count| *count > 0).collect();
+    let chunks: Vec<usize> = per_chunk.into_values().collect();
+    let region_count = regions.len();
+    let chunk_count = chunks.len();
+    let mean_region = voxels as f64 / region_count.max(1) as f64;
+    let mean_chunk = voxels as f64 / chunk_count.max(1) as f64;
+    let min_region = regions.iter().copied().min().unwrap_or(0);
+    let min_chunk = chunks.iter().copied().min().unwrap_or(0);
+    let thin_regions = regions
+        .iter()
+        .filter(|count| **count < REGION_BREAK_EVEN_VOXELS)
+        .count();
+    let thin_chunks = chunks
+        .iter()
+        .filter(|count| **count < MICRO_CHUNK_BREAK_EVEN_CELLS)
+        .count();
+
+    println!(
+        "{case}: {voxels} voxels in {region_count} Regions (mean {mean_region:.0}/Region, min \
+         {min_region}/Region, {thin_regions} below {REGION_BREAK_EVEN_VOXELS}) and {chunk_count} \
+         Micro-chunks (mean {mean_chunk:.1}/chunk, min {min_chunk}/chunk, {thin_chunks} below \
+         {MICRO_CHUNK_BREAK_EVEN_CELLS})"
+    );
 }
 
 fn random_size(rng: &mut Rng) -> (u32, u32, u32) {
