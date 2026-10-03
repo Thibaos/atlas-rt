@@ -862,7 +862,6 @@ mod tests {
         IVec3::new(axis(), axis(), axis())
     }
 
-    #[cfg(feature = "map-oracle")]
     fn clustered_position(rng: &mut Rng) -> IVec3 {
         let chunk = IVec3::new(
             i32::try_from(rng.below(3)).unwrap_or(0).wrapping_sub(1),
@@ -1256,6 +1255,83 @@ mod tests {
 
         assert_eq!(store.count(), bits, "the counter tracks the mask bits");
         assert_eq!(store.count(), content(&store).len());
+    }
+
+    fn reference_bounds(reference: &HashMap<IVec3, u8>) -> Option<(IVec3, IVec3)> {
+        reference.keys().copied().fold(None, |bounds, position| {
+            Some(match bounds {
+                Some((min, max)) => (min.min(position), max.max(position)),
+                None => (position, position),
+            })
+        })
+    }
+
+    /// Asserts the store's count, bounds, iterated content, and per-position
+    /// lookups all agree with a hash map that knows nothing of the layout.
+    fn assert_agrees_with_reference(
+        store: &RegionStore,
+        reference: &HashMap<IVec3, u8>,
+        context: &str,
+    ) {
+        assert_eq!(store.count(), reference.len(), "{context}: count");
+        assert_eq!(
+            store.bounds(),
+            reference_bounds(reference),
+            "{context}: bounds"
+        );
+
+        let iterated = content(store);
+
+        assert_eq!(&iterated, reference, "{context}: iterated content");
+
+        for (position, material) in reference {
+            assert_eq!(
+                store.get(*position),
+                Some(*material),
+                "{context}: lookup at {position}"
+            );
+            assert!(store.contains(*position), "{context}: contains {position}");
+        }
+    }
+
+    /// Random writes and clears against an independent hash map, with `set`'s
+    /// return checked against prior occupancy, scattered and clustered.
+    #[test]
+    fn randomized_writes_and_clears_match_an_independent_hash_map() {
+        let seed = 0x0C01_7AAC;
+        let mut rng = Rng::new(seed);
+
+        for case in 0..32u32 {
+            let clustered = case % 2 == 1;
+            let mut store = RegionStore::default();
+            let mut reference: HashMap<IVec3, u8> = HashMap::new();
+
+            for _ in 0..1_500 {
+                let position = if clustered {
+                    clustered_position(&mut rng)
+                } else {
+                    random_position(&mut rng)
+                };
+
+                if rng.below(4) == 0 {
+                    store.clear(position);
+                    reference.remove(&position);
+                } else {
+                    let material = u8_below(&mut rng, 256);
+                    let existed = reference.insert(position, material).is_some();
+
+                    assert_eq!(
+                        store.set(position, material),
+                        existed,
+                        "seed {seed:#x} case {case} (clustered: {clustered}): set return at {position}"
+                    );
+                }
+            }
+
+            let context = format!("seed {seed:#x} case {case} (clustered: {clustered})");
+
+            assert_agrees_with_reference(&store, &reference, &context);
+        }
     }
 
     #[cfg(feature = "map-oracle")]

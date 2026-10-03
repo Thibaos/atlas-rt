@@ -559,7 +559,7 @@ mod tests {
 
     use super::{
         EditError, EditReason, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, VoxelChange,
-        VoxelEdit, edit_world,
+        VoxelEdit, edit_world, projected_count,
     };
 
     const CHUNK: i32 = MICRO_CHUNK_LENGTH as i32;
@@ -1015,6 +1015,189 @@ mod tests {
         chunks.truncate(8);
         chunks.sort_unstable_by_key(IVec3::to_array);
         chunks
+    }
+
+    /// Micro-chunk origins spread across the lattice, so a batch touches many
+    /// distinct Regions rather than the few a loaded asset sits in.
+    fn scattered_origins(rng: &mut Rng) -> Vec<IVec3> {
+        (0..8)
+            .map(|_| {
+                IVec3::new(
+                    (rng.below(64) as i32 - 32).saturating_mul(CHUNK),
+                    (rng.below(64) as i32 - 32).saturating_mul(CHUNK),
+                    (rng.below(64) as i32 - 32).saturating_mul(CHUNK),
+                )
+            })
+            .collect()
+    }
+
+    /// One to four edits per pick at the same cell, so positions repeat and
+    /// both flip orders occur, plus the two orders pinned explicitly.
+    fn repeated_edits(rng: &mut Rng, origins: &[IVec3]) -> Vec<VoxelEdit> {
+        let mut edits = Vec::new();
+
+        for _ in 0..rng.below(16).saturating_add(4) {
+            let origin = origins[rng.below(origins.len() as u64) as usize];
+            let local = UVec3::new(
+                u32::try_from(rng.below(8)).unwrap_or(0),
+                u32::try_from(rng.below(8)).unwrap_or(0),
+                u32::try_from(rng.below(8)).unwrap_or(0),
+            )
+            .as_ivec3();
+
+            for _ in 0..rng.below(4).saturating_add(1) {
+                let change = if rng.below(2) == 0 {
+                    VoxelChange::Clear
+                } else {
+                    VoxelChange::Set(u8_below(rng, 256))
+                };
+
+                edits.push(VoxelEdit {
+                    position: origin.saturating_add(local),
+                    change,
+                });
+            }
+        }
+
+        let set_then_clear = origins[0].saturating_add(IVec3::new(1, 1, 1));
+        let clear_then_set = origins[1].saturating_add(IVec3::new(2, 3, 4));
+
+        edits.push(VoxelEdit {
+            position: set_then_clear,
+            change: VoxelChange::Set(11),
+        });
+        edits.push(VoxelEdit {
+            position: set_then_clear,
+            change: VoxelChange::Clear,
+        });
+        edits.push(VoxelEdit {
+            position: clear_then_set,
+            change: VoxelChange::Clear,
+        });
+        edits.push(VoxelEdit {
+            position: clear_then_set,
+            change: VoxelChange::Set(12),
+        });
+
+        edits
+    }
+
+    struct RandomizedBatch {
+        world: World,
+        edits: Vec<VoxelEdit>,
+        tracked: TrackedCoords,
+        projected: usize,
+        scattered: bool,
+    }
+
+    fn randomized_batch(rng: &mut Rng, case: u32) -> RandomizedBatch {
+        let scattered = case % 2 == 1;
+        let world = random_world(rng);
+        let origins = if scattered {
+            scattered_origins(rng)
+        } else {
+            chunk_origins(rng, &world)
+        };
+        let edits = repeated_edits(rng, &origins);
+        let projected = projected_count(&world, &edits);
+        let tracked = origins.iter().copied().step_by(2).collect();
+
+        RandomizedBatch {
+            world,
+            edits,
+            tracked,
+            projected,
+            scattered,
+        }
+    }
+
+    fn case_context(seed: u64, case: u32, scattered: bool) -> String {
+        format!("seed {seed:#x} case {case} (scattered: {scattered})")
+    }
+
+    /// The projected count equals the count the batch leaves in the World, over
+    /// randomized mixed batches with repeats, scattered and clustered.
+    #[test]
+    fn randomized_projections_match_the_applied_count() {
+        let seed = 0x0C02_9A0F;
+        let mut rng = Rng::new(seed);
+
+        for case in 0..32u32 {
+            let RandomizedBatch {
+                mut world,
+                edits,
+                tracked,
+                projected,
+                scattered,
+            } = randomized_batch(&mut rng, case);
+            let context = case_context(seed, case, scattered);
+
+            edit_world(&mut world, &edits, &tracked)
+                .unwrap_or_else(|error| panic!("{context}: batch rejected: {error}"));
+
+            assert_eq!(
+                world.voxel_count(),
+                projected,
+                "{context}: the projection did not match the applied count"
+            );
+        }
+    }
+
+    /// A batch that projects past the cell budget is refused before it applies:
+    /// the world, the tracked set, and the emission survive untouched, and the
+    /// refusal names the projected count.
+    #[test]
+    fn randomized_over_budget_batches_are_refused_whole() {
+        let seed = 0x0C03_B0B0;
+        let mut rng = Rng::new(seed);
+        let mut refusals = 0usize;
+
+        for case in 0..32u32 {
+            let RandomizedBatch {
+                mut world,
+                edits,
+                tracked,
+                projected,
+                scattered,
+            } = randomized_batch(&mut rng, case);
+
+            if projected == 0 {
+                continue;
+            }
+
+            let context = case_context(seed, case, scattered);
+            let before_count = world.voxel_count();
+            let before_emission = emit_snapshots(&world).unwrap();
+            let tracked_before = tracked.clone();
+            let limit = projected - 1;
+
+            let error = {
+                let _budget = set_cell_budget(limit);
+
+                edit_world(&mut world, &edits, &tracked).unwrap_err()
+            };
+
+            assert_eq!(
+                error,
+                EditError::over_budget(projected, limit),
+                "{context}: the refusal does not name the projected count and limit"
+            );
+            assert!(
+                error.to_string().contains(&projected.to_string()),
+                "{context}: the message does not name the projected count {projected}"
+            );
+            assert_eq!(world.voxel_count(), before_count, "{context}: the world changed");
+            assert_eq!(tracked, tracked_before, "{context}: the tracked set changed");
+            assert_eq!(
+                emit_snapshots(&world).unwrap(),
+                before_emission,
+                "{context}: the emission changed"
+            );
+
+            refusals = refusals.saturating_add(1);
+        }
+
+        assert!(refusals > 0, "seed {seed:#x}: no batch exceeded the budget");
     }
 
     #[test]
