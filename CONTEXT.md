@@ -26,15 +26,16 @@ A caller's unit of change: a position and a change, `Set` with a u8 material
 index or `Clear`. A batch is validated first and all-or-nothing, applied to the
 World in input order with last write wins, then compiled on the world side into
 one Snapshot per touched Micro-chunk. The renderer never receives a Voxel edit.
-_Avoid_: edit message, brush (a message is a Snapshot; a brush is a generator
-of edits, out of scope)
+_Avoid_: edit message, brush (a message is a Snapshot; a brush is a
+cursor-driven generator of edits, out of scope and not a Generation)
 
 **Palette**:
-A 256-entry RGBA8 color table from the .vox file mapping material indices to
-display colors; kept sRGB-encoded end to end. The ray pass converts a hit's
-entry to linear for the display path. The source RGBA alpha remains part of
-the Palette, and an optional material alpha can reduce it during loading.
-GPU-side: a bindless vec4[256] storage buffer.
+A 256-entry RGBA8 color table mapping Material indices to display colors,
+supplied by a World load's .vox source or by a Generation's Vocabulary, and
+kept sRGB-encoded end to end. The ray pass converts a hit's entry to linear for
+the display path. The source RGBA alpha remains part of the Palette, and an
+optional material alpha can reduce it during loading. GPU-side: a bindless
+vec4[256] storage buffer.
 _Avoid_: Color table, LUT
 
 **Material index**:
@@ -110,6 +111,13 @@ voxels exist (palette index 0 is a real color). Material indices hang off
 it.
 _Avoid_: Bitmask, presence bitmap
 
+**Micro-chunk entry**:
+A Micro-chunk's stored form: its 64-byte Occupancy mask followed by the
+material indices of its occupied cells in ascending cell order. The World stores
+one per non-empty Micro-chunk and the Voxel pool holds the same shape, so a
+Snapshot carries one unchanged.
+_Avoid_: Chunk blob, chunk record
+
 ## Renderer input
 
 **Snapshot**:
@@ -135,20 +143,19 @@ _Avoid_: occupied chunks, world chunks (those describe the World, which runs
 ahead)
 
 **World load**:
-The unit of world supply: one .vox source, clipped to the lattice, its
-Micro-chunks queued as Snapshots and its Palette loaded with them. A clear
-empties the loaded world; a load after a clear replaces it. The pipeline
-outlives loads.
+A World supply from one .vox source, clipped to the lattice, its Micro-chunks
+queued as Snapshots and its Palette loaded with them. A clear empties the
+loaded world; a load after a clear replaces it. The pipeline outlives loads.
 _Avoid_: world streaming (the later incremental form), level (a game-side
 concept)
 
 **World job**:
-The one load or clear in flight, run off the main thread: read, parse, world
-build, and snapshot emission, whose output is plain data. A job is refused
-rather than queued while another is in flight, and it completes when the
-renderer has taken the batch carrying it, not when the background work
-finishes. The tracked coordinate set stays on the main thread, which is what
-assembles the ordered batch.
+The one World supply or clear in flight, run off the main thread: a load's read
+and parse or a Generation's voxel production, then the world build and snapshot
+emission, whose output is plain data. A job is refused rather than queued while
+another is in flight, and it completes when the renderer has taken the batch
+carrying it, not when the background work finishes. The tracked coordinate set
+stays on the main thread, which is what assembles the ordered batch.
 _Avoid_: task, async load, request
 
 **Status**:
@@ -169,6 +176,45 @@ _Avoid_: Active region, loaded region
 A Resident region whose content changed since the last rebuild, queued for
 a rebuild.
 _Avoid_: Changed region
+
+## World generation
+
+**Generation**:
+A World supply that makes voxels from a Seed instead of reading a .vox source:
+one bounded World, produced in a single pass off the main thread, replacing a
+resident World the way a World load does. It supplies its own Palette and
+Physical material table.
+_Avoid_: procedural load (a Generation is not a load), terrain (one feature of
+a Generation, not the whole)
+
+**Seed**:
+The integer that fixes a generated World: one Seed gives one World, voxel for
+voxel and Snapshot for Snapshot, on every machine and every build. A Seed's
+features separate by fixed tags rather than by draw order, so a feature added
+later leaves the Worlds of the features before it unchanged.
+_Avoid_: random value, noise seed (the Seed fixes every feature, not one)
+
+**Vocabulary**:
+The fixed set of materials a generated World draws on: its Material indices
+with their Palette colors, their Physical material rules, and the feature tags
+that separate a Seed's features.
+_Avoid_: material list, material system
+
+**Height field**:
+The ground surface of a generated World: one quantized level per column, from
+which the fill's top and its material layering follow. It is a pure function of
+the Seed and the column, so one column's surface never depends on another's.
+_Avoid_: heightmap (a sampled asset), terrain (the whole content)
+
+**Bedrock**:
+The level a generated World's fill stops at: every filled column is solid from
+here up to its Height field level, and nothing is generated below it.
+_Avoid_: sea level, ground level (the Height field's own zero, not the floor)
+
+**Generation params**:
+What a Generation is asked for with: a Seed and a footprint, the footprint
+defaulting to the full Lattice so a development run can generate a small World.
+_Avoid_: world size, config
 
 ## Ray tracing
 
