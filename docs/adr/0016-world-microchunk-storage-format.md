@@ -21,9 +21,8 @@ index was not worth adding to avoid that. The Region store keeps one entry per
 Micro-chunk, so the compile now copies that entry instead. `compile_chunk` in
 `world/diff/edit.rs` reads the 64-byte mask and the compacted materials in one
 pass, at about 100 ns per touched Micro-chunk on the `edit_path_timings` fixture
-(2026-10-02), against about 10.5 µs for the probes. A store with no entry, and an
-entryless Micro-chunk, fall back to the 512 probes; the sharded map oracle takes
-that path.
+(2026-10-02), against about 10.5 µs for the probes. An entryless Micro-chunk
+falls back to the 512 probes.
 
 A second index beside the storage still gains nothing. The Region store already
 holds one entry per Micro-chunk, and reading it directly is the fix the probes
@@ -92,14 +91,16 @@ cites [0001](0001-gpu-voxel-representation.md) as the format precedent the World
 now shares. Amended (region-backed voxel store ticket 13, 2026-10-02) to record
 the compile as it was installed then. Amended again (ticket 14, 2026-10-02): the
 entry-copy compile is installed, at about 100 ns per touched Micro-chunk, and
-the 512-probe path is the fallback for the sharded map oracle and for an
-entryless Micro-chunk in the Region store. Amended (ticket 15, 2026-10-02):
+the 512-probe path is the fallback for an entryless Micro-chunk in the Region
+store. Amended (ticket 15, 2026-10-02):
 `rank` was a byte scan from zero on every call. `iter_voxels` now carries its
 rank as it walks, and random-access `rank` reads the 8-byte word holding the
 cell. `get_voxel` fell from 20.4 to 10.3 ns and `iter_voxels` from 18.4 to 3.0
 ns per voxel on the dense fixture; bistro's emission fell from 4.119 to 2.781 s.
-[0004](0004-sharded-world-map.md)'s sharded map is amended separately and
-survives as the differential oracle.
+Amended (map-oracle removal, 2026-10-03): the sharded map, the `map-oracle`
+feature, and the differential tests that ran against it are deleted, so the
+Region store is the only voxel store and an entryless Micro-chunk is the only
+probe fallback. [0004](0004-sharded-world-map.md) records the deletion.
 
 ## Considered Options
 
@@ -137,11 +138,12 @@ survives as the differential oracle.
   `iter_voxels` yields `(IVec3, u8)`.
 - The compile copies the touched Micro-chunk's entry: `compile_chunk` reads the
   Region store's 64-byte mask and compacted materials, about 100 ns per chunk
-  against the 512 `get_voxel` probes' about 10.5 µs. The sharded map oracle, and
-  an entryless Micro-chunk, fall back to the probes.
+  against the 512 `get_voxel` probes' about 10.5 µs. An entryless Micro-chunk
+  falls back to the probes.
 - A touched but barely filled Region costs 128 KiB of index, which is the one
   case the layout handles worse than a map tuned for scatter. The ignored asset
   tests record where the repository's content sits against it.
-- [0004](0004-sharded-world-map.md)'s sharded map is retained under the
-  non-default `map-oracle` feature as the differential oracle, so every
-  behaviour claim is checked against the thing this decision replaces.
+- [0004](0004-sharded-world-map.md)'s sharded map is deleted (map-oracle
+  removal, 2026-10-03). The Region store is the only voxel store, so its tests
+  check it against independent references rather than against the map this
+  decision replaces.

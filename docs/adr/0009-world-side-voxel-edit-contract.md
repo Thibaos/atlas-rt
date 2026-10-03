@@ -42,9 +42,9 @@ at about 100 ns per touched Micro-chunk, against about 10.5 µs for the 512
 `get_voxel` probes it replaced (ticket 14). `World` keeps no chunk occupancy
 index, and the measured fallback that would add one, a locked or worker-owned
 `World` plus a chunk index, is not used. The probe path survives as the fallback
-for a store with no entry: the sharded map oracle, and an entryless Micro-chunk
-in the Region store. The reopen trigger is a workload target, not a cost the
-storage layout imposes: scattered 10,000-plus edits per frame or fills compiling
+for an entryless Micro-chunk in the Region store. The reopen trigger is a
+workload target, not a cost the storage layout imposes: scattered 10,000-plus
+edits per frame or fills compiling
 more than roughly 1,500 chunks in one frame, which at 100 ns per chunk is about
 0.15 ms. [0016](0016-world-microchunk-storage-format.md) records the superseded
 probe figure.
@@ -69,9 +69,8 @@ accepted (voxel-edits ticket 06, 2026-09-22). Amended (region-backed voxel
 store, 2026-10-02): the World stores one material byte per cell and the compile
 reads each touched Micro-chunk's entry, at about 100 ns per chunk against the
 about 10.5 µs the 512 `get_voxel` probes cost (ticket 14). The probe path is the
-fallback: the sharded map oracle has no entry, and the Region store has none for
-an entryless Micro-chunk. The rejection of a supplementary chunk occupancy index
-and its reopen trigger still stand.
+fallback for an entryless Micro-chunk in the Region store. The rejection of a
+supplementary chunk occupancy index and its reopen trigger still stand.
 
 ## Considered Options
 

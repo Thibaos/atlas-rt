@@ -19,9 +19,10 @@ voxel store, 2026-10-01): the sharded map is superseded as the World's
 resident storage. `World` becomes a flat table of 4096 Region slots indexed by
 the 12-bit region id, and parallel load partitions by region id instead of by
 hash route, so there is one owner thread per Region and no mutex array. The
-sharded map survives as an oracle gated behind the non-default `map-oracle`
-feature, kept for the differential tests, not as the resident store. The
-decision this
+sharded map was gated behind the non-default `map-oracle` feature as a
+differential oracle rather than the resident store, and was deleted on
+2026-10-03 (map-oracle removal) together with its feature and tests, so the
+Region store is the only voxel store. The decision this
 ADR recorded, that insert contention and last-write-wins are resolved without a
 global lock, still stands: partitioning by region satisfies it as well as
 routing by hash did. Sequence tags survive inside a Region, because two
