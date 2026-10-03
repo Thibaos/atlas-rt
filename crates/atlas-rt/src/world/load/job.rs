@@ -15,7 +15,7 @@ use tracing::error;
 use crate::{
     host::display_gate::DisplayGate,
     world::{
-        BoundsPolicy, StoreKind, World,
+        BoundsPolicy, World,
         budget::cell_budget,
         diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
         load::progress::{Progress, Stage},
@@ -492,7 +492,7 @@ fn run_pipeline(
     let materials = load_table(source.filesystem_path().as_deref());
 
     let (world, clipped) =
-        match super::build::load(&voxel_data, BoundsPolicy::Clip, StoreKind::Region, budget) {
+        match super::build::load(&voxel_data, BoundsPolicy::Clip, budget) {
             Ok((world, clipped)) => (world, clipped),
             Err(refused) => {
                 return Err(format!(

@@ -4,10 +4,6 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-[features]
-default = []
-map-oracle = []
-
 [dependencies]
 vulkano = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }

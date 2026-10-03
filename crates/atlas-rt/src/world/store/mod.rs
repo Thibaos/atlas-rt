@@ -1,6 +1,4 @@
 pub mod region;
-#[cfg(feature = "map-oracle")]
-pub mod sharded;
 
 use std::fmt::Debug;
 
@@ -9,8 +7,6 @@ use glam::IVec3;
 use crate::world::{BoundsPolicy, InsertResult, grid};
 
 pub use region::RegionStore;
-#[cfg(feature = "map-oracle")]
-pub use sharded::ShardedMap;
 
 /// A store's storage size: the flat Region table, every live Region's
 /// Micro-chunk index, and every live Region's blob at its high-water mark.
@@ -61,13 +57,10 @@ pub trait VoxelStore: Debug + Send + Sync {
     #[must_use]
     fn count(&self) -> usize;
 
-    /// The Micro-chunk entry `origin` names, if the store keeps one. The default
-    /// is `None`, so a store with no entry shape, and an entryless Micro-chunk,
-    /// both fall back to probing the 512 cells.
+    /// The Micro-chunk entry `origin` names, or `None` for a Micro-chunk with no
+    /// entry.
     #[must_use]
-    fn chunk_entry(&self, _origin: IVec3) -> Option<ChunkEntry<'_>> {
-        None
-    }
+    fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>>;
 
     #[must_use]
     fn bounds(&self) -> Option<(IVec3, IVec3)> {
@@ -83,12 +76,9 @@ pub trait VoxelStore: Debug + Send + Sync {
         bounds
     }
 
-    /// The Region store's three size terms. The map oracle has no Region
-    /// layout, so it keeps the default.
+    /// The Region store's three size terms.
     #[cfg(test)]
-    fn storage_size(&self) -> StorageSize {
-        StorageSize::default()
-    }
+    fn storage_size(&self) -> StorageSize;
 
     /// The World's `insert`: the `BoundsPolicy` is resolved and the material
     /// narrowed before the write. A clipped position never reaches storage.

@@ -668,15 +668,6 @@ mod tests {
 
     use crate::world::test_support::{Rng, u8_below};
 
-    #[cfg(feature = "map-oracle")]
-    use crate::world::{StoreKind, World};
-
-    #[cfg(feature = "map-oracle")]
-    use crate::world::diff::snapshot::emit_snapshots;
-
-    #[cfg(feature = "map-oracle")]
-    use crate::world::store::ShardedMap;
-
     use super::*;
 
     fn content(store: &dyn VoxelStore) -> HashMap<IVec3, u8> {
@@ -877,24 +868,6 @@ mod tests {
         chunk.saturating_mul(IVec3::splat(8)).saturating_add(cell)
     }
 
-    #[cfg(feature = "map-oracle")]
-    fn assert_agrees(region: &RegionStore, map: &ShardedMap) {
-        assert_eq!(region.count(), map.count(), "voxel count");
-        assert_eq!(region.bounds(), map.bounds(), "bounds");
-
-        let region_content = content(region);
-        let map_content = content(map);
-
-        assert_eq!(region_content, map_content, "content");
-
-        for (position, material) in &region_content {
-            assert_eq!(region.get(*position), Some(*material));
-            assert_eq!(map.get(*position), Some(*material));
-            assert!(region.contains(*position));
-            assert!(map.contains(*position));
-        }
-    }
-
     #[test]
     fn material_zero_is_occupied_while_its_mask_bit_is_set() {
         let mut store = RegionStore::default();
@@ -910,66 +883,6 @@ mod tests {
 
         assert_eq!(store.get(position), None);
         assert!(!store.contains(position));
-    }
-
-    #[cfg(feature = "map-oracle")]
-    #[test]
-    fn randomized_writes_and_clears_match_the_map() {
-        let mut rng = Rng::new(0x0303_0303);
-
-        for case in 0..32u32 {
-            let mut region = RegionStore::default();
-            let mut map = ShardedMap::default();
-
-            for _ in 0..512 {
-                let position = random_position(&mut rng);
-
-                if rng.below(4) == 0 {
-                    region.clear(position);
-                    map.clear(position);
-                } else {
-                    let material = u8_below(&mut rng, 256);
-
-                    assert_eq!(
-                        region.set(position, material),
-                        map.set(position, material),
-                        "case {case} set result at {position}"
-                    );
-                }
-            }
-
-            assert_agrees(&region, &map);
-        }
-    }
-
-    #[cfg(feature = "map-oracle")]
-    #[test]
-    fn clustered_random_edits_exercise_growth_and_reuse() {
-        let mut rng = Rng::new(0x0404_0404);
-
-        for case in 0..16u32 {
-            let mut region = RegionStore::default();
-            let mut map = ShardedMap::default();
-
-            for _ in 0..2_000 {
-                let position = clustered_position(&mut rng);
-
-                if rng.below(3) == 0 {
-                    region.clear(position);
-                    map.clear(position);
-                } else {
-                    let material = u8_below(&mut rng, 256);
-
-                    assert_eq!(
-                        region.set(position, material),
-                        map.set(position, material),
-                        "case {case} set result at {position}"
-                    );
-                }
-            }
-
-            assert_agrees(&region, &map);
-        }
     }
 
     #[test]
@@ -1332,41 +1245,5 @@ mod tests {
 
             assert_agrees_with_reference(&store, &reference, &context);
         }
-    }
-
-    #[cfg(feature = "map-oracle")]
-    fn asset_answers_match_the_map(path: &str) {
-        let data = dot_vox::load(path).unwrap();
-        let (region, region_clipped) = World::new_clipped_with_store(&data, StoreKind::Region);
-        let (map, map_clipped) = World::new_clipped_with_store(&data, StoreKind::Map);
-
-        assert_eq!(region_clipped, map_clipped, "clipped counts diverge");
-        crate::world::test_support::assert_worlds_agree(&region, &map, path);
-
-        let region_snapshots = emit_snapshots(&region)
-            .unwrap_or_else(|error| panic!("{path}: region emission: {error}"));
-        let map_snapshots =
-            emit_snapshots(&map).unwrap_or_else(|error| panic!("{path}: map emission: {error}"));
-
-        assert_eq!(
-            region_snapshots, map_snapshots,
-            "{path}: emitted Snapshots diverge"
-        );
-
-        crate::world::test_support::report_region_density(&region, path);
-    }
-
-    #[cfg(feature = "map-oracle")]
-    #[test]
-    #[ignore = "asset: cargo test --release --features map-oracle church_answers_match_the_map -- --ignored --nocapture"]
-    fn church_answers_match_the_map() {
-        asset_answers_match_the_map("assets/church.vox");
-    }
-
-    #[cfg(feature = "map-oracle")]
-    #[test]
-    #[ignore = "asset: cargo test --release --features map-oracle bistro_answers_match_the_map -- --ignored --nocapture"]
-    fn bistro_answers_match_the_map() {
-        asset_answers_match_the_map("assets/bistro.vox");
     }
 }

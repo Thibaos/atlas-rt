@@ -4,7 +4,7 @@ use rayon::prelude::*;
 
 use super::scene_graph::{SceneGraphTraverser, VoxelPlacement};
 use crate::world::{
-    BoundsPolicy, StoreKind, World, grid,
+    BoundsPolicy, World, grid,
     store::region::{Region, RegionStore},
 };
 
@@ -29,11 +29,10 @@ struct Batch<'scene> {
 pub(in crate::world) fn load(
     voxel_data: &DotVoxData,
     policy: BoundsPolicy,
-    store: StoreKind,
     budget: usize,
 ) -> Result<(World, usize), usize> {
     if voxel_data.scenes.is_empty() {
-        return load_without_scene(voxel_data, policy, store, budget);
+        return load_without_scene(voxel_data, policy, budget);
     }
 
     let (traverse_clipped, models) = collect_models(voxel_data, policy);
@@ -63,18 +62,14 @@ pub(in crate::world) fn load(
     let attempts = usize::try_from(attempts).unwrap_or(usize::MAX);
 
     if batches.is_empty() || attempts == 0 {
-        return Ok((World::empty(store), clipped));
+        return Ok((World::empty(), clipped));
     }
 
     if attempts > budget {
         return Err(attempts);
     }
 
-    let world = match store {
-        StoreKind::Region => World::from_store(Box::new(build_region(&batches))),
-        #[cfg(feature = "map-oracle")]
-        StoreKind::Map => build_map(batches),
-    };
+    let world = World::from_store(Box::new(build_region(&batches)));
 
     Ok((world, clipped))
 }
@@ -83,7 +78,6 @@ pub(in crate::world) fn load(
 fn load_without_scene(
     voxel_data: &DotVoxData,
     policy: BoundsPolicy,
-    store: StoreKind,
     budget: usize,
 ) -> Result<(World, usize), usize> {
     let attempts = voxel_data
@@ -96,7 +90,7 @@ fn load_without_scene(
         return Err(attempts);
     }
 
-    let mut world = World::empty(store);
+    let mut world = World::empty();
     let mut loader = SceneGraphTraverser {
         world: &mut world,
         policy,
@@ -111,7 +105,7 @@ fn load_without_scene(
 }
 
 fn collect_models(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (usize, Vec<PlacedModel<'_>>) {
-    let mut world = World::empty(StoreKind::Region);
+    let mut world = World::empty();
     let mut loader = SceneGraphTraverser {
         world: &mut world,
         policy,
@@ -190,23 +184,6 @@ fn build_region(batches: &[Batch<'_>]) -> RegionStore {
     store.recount();
 
     store
-}
-
-#[cfg(feature = "map-oracle")]
-fn build_map(batches: Vec<Batch<'_>>) -> World {
-    let mut world = World::empty(StoreKind::Map);
-
-    for batch in batches {
-        for voxel in batch.voxels {
-            let position = batch.placement.place(*voxel);
-
-            if grid::in_lattice(position) {
-                world.set_voxel(position, voxel.i);
-            }
-        }
-    }
-
-    world
 }
 
 fn region_contains(region: &IVec3, min: &IVec3, max: &IVec3) -> bool {
