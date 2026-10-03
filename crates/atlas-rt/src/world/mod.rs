@@ -6,6 +6,7 @@ pub mod material;
 pub mod palette;
 pub mod raycast;
 pub(crate) mod store;
+pub mod vocabulary;
 pub mod vox;
 
 #[cfg(test)]

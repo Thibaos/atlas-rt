@@ -52,7 +52,7 @@ impl PhysicalMaterialTable {
     }
 
     #[allow(clippy::indexing_slicing)] // a u8 reaches all 256 entries
-    const fn set(&mut self, index: u8, material: PhysicalMaterial) {
+    pub(in crate::world) const fn set(&mut self, index: u8, material: PhysicalMaterial) {
         self.entries[index as usize] = material;
     }
 }
