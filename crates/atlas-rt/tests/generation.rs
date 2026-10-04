@@ -112,6 +112,10 @@ fn a_generation_delivers_a_world_snapshots_palette_and_material_table() {
         vocabulary.palette(),
         "the Palette comes from the Vocabulary"
     );
+    assert!(
+        loaded.granular_cells.is_some(),
+        "a Generation hands its Falling granular cells on"
+    );
 }
 
 #[test]
@@ -168,6 +172,7 @@ fn a_generated_world_activates_and_the_player_stands_on_its_surface() {
         snapshots: loaded.snapshots,
         tracked,
         materials: loaded.materials,
+        granular_cells: loaded.granular_cells,
     });
 
     let player = common::wait_ready(&handle);

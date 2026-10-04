@@ -52,6 +52,7 @@ pub struct Activation {
     pub snapshots: Vec<MicroChunkSnapshot>,
     pub tracked: TrackedCoords,
     pub materials: PhysicalMaterialTable,
+    pub granular_cells: Option<Vec<IVec3>>,
 }
 
 /// A host edit resolved at the next commit, against the `World` then active.
@@ -354,6 +355,7 @@ impl Runtime {
             snapshots,
             tracked,
             materials,
+            granular_cells,
         } = activation;
 
         let outgoing = mem::take(&mut self.tracked);
@@ -366,7 +368,8 @@ impl Runtime {
 
             *guard = world;
 
-            self.queue.seed(&guard, &self.materials);
+            self.queue
+                .seed(&guard, &self.materials, granular_cells.as_deref());
 
             let planned = plan_load(snapshots, &outgoing);
             let player = pose(&guard, self.profile, &self.materials, &self.queue);
@@ -444,7 +447,7 @@ impl Runtime {
                 let outcome = edit_world(&mut guard, &rules, &self.tracked);
 
                 if outcome.is_err() {
-                    self.queue.seed(&guard, &self.materials);
+                    self.queue.seed(&guard, &self.materials, None);
                 }
 
                 debug_assert!(

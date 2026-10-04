@@ -184,6 +184,10 @@ fn a_valid_override_reaches_the_loaded_world_and_the_load_still_readies() {
         blocking(),
         "an unnamed index keeps the built-in default"
     );
+    assert!(
+        loaded.granular_cells.is_none(),
+        "a .vox load seeds the queue by scanning, not from a list"
+    );
 }
 
 #[test]

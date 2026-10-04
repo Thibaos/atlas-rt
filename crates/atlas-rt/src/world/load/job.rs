@@ -9,7 +9,7 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-use glam::Vec4;
+use glam::{IVec3, Vec4};
 use tracing::error;
 
 use crate::{
@@ -87,6 +87,7 @@ pub struct LoadedWorld {
     pub snapshots: Vec<MicroChunkSnapshot>,
     pub palette: [Vec4; 256],
     pub materials: PhysicalMaterialTable,
+    pub granular_cells: Option<Vec<IVec3>>,
 }
 
 /// The result of a completed background job.
@@ -543,6 +544,7 @@ fn run_pipeline(
         snapshots,
         palette,
         materials,
+        granular_cells: None,
     })))
 }
 
@@ -554,6 +556,7 @@ fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunRe
         world,
         palette,
         materials,
+        granular_cells,
     } = generate(progress, params)?;
 
     progress.end_stage(Stage::Build);
@@ -565,6 +568,7 @@ fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunRe
         snapshots,
         palette,
         materials,
+        granular_cells: Some(granular_cells),
     })))
 }
 

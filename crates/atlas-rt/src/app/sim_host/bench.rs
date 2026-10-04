@@ -311,6 +311,7 @@ fn sweep(source: &Source, occupancy: &'static str, active: usize) -> SweepPoint 
         PlayerProfile::default(),
         snapshots,
         tracked,
+        None,
         &table,
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));

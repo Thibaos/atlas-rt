@@ -99,13 +99,22 @@ impl App {
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let (world, palette, materials) = match request {
-            WorldRequest::Load(world_path) => Self::load(&world_path, clip_oob)?,
+        let (world, palette, materials, granular_cells) = match request {
+            WorldRequest::Load(world_path) => {
+                let (world, palette, materials) = Self::load(&world_path, clip_oob)?;
+
+                (world, palette, materials, None)
+            }
             WorldRequest::Generate(params) => {
                 let generated = generation::generate(&Progress::generate_path(), params)
                     .map_err(|reason| anyhow::anyhow!("the generation failed: {reason}"))?;
 
-                (generated.world, generated.palette, generated.materials)
+                (
+                    generated.world,
+                    generated.palette,
+                    generated.materials,
+                    Some(generated.granular_cells),
+                )
             }
         };
 
@@ -137,6 +146,7 @@ impl App {
                 profile,
                 snapshots,
                 tracked.clone(),
+                granular_cells,
                 &materials,
             )?)
         };

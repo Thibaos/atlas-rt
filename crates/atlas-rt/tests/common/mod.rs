@@ -88,6 +88,7 @@ pub fn activation_with(edits: &[VoxelEdit], materials: PhysicalMaterialTable) ->
         snapshots: batch.snapshots,
         tracked: batch.tracked,
         materials,
+        granular_cells: None,
     }
 }
 

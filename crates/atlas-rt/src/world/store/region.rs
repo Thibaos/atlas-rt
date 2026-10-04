@@ -1,4 +1,5 @@
 use std::fmt;
+use std::sync::{Mutex, PoisonError};
 
 use glam::IVec3;
 
@@ -242,6 +243,28 @@ fn release_entry(region: &mut Region, ordinal: usize, entry: u32) {
 pub struct RegionStore {
     regions: Vec<Option<Region>>,
     count: usize,
+    bounds: Mutex<BoundsCache>,
+}
+
+/// The cached [`VoxelStore::bounds`]. It starts exact for the empty store and
+/// an addition grows it in place, so a write-only load or Generation stays
+/// cheap. A removal marks it stale and the next query rescans;
+/// [`RegionStore::recount`] does the same.
+#[derive(Debug)]
+struct BoundsCache {
+    bounds: Option<(IVec3, IVec3)>,
+    valid: bool,
+}
+
+impl Default for BoundsCache {
+    /// An empty store's bounds are known, so the cache starts valid and only a
+    /// removal makes it recompute.
+    fn default() -> Self {
+        Self {
+            bounds: None,
+            valid: true,
+        }
+    }
 }
 
 impl Default for RegionStore {
@@ -249,6 +272,7 @@ impl Default for RegionStore {
         Self {
             regions: (0..grid::REGION_COUNT).map(|_| None).collect(),
             count: 0,
+            bounds: Mutex::new(BoundsCache::default()),
         }
     }
 }
@@ -260,7 +284,7 @@ impl fmt::Debug for RegionStore {
         f.debug_struct("RegionStore")
             .field("regions", &regions)
             .field("voxels", &self.count)
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
@@ -281,6 +305,32 @@ impl RegionStore {
             .flatten()
             .map(|region| region.count)
             .sum();
+
+        self.invalidate_bounds();
+    }
+
+    /// Grows the cached bounds to cover a cell range. Only an addition calls
+    /// this, so the cache stays exact while it is valid; while it is stale it
+    /// stays a superset and the next query still recomputes.
+    fn grow_bounds(&mut self, min: IVec3, max: IVec3) {
+        let cache = self
+            .bounds
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner);
+
+        cache.bounds = Some(match cache.bounds {
+            Some((low, high)) => (low.min(min), high.max(max)),
+            None => (min, max),
+        });
+    }
+
+    /// Marks the cached bounds stale, for an operation that can remove a cell
+    /// at the cache's edge.
+    fn invalidate_bounds(&mut self) {
+        self.bounds
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .valid = false;
     }
 }
 
@@ -597,6 +647,37 @@ impl Iterator for Entries<'_> {
     }
 }
 
+/// The exact occupied bounds of one Micro-chunk entry, or `None` for a zero
+/// mask. Scans the mask's 64 bytes rather than its set bits, so it is bounded
+/// by the entry size, not by the voxels it holds.
+fn entry_cell_bounds(origin: IVec3, mask: &[u8; MICRO_BYTES]) -> Option<(IVec3, IVec3)> {
+    let mut min = IVec3::splat(i32::MAX);
+    let mut max = IVec3::splat(i32::MIN);
+    let mut occupied = false;
+
+    for (index, byte) in mask.iter().copied().enumerate() {
+        if byte == 0 {
+            continue;
+        }
+
+        occupied = true;
+
+        let row = i32::try_from(index).unwrap_or(0);
+        let edge = i32::try_from(MICRO_CHUNK).unwrap_or(1);
+        let y = row.strict_rem(edge);
+        let z = row.strict_div(edge);
+        let low = i32::try_from(byte.trailing_zeros()).unwrap_or(0);
+        let high = i32::try_from(7u32.saturating_sub(byte.leading_zeros())).unwrap_or(0);
+        let cell_min = IVec3::new(low, y, z);
+        let cell_max = IVec3::new(high, y, z);
+
+        min = min.min(cell_min);
+        max = max.max(cell_max);
+    }
+
+    occupied.then(|| (origin.saturating_add(min), origin.saturating_add(max)))
+}
+
 impl VoxelStore for RegionStore {
     fn set(&mut self, position: IVec3, material: u8) -> bool {
         let slot = region_slot(position);
@@ -610,6 +691,7 @@ impl VoxelStore for RegionStore {
 
         if !existing {
             self.count = self.count.saturating_add(1);
+            self.grow_bounds(position, position);
         }
 
         existing
@@ -686,6 +768,8 @@ impl VoxelStore for RegionStore {
         if region.count == 0 {
             *slot_region = None;
         }
+
+        self.invalidate_bounds();
     }
 
     fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
@@ -694,6 +778,22 @@ impl VoxelStore for RegionStore {
 
     fn count(&self) -> usize {
         self.count
+    }
+
+    fn bounds(&self) -> Option<(IVec3, IVec3)> {
+        let mut cache = self.bounds.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if !cache.valid {
+            cache.bounds = self.iter().fold(None, |bounds, (position, _)| {
+                Some(match bounds {
+                    Some((min, max)) => (min.min(position), max.max(position)),
+                    None => (position, position),
+                })
+            });
+            cache.valid = true;
+        }
+
+        cache.bounds
     }
 
     fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>> {
@@ -754,12 +854,16 @@ impl VoxelStore for RegionStore {
                 *slot_region = None;
             }
 
+            self.invalidate_bounds();
+
             return Ok(());
         }
 
         let region = slot_region.get_or_insert_with(Region::new);
         let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
         let old_offset = entry_offset(entry);
+        let replacing = old_offset.is_some();
+        let written_bounds = entry_cell_bounds(origin, mask);
         let old_popcount = old_offset.map_or(0, |offset| entry_popcount(region, offset));
         let class = class_of_size(MASK_BYTES.strict_add(occupied));
         let reuse = old_offset.filter(|_| entry_class(entry) == class);
@@ -797,6 +901,12 @@ impl VoxelStore for RegionStore {
 
         if let Some(dst) = region.blob.get_mut(base..base.strict_add(occupied)) {
             dst.copy_from_slice(materials);
+        }
+
+        if replacing {
+            self.invalidate_bounds();
+        } else if let Some((min, max)) = written_bounds {
+            self.grow_bounds(min, max);
         }
 
         Ok(())
@@ -1414,6 +1524,121 @@ mod tests {
 
             assert_agrees_with_reference(&store, &reference, &context);
         }
+    }
+
+    /// Writes, entry writes, and clears against an independent hash map, with
+    /// the cached bounds checked after every operation, so an addition that
+    /// grows them and a clear or a replacing entry write that shrinks them are
+    /// both exercised.
+    #[test]
+    fn bounds_stay_exact_through_writes_entry_writes_and_clears() {
+        let seed = 0x00B0_0D15;
+        let mut rng = Rng::new(seed);
+        let mut store = RegionStore::default();
+        let mut reference: HashMap<IVec3, u8> = HashMap::new();
+
+        for case in 0..600u32 {
+            match rng.below(4) {
+                0 => {
+                    let position = clustered_position(&mut rng);
+
+                    store.clear(position);
+                    reference.remove(&position);
+                }
+                1 => {
+                    let origin = chunk_origin(&mut rng, 6);
+                    let mask = random_mask(&mut rng, 4);
+                    let materials = entry_materials(&mask, &mut rng);
+
+                    store
+                        .write_entry(origin, &mask, &materials)
+                        .unwrap_or_else(|error| panic!("case {case}: {error}"));
+
+                    for index in 0..MICRO_CHUNK_CELLS {
+                        let position = origin.saturating_add(cell_in_chunk(index));
+
+                        if mask_occupied(&mask, index) {
+                            reference.insert(position, 0);
+                        } else {
+                            reference.remove(&position);
+                        }
+                    }
+                }
+                _ => {
+                    let position = clustered_position(&mut rng);
+                    let material = u8_below(&mut rng, 256);
+
+                    store.set(position, material);
+                    reference.insert(position, material);
+                }
+            }
+
+            assert_eq!(
+                store.bounds(),
+                reference_bounds(&reference),
+                "seed {seed:#x} case {case}"
+            );
+        }
+    }
+
+    fn bounds_valid(store: &RegionStore) -> bool {
+        store
+            .bounds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .valid
+    }
+
+    #[test]
+    fn a_clear_invalidates_the_cached_bounds_and_a_query_recomputes_them() {
+        let mut store = RegionStore::default();
+        let far = IVec3::new(100, -20, 40);
+        let near = IVec3::new(0, 0, 0);
+
+        store.set(far, 1);
+        store.set(near, 1);
+
+        assert_eq!(
+            store.bounds(),
+            Some((IVec3::new(0, -20, 0), IVec3::new(100, 0, 40))),
+            "the bounds span both cells"
+        );
+        assert!(bounds_valid(&store), "a write leaves the cache exact");
+
+        store.clear(far);
+
+        assert!(!bounds_valid(&store), "a clear invalidates the cache");
+        assert_eq!(
+            store.bounds(),
+            Some((near, near)),
+            "the query recomputes the shrunken bounds"
+        );
+        assert!(
+            bounds_valid(&store),
+            "the query leaves the cache exact again"
+        );
+    }
+
+    #[test]
+    fn a_write_only_store_keeps_its_bounds_valid_without_a_scan() {
+        let mut store = RegionStore::default();
+        let mut mask = [0u8; MICRO_BYTES];
+
+        mask[0] = 0b0000_0011;
+
+        store
+            .write_entry(IVec3::new(0, 0, 0), &mask, &[1, 2])
+            .unwrap_or_else(|error| panic!("{error}"));
+
+        assert!(
+            bounds_valid(&store),
+            "a generation that only writes never needs a scan"
+        );
+        assert_eq!(
+            store.bounds(),
+            Some((IVec3::ZERO, IVec3::new(1, 0, 0))),
+            "the bounds come straight from the entry"
+        );
     }
 
     /// A store that implements only the primitives, so `write_entry` comes from

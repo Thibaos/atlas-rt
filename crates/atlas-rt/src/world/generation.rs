@@ -15,7 +15,7 @@ use super::{
     World,
     grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
     load::progress::{Progress, Stage},
-    material::PhysicalMaterialTable,
+    material::{PhysicalMaterialTable, Rule},
     vocabulary::{Feature, Material, Vocabulary},
 };
 
@@ -79,11 +79,12 @@ impl Default for GenerationParams {
 }
 
 /// A finished Generation: the World, its Palette, and its Physical material
-/// table. Its Snapshots are emitted from the World by the pipeline.
+/// table, plus the Falling granular cells it wrote.
 pub struct GeneratedWorld {
     pub world: World,
     pub palette: [glam::Vec4; 256],
     pub materials: PhysicalMaterialTable,
+    pub granular_cells: Vec<IVec3>,
 }
 
 /// Builds a World from `params`, filling Micro-chunk by Micro-chunk and
@@ -101,8 +102,9 @@ pub fn generate(progress: &Progress, params: GenerationParams) -> Result<Generat
     }
 
     let mut world = World::empty();
+    let mut granular_cells = Vec::new();
 
-    fill(&mut world, progress, params);
+    fill(&mut world, progress, params, &mut granular_cells);
 
     progress.end_stage(Stage::Generate);
 
@@ -112,6 +114,7 @@ pub fn generate(progress: &Progress, params: GenerationParams) -> Result<Generat
         world,
         palette: vocabulary.palette(),
         materials: vocabulary.materials(),
+        granular_cells,
     })
 }
 
@@ -120,7 +123,12 @@ pub fn generate(progress: &Progress, params: GenerationParams) -> Result<Generat
 /// Pure and column-independent: a column's surface is a hash of the Seed, the
 /// Terrain tag, and the column's x and z, so no floating point enters and no
 /// column depends on another.
-fn fill(world: &mut World, progress: &Progress, params: GenerationParams) {
+fn fill(
+    world: &mut World,
+    progress: &Progress,
+    params: GenerationParams,
+    granular_cells: &mut Vec<IVec3>,
+) {
     let half = LATTICE_HALF_EXTENT.cast_signed();
     let lower = IVec3::splat(half.saturating_neg());
     let upper = lower
@@ -141,7 +149,11 @@ fn fill(world: &mut World, progress: &Progress, params: GenerationParams) {
 
         while origin.x < upper.x {
             filled = filled.saturating_add(write_column_of_micro_chunks(
-                world, origin, tag, upper,
+                world,
+                origin,
+                tag,
+                upper,
+                granular_cells,
             ));
             progress.count_generated(total, filled);
 
@@ -198,6 +210,7 @@ fn write_column_of_micro_chunks(
     mut origin: IVec3,
     tag: u64,
     upper: IVec3,
+    granular_cells: &mut Vec<IVec3>,
 ) -> usize {
     let mut written = 0usize;
 
@@ -207,7 +220,7 @@ fn write_column_of_micro_chunks(
 
     while origin.y <= SURFACE_CEILING {
         if !chunk_floor_over_surface(&surfaces, origin.y) {
-            write_micro_chunk(world, origin, upper, &surfaces);
+            write_micro_chunk(world, origin, upper, &surfaces, granular_cells);
 
             written = written.saturating_add(1);
         }
@@ -231,6 +244,7 @@ fn write_micro_chunk(
     origin: IVec3,
     upper: IVec3,
     surfaces: &[i32; 64],
+    granular_cells: &mut Vec<IVec3>,
 ) {
     let mut mask = [0u8; MICRO_BYTES];
     let mut materials: Vec<u8> = Vec::with_capacity(512);
@@ -254,6 +268,10 @@ fn write_micro_chunk(
             }
 
             materials.push(material.index());
+
+            if material.physical().rule == Rule::FallingGranular {
+                granular_cells.push(position);
+            }
         }
     }
 
@@ -383,6 +401,29 @@ mod tests {
             GenerationParams::new(0x5EED, footprint),
         )
         .unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    #[test]
+    fn the_granular_cells_are_the_worlds_falling_granular_cells() {
+        let generated = generated(IVec3::splat(64));
+
+        let mut expected: Vec<IVec3> = generated
+            .world
+            .iter_voxels()
+            .filter(|(_, voxel)| generated.materials.get(*voxel).rule == Rule::FallingGranular)
+            .map(|(position, _)| position)
+            .collect();
+
+        expected.sort_unstable_by_key(|cell| cell.to_array());
+
+        let mut actual = generated.granular_cells;
+        actual.sort_unstable_by_key(|cell| cell.to_array());
+
+        assert!(
+            !expected.is_empty(),
+            "the surface dips below ground level somewhere"
+        );
+        assert_eq!(actual, expected, "the list is exactly the granular cells");
     }
 
     #[test]

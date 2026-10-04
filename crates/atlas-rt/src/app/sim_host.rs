@@ -11,6 +11,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
+use glam::IVec3;
 use tracing::{error, warn};
 
 use atlas_rt::host::ViewInterpolation;
@@ -26,14 +27,18 @@ use atlas_rt::world::material::PhysicalMaterialTable;
 const READY_WAIT: Duration = Duration::from_secs(5);
 const READY_POLL: Duration = Duration::from_millis(50);
 
+/// What the host holds until the renderer exists to receive it.
+struct Handover {
+    snapshots: Vec<MicroChunkSnapshot>,
+    tracked: TrackedCoords,
+    materials: PhysicalMaterialTable,
+    granular_cells: Option<Vec<IVec3>>,
+}
+
 /// Nothing on this side waits for the renderer.
 pub struct SimHost {
     handle: Handle,
-    handover: Option<(
-        Vec<MicroChunkSnapshot>,
-        TrackedCoords,
-        PhysicalMaterialTable,
-    )>,
+    handover: Option<Handover>,
     view: ViewInterpolation,
     ready: bool,
     waited: bool,
@@ -52,6 +57,7 @@ impl SimHost {
         profile: PlayerProfile,
         snapshots: Vec<MicroChunkSnapshot>,
         tracked: TrackedCoords,
+        granular_cells: Option<Vec<IVec3>>,
         materials: &PhysicalMaterialTable,
     ) -> Result<Self> {
         let period = profile.tick_period();
@@ -59,7 +65,12 @@ impl SimHost {
 
         Ok(Self {
             handle,
-            handover: Some((snapshots, tracked, *materials)),
+            handover: Some(Handover {
+                snapshots,
+                tracked,
+                materials: *materials,
+                granular_cells,
+            }),
             view: ViewInterpolation::new(period),
             ready: false,
             waited: false,
@@ -70,7 +81,13 @@ impl SimHost {
     /// activation is the only swap the World ever sees. Call it once the
     /// renderer holds the palette and the initial residency.
     pub fn start(&mut self) {
-        let Some((snapshots, tracked, materials)) = self.handover.take() else {
+        let Some(Handover {
+            snapshots,
+            tracked,
+            materials,
+            granular_cells,
+        }) = self.handover.take()
+        else {
             return;
         };
 
@@ -87,6 +104,7 @@ impl SimHost {
             snapshots,
             tracked,
             materials,
+            granular_cells,
         });
     }
 
@@ -271,6 +289,7 @@ mod tests {
             PlayerProfile::default(),
             snapshots,
             tracked,
+            None,
             &PhysicalMaterialTable::default(),
         )
         .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
