@@ -14,6 +14,19 @@
 //! the cumulative endpoints `world::load::progress` uses: 21_000, 129_000,
 //! 342_000.
 //!
+//! `generation_stage_weights`, release, Windows, same host, 2026-10-04, over
+//! generated flat terrain. The footprint's edge pins the volume; the fill writes
+//! one Micro-chunk entry per chunk layer from Bedrock to ground level:
+//!
+//! | footprint edge | voxels    | chunks | generate  | emit     | generate % |
+//! | -------------- | --------- | ------ | --------- | -------- | ---------- |
+//! | 256            | 4.26M     | 9,216  | 10.1 ms   | 2.53 ms  | 79.8       |
+//! | 512            | 17.0M     | 36,864 | 39.0 ms   | 10.2 ms  | 79.5       |
+//!
+//! That gives the cumulative endpoints `world::load::progress` uses for the
+//! Generation path: generate 795_000, build 796_000. A full-Lattice Generation
+//! (1.09e9 voxels, 2.36M chunks) lands at about 3.7 s end to end.
+//!
 //! The budgets below are these figures with headroom for run-to-run variance.
 //! Emission reads Micro-chunk entries rather than walking voxels, so the
 //! per-voxel record reserve the first draft kept, `total / 256` per bucket and
@@ -163,6 +176,8 @@
 
 mod load_bench {
     use std::time::{Duration, Instant};
+
+    use glam::IVec3;
 
     use crate::{
         render::region::pack::pack_regions,
@@ -374,10 +389,7 @@ mod load_bench {
             ("emit_snapshots", emit),
             ("pack", pack),
         ];
-        let dominant = stages
-            .iter()
-            .copied()
-            .max_by_key(|&(_, elapsed)| elapsed);
+        let dominant = stages.iter().copied().max_by_key(|&(_, elapsed)| elapsed);
 
         if let Some((stage, elapsed)) = dominant {
             let share = elapsed.as_nanos().saturating_mul(100) / total.as_nanos().max(1);
@@ -385,7 +397,9 @@ mod load_bench {
             println!("dominant        {stage} {share}%");
         }
 
-        println!("reserve         emission reads Micro-chunk entries; its per-voxel record is gone");
+        println!(
+            "reserve         emission reads Micro-chunk entries; its per-voxel record is gone"
+        );
 
         let stage_budgets = [
             WORLD_NEW.budget(voxels, micro_chunks, 0),
@@ -433,6 +447,60 @@ mod load_bench {
 
         let inflated = budget.saturating_add(ms(1));
         assert!(budget_check("emit_snapshots", inflated, budget).is_err());
+    }
+
+    /// The generator's stages as the job itself runs them, including the
+    /// reports the generate and emit stages make. The numbers here are what the
+    /// generation weights in `world::load::progress` are derived from.
+    #[test]
+    #[ignore = "bench: cargo test --release generation_stage_weights -- --ignored --nocapture (ATLAS_BENCH_FOOTPRINT pins the footprint edge, otherwise 256)"]
+    fn generation_stage_weights() {
+        let edge = std::env::var("ATLAS_BENCH_FOOTPRINT")
+            .ok()
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(256);
+
+        run_generation_weights(IVec3::splat(edge));
+    }
+
+    fn run_generation_weights(footprint: IVec3) {
+        use crate::world::{
+            generation::{GenerationParams, generate},
+            load::progress::Progress,
+        };
+
+        let seed = 0x5EED_1234;
+
+        let progress = Progress::generate_path();
+        let start = Instant::now();
+        let generated = generate(&progress, GenerationParams::new(seed, footprint))
+            .unwrap_or_else(|error| panic!("{error}"));
+        let generate_stage = start.elapsed();
+
+        progress.end_stage(Stage::Build);
+
+        let start = Instant::now();
+        let snapshots = emit_snapshots_reporting(&generated.world, Some(&progress)).unwrap();
+        let emit = start.elapsed();
+
+        let world = &generated.world;
+        let voxels = world.voxel_count();
+        let total = generate_stage.saturating_add(emit);
+        let share = |stage: Duration| {
+            let millionths = stage.as_nanos().saturating_mul(1_000_000) / total.as_nanos().max(1);
+
+            u32::try_from(millionths).unwrap_or(0)
+        };
+
+        println!("footprint       {footprint}");
+        println!("voxels          {voxels}");
+        println!("micro chunks    {}", snapshots.len());
+        println!(
+            "generate        {generate_stage:10.3?}  {}",
+            share(generate_stage)
+        );
+        println!("emit            {emit:10.3?}  {}", share(emit));
+        println!("total           {total:10.3?}");
     }
 }
 
@@ -817,7 +885,13 @@ mod edit_bench {
 
         let pack = best_pack(&resident);
 
-        (dirty.len(), batch.snapshots.len(), resident.len(), full, pack)
+        (
+            dirty.len(),
+            batch.snapshots.len(),
+            resident.len(),
+            full,
+            pack,
+        )
     }
 
     /// The edit call across the workloads `edit_path_timings` does not cover:
@@ -862,8 +936,7 @@ mod edit_bench {
                 ("tracked", &sets, &tracked, false),
                 ("budget", &sets, &TrackedCoords::default(), true),
             ] {
-                let (regions, chunks, packed, full, pack) =
-                    run_workload(edits, tracked, budget);
+                let (regions, chunks, packed, full, pack) = run_workload(edits, tracked, budget);
                 let full_per = per_unit(full.as_nanos(), size);
                 let pack_per = per_unit(pack.as_nanos(), packed);
                 let frame_per = full.as_secs_f64() / FRAME_BUDGET.as_secs_f64() * 100.0;
@@ -903,7 +976,10 @@ mod edit_bench {
 
         println!("populated voxels {}", populated.voxel_count());
         println!();
-        println!("{:<9} {:>7} {:>10} {:>9}", "region", "writes", "elapsed", "ns/write");
+        println!(
+            "{:<9} {:>7} {:>10} {:>9}",
+            "region", "writes", "elapsed", "ns/write"
+        );
         measure_first_writes(&mut populated, "populated");
         measure_first_writes(&mut empty, "empty");
 

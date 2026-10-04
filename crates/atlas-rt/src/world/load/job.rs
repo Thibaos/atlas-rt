@@ -18,7 +18,8 @@ use crate::{
         BoundsPolicy, World,
         budget::cell_budget,
         diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
-        load::progress::{Progress, Stage},
+        generation::{GeneratedWorld, GenerationParams, generate},
+        load::progress::{Path, Progress, Stage},
         material::{PhysicalMaterialTable, load_table},
         palette::get_effective_palette,
         vox::open_bytes,
@@ -78,7 +79,8 @@ impl Status {
 }
 
 /// A finished load's world, its snapshots, its palette, and its Physical
-/// material table, ready for the main thread.
+/// material table, ready for the main thread. A Generation delivers this same
+/// shape, so the host cannot tell the two supplies apart.
 #[derive(Debug)]
 pub struct LoadedWorld {
     pub world: World,
@@ -140,11 +142,11 @@ enum JobState {
     Done,
 }
 
-/// The requested view state after applying the batch, either the loaded world
-/// or no world.
+/// The requested view state after applying the batch: either a world resident,
+/// from a load or a Generation, or no world.
 #[derive(Clone, Copy)]
 enum Outcome {
-    Load,
+    World,
     Clear,
 }
 
@@ -183,12 +185,12 @@ impl WorldUpdateJob {
         Self {
             status: AtomicU8::new(STATUS_EMPTY),
             error: Mutex::new(None),
-            progress: Arc::new(Progress::new()),
+            progress: Arc::new(Progress::load_path()),
             running: None,
             finished: None,
             job: Mutex::new(Job {
                 state: JobState::Idle,
-                outcome: Outcome::Load,
+                outcome: Outcome::World,
                 display: DisplayGate::new(),
                 residency: None,
             }),
@@ -230,7 +232,7 @@ impl WorldUpdateJob {
     /// `version` is the renderer's content version before this job's batch, so
     /// the frame that carries the batch is the first one past it.
     pub fn load(&mut self, source: Box<dyn WorldSource>, version: u64) -> Result<(), Refusal> {
-        self.begin(version, Outcome::Load)?;
+        self.begin(version, Outcome::World, Path::Load)?;
 
         let (sender, receiver) = mpsc::channel();
         let progress = Arc::clone(&self.progress);
@@ -257,7 +259,7 @@ impl WorldUpdateJob {
     ///
     /// `version` is the renderer's content version before this job's batch.
     pub fn clear(&mut self, version: u64) -> Result<(), Refusal> {
-        self.begin(version, Outcome::Clear)?;
+        self.begin(version, Outcome::Clear, Path::Load)?;
 
         let (sender, receiver) = mpsc::channel();
 
@@ -271,7 +273,32 @@ impl WorldUpdateJob {
         Ok(())
     }
 
-    fn begin(&mut self, version: u64, outcome: Outcome) -> Result<(), Refusal> {
+    /// # Errors
+    ///
+    /// Returns `Refusal::Busy` while another job is in flight.
+    ///
+    /// `version` is the renderer's content version before this job's batch, so
+    /// the frame that carries the batch is the first one past it.
+    pub fn generate(&mut self, params: GenerationParams, version: u64) -> Result<(), Refusal> {
+        self.begin(version, Outcome::World, Path::Generate)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let progress = Arc::clone(&self.progress);
+
+        let thread = spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| run_generation(&progress, params)))
+                .unwrap_or_else(|_| Err(String::from("the generator panicked")));
+
+            let _ = sender.send(result);
+        });
+
+        self.running = Some(thread);
+        self.finished = Some(receiver);
+
+        Ok(())
+    }
+
+    fn begin(&mut self, version: u64, outcome: Outcome, path: Path) -> Result<(), Refusal> {
         if self.holding() {
             return Err(Refusal::Busy);
         }
@@ -289,7 +316,10 @@ impl WorldUpdateJob {
         job.residency = None;
         drop(job);
 
-        self.progress = Arc::new(Progress::new());
+        self.progress = Arc::new(match path {
+            Path::Load => Progress::load_path(),
+            Path::Generate => Progress::generate_path(),
+        });
         *lock(&self.error) = None;
         self.status.store(STATUS_LOADING, Ordering::Release);
 
@@ -381,7 +411,7 @@ impl WorldUpdateJob {
             job.state = JobState::Done;
 
             match job.outcome {
-                Outcome::Load => STATUS_READY,
+                Outcome::World => STATUS_READY,
                 Outcome::Clear => STATUS_EMPTY,
             }
         };
@@ -491,15 +521,14 @@ fn run_pipeline(
 
     let materials = load_table(source.filesystem_path().as_deref());
 
-    let (world, clipped) =
-        match super::build::load(&voxel_data, BoundsPolicy::Clip, budget) {
-            Ok((world, clipped)) => (world, clipped),
-            Err(refused) => {
-                return Err(format!(
-                    "the world needs {refused} cells, above the cell budget of {budget}"
-                ));
-            }
-        };
+    let (world, clipped) = match super::build::load(&voxel_data, BoundsPolicy::Clip, budget) {
+        Ok((world, clipped)) => (world, clipped),
+        Err(refused) => {
+            return Err(format!(
+                "the world needs {refused} cells, above the cell budget of {budget}"
+            ));
+        }
+    };
 
     progress.end_stage(Stage::Build);
 
@@ -507,8 +536,7 @@ fn run_pipeline(
         error!("atlas_rt: clipped {clipped} voxels outside the lattice");
     }
 
-    let snapshots = emit_snapshots_reporting(&world, Some(progress))
-        .map_err(|error| format!("could not emit {name}: {error:#}"))?;
+    let snapshots = emit(progress, &world, &name)?;
 
     Ok(RunResult::Loaded(Box::new(LoadedWorld {
         world,
@@ -516,6 +544,35 @@ fn run_pipeline(
         palette,
         materials,
     })))
+}
+
+/// The Generation pipeline, from params to the snapshots the renderer takes. It
+/// shares the emit and delivery shape with the load pipeline, so its only
+/// output is plain data too. A Generation never consults the cell budget.
+fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunResult, String> {
+    let GeneratedWorld {
+        world,
+        palette,
+        materials,
+    } = generate(progress, params)?;
+
+    progress.end_stage(Stage::Build);
+
+    let snapshots = emit(progress, &world, "the generated world")?;
+
+    Ok(RunResult::Loaded(Box::new(LoadedWorld {
+        world,
+        snapshots,
+        palette,
+        materials,
+    })))
+}
+
+/// The step both pipelines share: emit the World's Snapshots through the entry
+/// read, naming the source in the failure.
+fn emit(progress: &Progress, world: &World, name: &str) -> Result<Vec<MicroChunkSnapshot>, String> {
+    emit_snapshots_reporting(world, Some(progress))
+        .map_err(|error| format!("could not emit {name}: {error:#}"))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -528,8 +585,12 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::time::{Duration, Instant};
 
+    use glam::IVec3;
+
     use super::*;
-    use crate::world::{diff::snapshot::emit_snapshots, palette::get_palette};
+    use crate::world::{
+        diff::snapshot::emit_snapshots, palette::get_palette, vocabulary::Vocabulary,
+    };
 
     fn matl_paletted_world() -> Vec<u8> {
         fn chunk(id: [u8; 4], content: &[u8], children: &[u8]) -> Vec<u8> {
@@ -1061,5 +1122,228 @@ mod tests {
             (job.progress() - 1.0).abs() < f64::EPSILON,
             "the loading bar is done either way"
         );
+    }
+
+    /// A Generation small enough to finish within the poll deadline, well below
+    /// the full Lattice.
+    const fn small() -> GenerationParams {
+        GenerationParams::new(0x5EED, IVec3::splat(64))
+    }
+
+    #[test]
+    fn an_accepted_generation_reports_loading_before_it_finishes() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        assert!(job.generate(small(), 0).is_ok());
+        assert_eq!(job.status(), Status::Loading);
+    }
+
+    #[test]
+    fn a_generation_delivers_a_world_snapshots_palette_and_materials() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.generate(small(), 0).unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        let Some(loaded) = job.take_loaded() else {
+            panic!("the finished generation must yield its work");
+        };
+
+        assert!(loaded.world.voxel_count() > 0, "the terrain fills");
+        assert!(!loaded.snapshots.is_empty(), "the world emits snapshots");
+        assert_eq!(
+            emit_snapshots(&loaded.world).unwrap(),
+            loaded.snapshots,
+            "the snapshots are emission of the world they arrive with"
+        );
+
+        let occupied: usize = loaded
+            .snapshots
+            .iter()
+            .map(MicroChunkSnapshot::occupied_count)
+            .sum();
+
+        assert_eq!(loaded.world.voxel_count(), occupied);
+        assert_ne!(
+            loaded.palette,
+            [Vec4::ZERO; 256],
+            "the Vocabulary colours the palette"
+        );
+        assert_eq!(loaded.materials, Vocabulary::new().materials());
+    }
+
+    #[test]
+    fn two_generations_from_one_seed_are_equal() {
+        let run = |job: &mut WorldUpdateJob| -> LoadedWorld {
+            job.arrive();
+            job.generate(small(), 0).unwrap();
+
+            assert_eq!(poll_until(job), Finished::Loaded);
+
+            job.take_loaded()
+                .unwrap_or_else(|| panic!("the run yields its work"))
+        };
+
+        let mut first = WorldUpdateJob::new();
+        let mut second = WorldUpdateJob::new();
+
+        let a = run(&mut first);
+        let b = run(&mut second);
+
+        assert_eq!(
+            a.world.iter_voxels().collect::<Vec<_>>(),
+            b.world.iter_voxels().collect::<Vec<_>>(),
+            "one seed fixes the world voxel for voxel"
+        );
+        assert_eq!(a.snapshots, b.snapshots, "one seed fixes the snapshots");
+    }
+
+    #[test]
+    fn a_generations_bounds_follow_its_footprint() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.generate(GenerationParams::new(0x5EED, IVec3::splat(16)), 0)
+            .unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        let loaded = job
+            .take_loaded()
+            .unwrap_or_else(|| panic!("the run yields its work"));
+        let (min, max) = loaded
+            .world
+            .voxel_bounds()
+            .unwrap_or_else(|| panic!("a footprint generates terrain"));
+
+        assert_eq!(min.x, -2048, "the footprint starts at the lattice corner");
+        assert_eq!(max.x, -2048 + 15, "the footprint is 16 cells wide");
+        assert_eq!(min.z, -2048, "the footprint starts at the lattice corner");
+        assert_eq!(max.z, -2048 + 15, "the footprint is 16 cells deep");
+        assert_eq!(min.y, -64, "bedrock is the floor");
+        assert_eq!(max.y, 0, "the surface sits at ground level");
+    }
+
+    #[test]
+    fn a_request_while_a_generation_is_in_flight_is_refused() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.generate(small(), 0).unwrap();
+
+        assert!(matches!(job.generate(small(), 0), Err(Refusal::Busy)));
+        assert!(matches!(
+            job.load(Box::new(source(one_voxel_world())), 0),
+            Err(Refusal::Busy)
+        ));
+        assert!(matches!(job.clear(0), Err(Refusal::Busy)));
+        assert_eq!(job.status(), Status::Loading, "the refusal changed nothing");
+    }
+
+    #[test]
+    fn a_load_follows_a_generation_and_a_generation_follows_a_load() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.generate(small(), 0).unwrap();
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        let generated = job
+            .take_loaded()
+            .unwrap_or_else(|| panic!("the generation yields"));
+
+        job.arrive();
+
+        job.load(Box::new(source(one_voxel_world())), 0).unwrap();
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        let loaded = job
+            .take_loaded()
+            .unwrap_or_else(|| panic!("the load yields"));
+
+        job.arrive();
+
+        job.generate(small(), 0).unwrap();
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        let regenerated = job
+            .take_loaded()
+            .unwrap_or_else(|| panic!("the generation yields"));
+
+        assert_eq!(
+            regenerated.world.iter_voxels().collect::<Vec<_>>(),
+            generated.world.iter_voxels().collect::<Vec<_>>(),
+            "the generation after the load is the same world"
+        );
+        assert_ne!(
+            loaded.world.iter_voxels().collect::<Vec<_>>(),
+            generated.world.iter_voxels().collect::<Vec<_>>(),
+            "the load brought different content"
+        );
+    }
+
+    #[test]
+    fn a_generation_past_the_cell_budget_still_succeeds() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        // The budget is per-thread and visible only to a job that reads it on
+        // the caller thread; the generation path reads none. The strong guard is
+        // `world::generation::tests::a_generation_reads_no_cell_budget`.
+        let budget = crate::world::budget::set_cell_budget(0);
+
+        job.generate(small(), 0).unwrap();
+
+        assert_eq!(
+            poll_until(&mut job),
+            Finished::Loaded,
+            "a Generation never consults the cell budget"
+        );
+
+        drop(budget);
+    }
+
+    #[test]
+    fn a_failed_generation_reports_a_reason() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+
+        job.generate(GenerationParams::new(0x5EED, IVec3::new(0, -1, 0)), 0)
+            .unwrap();
+
+        assert_eq!(poll_until(&mut job), Finished::Failed);
+        assert_eq!(job.status(), Status::Failed);
+        assert!(
+            job.error()
+                .is_some_and(|error| error.contains("negative extent")),
+            "the failure names the reason"
+        );
+        assert!(job.take_loaded().is_none(), "no world came out of it");
+    }
+
+    #[test]
+    fn a_job_reports_how_far_its_generation_has_got() {
+        let mut job = WorldUpdateJob::new();
+        job.arrive();
+        job.generate(small(), 0).unwrap();
+
+        assert!(
+            job.progress().abs() < f64::EPSILON,
+            "a fresh generation has got nowhere"
+        );
+
+        assert_eq!(poll_until(&mut job), Finished::Loaded);
+
+        assert!(
+            job.progress() < 1.0,
+            "the background work is not the world being resident"
+        );
+
+        job.arrive();
+
+        assert!((job.progress() - 1.0).abs() < f64::EPSILON);
     }
 }

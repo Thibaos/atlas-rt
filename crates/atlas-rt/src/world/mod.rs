@@ -1,5 +1,6 @@
 pub(crate) mod budget;
 pub mod diff;
+pub mod generation;
 pub mod grid;
 pub mod load;
 pub mod material;
@@ -127,8 +128,21 @@ impl World {
 
     /// The World's live Micro-chunk entries in Region then Micro-chunk ordinal
     /// order.
-    pub(in crate::world) fn entries(&self) -> Box<dyn Iterator<Item = store::MicroChunkEntry> + '_> {
+    pub(in crate::world) fn entries(
+        &self,
+    ) -> Box<dyn Iterator<Item = store::MicroChunkEntry> + '_> {
         self.store.entries()
+    }
+
+    /// Writes a Micro-chunk's whole entry. The generator fills one entry at a
+    /// time through this, on the thread it owns.
+    pub(in crate::world) fn write_entry(
+        &mut self,
+        origin: IVec3,
+        mask: &[u8; diff::edit::MICRO_BYTES],
+        materials: &[u8],
+    ) -> Result<(), diff::edit::EditError> {
+        self.store.write_entry(origin, mask, materials)
     }
 
     #[cfg(test)]
