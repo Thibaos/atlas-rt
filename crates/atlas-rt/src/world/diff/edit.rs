@@ -74,16 +74,13 @@ impl MicroChunkEdit {
     /// lattice or off the Micro-chunk grid, and when the materials do not
     /// match the mask's occupancy.
     pub fn diff(&self, world: &World) -> Result<Vec<VoxelEdit>, EditError> {
-        validate_chunk(self)?;
+        validate_entry(self.origin, &self.mask, &self.materials)?;
 
         let mut edits = Vec::new();
         let mut next_material = 0usize;
 
         for index in 0..MICRO_CELLS {
-            let occupied = self
-                .mask
-                .get(index / MICRO_EDGE)
-                .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0);
+            let occupied = mask_occupied(&self.mask, index);
 
             let incoming = if occupied {
                 let material = self.materials.get(next_material).copied();
@@ -114,32 +111,36 @@ impl MicroChunkEdit {
     }
 }
 
-/// The chunk-wide checks a diff needs before it may read the World: the
-/// origin sits in the lattice on the Micro-chunk grid, which puts every cell
-/// it covers in the lattice too, and the materials match the occupancy.
-fn validate_chunk(chunk: &MicroChunkEdit) -> Result<(), EditError> {
-    let position = chunk.origin;
+/// Whether cell `index` of `mask` is occupied.
+pub(in crate::world) fn mask_occupied(mask: &[u8], index: usize) -> bool {
+    mask.get(index / MICRO_EDGE)
+        .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0)
+}
 
-    if !in_lattice(position) {
-        return Err(EditError::rejected(position, EditReason::OutsideLattice));
+/// The checks a whole-entry write shares with the edit path: the origin sits
+/// in the lattice on the Micro-chunk grid, which puts every cell it covers in
+/// the lattice too, and the materials match the mask's occupancy.
+pub(in crate::world) fn validate_entry(
+    origin: IVec3,
+    mask: &[u8],
+    materials: &[u8],
+) -> Result<(), EditError> {
+    if !in_lattice(origin) {
+        return Err(EditError::rejected(origin, EditReason::OutsideLattice));
     }
 
-    if grid_origin(position, MICRO_CHUNK_LENGTH) != position {
-        return Err(EditError::rejected(position, EditReason::NotChunkOrigin));
+    if grid_origin(origin, MICRO_CHUNK_LENGTH) != origin {
+        return Err(EditError::rejected(origin, EditReason::NotChunkOrigin));
     }
 
-    let occupied: usize = chunk
-        .mask
-        .iter()
-        .map(|byte| byte.count_ones() as usize)
-        .sum();
+    let occupied: usize = mask.iter().map(|byte| byte.count_ones() as usize).sum();
 
-    if occupied != chunk.materials.len() {
+    if occupied != materials.len() {
         return Err(EditError::rejected(
-            position,
+            origin,
             EditReason::MaterialCount {
                 occupied,
-                given: chunk.materials.len(),
+                given: materials.len(),
             },
         ));
     }
@@ -149,7 +150,7 @@ fn validate_chunk(chunk: &MicroChunkEdit) -> Result<(), EditError> {
 
 /// The cell at `index` of the `x + 8y + 64z` walk a Micro-chunk's mask and
 /// materials both follow.
-fn cell_offset(index: usize) -> IVec3 {
+pub(in crate::world) fn cell_offset(index: usize) -> IVec3 {
     IVec3::new(
         i32::try_from(index % MICRO_EDGE).unwrap_or(0),
         i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),

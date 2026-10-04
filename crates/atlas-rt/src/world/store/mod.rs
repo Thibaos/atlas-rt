@@ -4,7 +4,11 @@ use std::fmt::Debug;
 
 use glam::IVec3;
 
-use crate::world::{BoundsPolicy, InsertResult, grid};
+use crate::world::{
+    BoundsPolicy, InsertResult,
+    diff::edit::{EditError, MICRO_BYTES, MICRO_CELLS, cell_offset, mask_occupied, validate_entry},
+    grid,
+};
 
 pub use region::RegionStore;
 
@@ -61,6 +65,45 @@ pub trait VoxelStore: Debug + Send + Sync {
     /// entry.
     #[must_use]
     fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>>;
+
+    /// Writes a Micro-chunk's whole entry: its 64-byte Occupancy mask and the
+    /// materials of its occupied cells in ascending cell order. A zero mask
+    /// empties the Micro-chunk.
+    ///
+    /// The default clears every cell of the Micro-chunk and sets the occupied
+    /// ones through [`Self::set`], so a store that does not override stays
+    /// correct.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an origin outside the lattice or off the Micro-chunk grid, and
+    /// materials whose count does not match the mask's popcount.
+    fn write_entry(
+        &mut self,
+        origin: IVec3,
+        mask: &[u8; MICRO_BYTES],
+        materials: &[u8],
+    ) -> Result<(), EditError> {
+        validate_entry(origin, mask, materials)?;
+
+        let mut next = 0usize;
+
+        for index in 0..MICRO_CELLS {
+            let position = origin.saturating_add(cell_offset(index));
+
+            if mask_occupied(mask, index) {
+                if let Some(material) = materials.get(next).copied() {
+                    self.set(position, material);
+                }
+
+                next = next.saturating_add(1);
+            } else {
+                self.clear(position);
+            }
+        }
+
+        Ok(())
+    }
 
     #[must_use]
     fn bounds(&self) -> Option<(IVec3, IVec3)> {

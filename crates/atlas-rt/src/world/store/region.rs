@@ -3,6 +3,7 @@ use std::fmt;
 use glam::IVec3;
 
 use crate::world::{
+    diff::edit::{EditError, MICRO_BYTES, validate_entry},
     grid,
     store::{ChunkEntry, VoxelStore},
 };
@@ -223,6 +224,17 @@ fn free_block(region: &mut Region, class: usize, offset: usize) {
 
     if let Some(slot) = region.free.get_mut(class) {
         *slot = u32::try_from(offset).unwrap_or(NO_BLOCK);
+    }
+}
+
+/// Frees the block an entry holds and clears its index slot.
+fn release_entry(region: &mut Region, ordinal: usize, entry: u32) {
+    if let Some(offset) = entry_offset(entry) {
+        free_block(region, entry_class(entry), offset);
+    }
+
+    if let Some(cell) = region.index.get_mut(ordinal) {
+        *cell = EMPTY;
     }
 }
 
@@ -599,11 +611,7 @@ impl VoxelStore for RegionStore {
         self.count = self.count.saturating_sub(1);
 
         if popcount <= 1 {
-            free_block(region, entry_class(entry), offset);
-
-            if let Some(slot) = region.index.get_mut(ordinal) {
-                *slot = EMPTY;
-            }
+            release_entry(region, ordinal, entry);
         }
 
         if region.count == 0 {
@@ -636,6 +644,91 @@ impl VoxelStore for RegionStore {
         Some(ChunkEntry { mask, materials })
     }
 
+    fn write_entry(
+        &mut self,
+        origin: IVec3,
+        mask: &[u8; MICRO_BYTES],
+        materials: &[u8],
+    ) -> Result<(), EditError> {
+        validate_entry(origin, mask, materials)?;
+
+        let slot = region_slot(origin);
+        let ordinal = micro_chunk_ordinal(origin);
+        let occupied = materials.len();
+
+        let Some(slot_region) = self.regions.get_mut(slot) else {
+            return Ok(());
+        };
+
+        if occupied == 0 {
+            let Some(region) = slot_region.as_mut() else {
+                return Ok(());
+            };
+
+            let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
+            let Some(offset) = entry_offset(entry) else {
+                return Ok(());
+            };
+
+            let popcount = entry_popcount(region, offset);
+
+            release_entry(region, ordinal, entry);
+
+            region.count = region.count.saturating_sub(popcount);
+            self.count = self.count.saturating_sub(popcount);
+
+            if region.count == 0 {
+                *slot_region = None;
+            }
+
+            return Ok(());
+        }
+
+        let region = slot_region.get_or_insert_with(Region::new);
+        let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
+        let old_offset = entry_offset(entry);
+        let old_popcount = old_offset.map_or(0, |offset| entry_popcount(region, offset));
+        let class = class_of_size(MASK_BYTES.strict_add(occupied));
+        let reuse = old_offset.filter(|_| entry_class(entry) == class);
+
+        let offset = if let Some(offset) = reuse {
+            offset
+        } else {
+            let replacement = alloc_block(region, class);
+
+            if let Some(old) = old_offset {
+                free_block(region, entry_class(entry), old);
+            }
+
+            if let Some(cell) = region.index.get_mut(ordinal) {
+                *cell = encode(replacement, class);
+            }
+
+            replacement
+        };
+
+        region.count = region
+            .count
+            .saturating_sub(old_popcount)
+            .saturating_add(occupied);
+        self.count = self
+            .count
+            .saturating_sub(old_popcount)
+            .saturating_add(occupied);
+
+        if let Some(dst) = region.blob.get_mut(offset..offset.strict_add(MASK_BYTES)) {
+            dst.copy_from_slice(mask);
+        }
+
+        let base = offset.strict_add(MASK_BYTES);
+
+        if let Some(dst) = region.blob.get_mut(base..base.strict_add(occupied)) {
+            dst.copy_from_slice(materials);
+        }
+
+        Ok(())
+    }
+
     #[cfg(test)]
     fn storage_size(&self) -> StorageSize {
         let mut index = 0usize;
@@ -666,7 +759,10 @@ impl VoxelStore for RegionStore {
 mod tests {
     use std::collections::HashMap;
 
-    use crate::world::test_support::{Rng, u8_below};
+    use crate::world::{
+        diff::edit::mask_occupied,
+        test_support::{Rng, u8_below},
+    };
 
     use super::*;
 
@@ -1245,5 +1341,336 @@ mod tests {
 
             assert_agrees_with_reference(&store, &reference, &context);
         }
+    }
+
+    /// A store that implements only the primitives, so `write_entry` comes from
+    /// the trait default and its per-cell loop is the oracle.
+    #[derive(Debug)]
+    struct PerCellStore(RegionStore);
+
+    impl VoxelStore for PerCellStore {
+        fn set(&mut self, position: IVec3, material: u8) -> bool {
+            self.0.set(position, material)
+        }
+
+        fn get(&self, position: IVec3) -> Option<u8> {
+            self.0.get(position)
+        }
+
+        fn clear(&mut self, position: IVec3) {
+            self.0.clear(position);
+        }
+
+        fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
+            self.0.iter()
+        }
+
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+
+        fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>> {
+            self.0.chunk_entry(origin)
+        }
+
+        fn storage_size(&self) -> StorageSize {
+            self.0.storage_size()
+        }
+    }
+
+    fn chunk_origin(rng: &mut Rng, span: u64) -> IVec3 {
+        let mut axis = || {
+            i32::try_from(rng.below(span))
+                .unwrap_or(0)
+                .wrapping_sub(i32::try_from(span / 2).unwrap_or(0))
+                .wrapping_mul(MICRO_CHUNK as i32)
+        };
+
+        IVec3::new(axis(), axis(), axis())
+    }
+
+    fn random_mask(rng: &mut Rng, density: u64) -> [u8; MICRO_BYTES] {
+        let mut mask = [0u8; MICRO_BYTES];
+
+        for byte in &mut mask {
+            *byte = u8_below(rng, density);
+        }
+
+        mask
+    }
+
+    /// One random material per set mask bit, in ascending cell order.
+    fn entry_materials(mask: &[u8; MICRO_BYTES], rng: &mut Rng) -> Vec<u8> {
+        let mut materials = Vec::new();
+
+        for byte in mask {
+            let mut bits = *byte;
+
+            while bits != 0 {
+                materials.push(u8_below(rng, 256));
+                bits &= bits.strict_sub(1);
+            }
+        }
+
+        materials
+    }
+
+    fn occupied_cells(mask: &[u8; MICRO_BYTES]) -> Vec<usize> {
+        (0..MICRO_CHUNK_CELLS)
+            .filter(|index| mask_occupied(mask, *index))
+            .collect()
+    }
+
+    /// Asserts every set mask bit reads back its material and every clear bit
+    /// is absent, through both `get` and the entry read.
+    fn assert_entry_content(
+        store: &dyn VoxelStore,
+        origin: IVec3,
+        mask: &[u8; MICRO_BYTES],
+        materials: &[u8],
+        context: &str,
+    ) {
+        let mut rank = 0usize;
+
+        for index in 0..MICRO_CHUNK_CELLS {
+            let expected = if mask_occupied(mask, index) {
+                let material = materials.get(rank).copied();
+                rank = rank.saturating_add(1);
+                material
+            } else {
+                None
+            };
+
+            assert_eq!(
+                store.get(origin.saturating_add(cell_in_chunk(index))),
+                expected,
+                "{context}: cell {index}"
+            );
+        }
+
+        let entry = store
+            .chunk_entry(origin)
+            .unwrap_or_else(|| panic!("{context}: the entry is missing"));
+
+        assert_eq!(entry.mask, mask.as_slice(), "{context}: mask");
+        assert_eq!(entry.materials, materials, "{context}: materials");
+    }
+
+    fn assert_write_rejected(
+        store: &mut dyn VoxelStore,
+        origin: IVec3,
+        mask: &[u8; MICRO_BYTES],
+        materials: &[u8],
+        message: &str,
+    ) {
+        let error = store
+            .write_entry(origin, mask, materials)
+            .expect_err("the write must be rejected");
+
+        assert_eq!(error.to_string(), message);
+        assert_eq!(store.count(), 0, "a rejected write changes nothing");
+    }
+
+    #[test]
+    fn entry_write_round_trips_every_mask_bit() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(-16, 8, 24);
+        let mut mask = [0u8; MICRO_BYTES];
+
+        mask[0] = 0b1000_0001;
+        mask[8] = 0b0000_0100;
+        mask[63] = 0b1000_0000;
+
+        let materials = vec![10u8, 20, 30, 40];
+
+        store.write_entry(origin, &mask, &materials).unwrap();
+
+        assert_entry_content(&store, origin, &mask, &materials, "round trip");
+        assert_eq!(store.count(), occupied_cells(&mask).len());
+    }
+
+    #[test]
+    fn entry_write_replaces_the_previous_content() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(8, 8, 8);
+        let mut first = [0u8; MICRO_BYTES];
+
+        first[0] = 0b0000_0011;
+        store.write_entry(origin, &first, &[7, 8]).unwrap();
+
+        let mut second = [0u8; MICRO_BYTES];
+
+        second[0] = 0b0000_0010;
+        store.write_entry(origin, &second, &[9]).unwrap();
+
+        assert_eq!(store.get(origin), None, "the dropped cell is cleared");
+        assert_eq!(
+            store.get(origin.saturating_add(cell_in_chunk(1))),
+            Some(9),
+            "the kept cell holds the new material"
+        );
+        assert_eq!(store.count(), 1);
+    }
+
+    #[test]
+    fn entry_write_matches_the_per_cell_default_on_randomized_entries() {
+        let seed = 0x00E2_7A11;
+        let mut rng = Rng::new(seed);
+        let mut region = RegionStore::default();
+        let mut wrapper = PerCellStore(RegionStore::default());
+
+        for case in 0..256u32 {
+            let origin = chunk_origin(&mut rng, 24);
+            let mask = random_mask(&mut rng, 8);
+            let materials = entry_materials(&mask, &mut rng);
+
+            let context = format!("seed {seed:#x} case {case} at {origin}");
+
+            region
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
+            wrapper
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
+
+            assert_entry_content(
+                &region,
+                origin,
+                &mask,
+                &materials,
+                &format!("{context}: override"),
+            );
+            assert_entry_content(
+                &wrapper,
+                origin,
+                &mask,
+                &materials,
+                &format!("{context}: default"),
+            );
+        }
+
+        assert_eq!(
+            content(&region),
+            content(&wrapper),
+            "seed {seed:#x}: the override and the default disagree"
+        );
+        assert_eq!(region.count(), wrapper.count(), "seed {seed:#x}: count");
+        assert_eq!(region.bounds(), wrapper.bounds(), "seed {seed:#x}: bounds");
+    }
+
+    #[test]
+    fn entry_write_rejects_an_origin_off_the_micro_chunk_grid() {
+        let mut region = RegionStore::default();
+        let mut wrapper = PerCellStore(RegionStore::default());
+        let message = "voxel [1, 0, 0] is not a Micro-chunk origin";
+
+        assert_write_rejected(
+            &mut region,
+            IVec3::new(1, 0, 0),
+            &[0u8; MICRO_BYTES],
+            &[],
+            message,
+        );
+        assert_write_rejected(
+            &mut wrapper,
+            IVec3::new(1, 0, 0),
+            &[0u8; MICRO_BYTES],
+            &[],
+            message,
+        );
+    }
+
+    #[test]
+    fn entry_write_rejects_an_origin_outside_the_lattice() {
+        let mut region = RegionStore::default();
+        let mut wrapper = PerCellStore(RegionStore::default());
+        let message = "voxel [2048, 0, 0] is outside the lattice";
+
+        assert_write_rejected(
+            &mut region,
+            IVec3::new(2048, 0, 0),
+            &[0u8; MICRO_BYTES],
+            &[],
+            message,
+        );
+        assert_write_rejected(
+            &mut wrapper,
+            IVec3::new(2048, 0, 0),
+            &[0u8; MICRO_BYTES],
+            &[],
+            message,
+        );
+    }
+
+    #[test]
+    fn entry_write_rejects_a_material_count_mismatch() {
+        let mut region = RegionStore::default();
+        let mut wrapper = PerCellStore(RegionStore::default());
+        let mut mask = [0u8; MICRO_BYTES];
+
+        mask[0] = 0b0000_0011;
+
+        let message = "the mask marks 2 cells but carries 1 materials";
+
+        assert_write_rejected(&mut region, IVec3::ZERO, &mask, &[1], message);
+        assert_write_rejected(&mut wrapper, IVec3::ZERO, &mask, &[1], message);
+    }
+
+    #[test]
+    fn entry_write_of_a_zero_mask_empties_the_micro_chunk() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(24, -8, 0);
+        let mut mask = [0u8; MICRO_BYTES];
+
+        mask[0] = 0b0000_0011;
+        store.write_entry(origin, &mask, &[5, 6]).unwrap();
+
+        assert_eq!(store.count(), 2);
+
+        store.write_entry(origin, &[0u8; MICRO_BYTES], &[]).unwrap();
+
+        assert_eq!(store.count(), 0);
+        assert_eq!(store.get(origin), None);
+        assert!(store.chunk_entry(origin).is_none());
+        assert!(
+            store
+                .regions
+                .get(region_slot(origin))
+                .is_some_and(Option::is_none),
+            "the emptied region is released"
+        );
+    }
+
+    #[test]
+    fn entry_write_reclaims_the_block_it_replaces() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(0, 0, 0);
+        let full = [0xFFu8; MICRO_BYTES];
+        let full_materials: Vec<u8> = (0..MICRO_CHUNK_CELLS).map(|index| index as u8).collect();
+
+        store.write_entry(origin, &full, &full_materials).unwrap();
+
+        let after_full = store.storage_size().blob;
+
+        let mut single = [0u8; MICRO_BYTES];
+
+        single[0] = 1;
+        store.write_entry(origin, &single, &[1]).unwrap();
+
+        let after_single = store.storage_size().blob;
+
+        assert!(
+            after_single > after_full,
+            "the smaller entry appends a new block"
+        );
+
+        store.write_entry(origin, &full, &full_materials).unwrap();
+
+        assert_eq!(
+            store.storage_size().blob,
+            after_single,
+            "the freed full block is reclaimed instead of appended"
+        );
+        assert_eq!(store.count(), MICRO_CHUNK_CELLS);
     }
 }
