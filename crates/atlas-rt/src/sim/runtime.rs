@@ -1,5 +1,6 @@
 use std::collections::hash_map::Entry;
 use std::mem;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::thread::{self, JoinHandle};
@@ -109,26 +110,32 @@ pub fn spawn(
 ) -> Result<Handle> {
     let (host, inbox) = mpsc::channel();
     let (pushes, outbox) = mpsc::channel();
+    let shutdown = Arc::new(AtomicBool::new(false));
 
     let shared = Arc::clone(&world);
-    let runtime = Runtime::new(shared, profile, parity, pushes);
+    let runtime = Runtime::new(shared, profile, parity, pushes, Arc::clone(&shutdown));
 
     let thread = thread::Builder::new()
         .name(String::from("atlas-sim"))
         .spawn(move || runtime.run(&inbox))
         .context("failed to spawn the simulation thread")?;
 
-    Ok(Handle::new(world, host, outbox, thread))
+    Ok(Handle::new(world, host, outbox, thread, shutdown))
 }
 
 /// The host's end of the boundary: the shared World, frames, pause changes,
-/// commands and activations in, readiness and tick-end pushes out. Dropping it
-/// shuts the sim thread down and waits for it.
+/// commands and activations in, readiness and tick-end pushes out.
+///
+/// Dropping it raises the shutdown flag and then waits for the sim thread,
+/// which abandons any queued work promptly instead of draining the inbox.
+/// The Shutdown message that follows the flag only wakes a thread parked in
+/// `recv`, and may be dropped once the thread has already stopped.
 pub struct Handle {
     world: Arc<RwLock<World>>,
     host: mpsc::Sender<Message>,
     pushes: mpsc::Receiver<Push>,
     thread: Option<JoinHandle<()>>,
+    shutdown: Arc<AtomicBool>,
 }
 
 impl Handle {
@@ -189,12 +196,14 @@ impl Handle {
         host: mpsc::Sender<Message>,
         pushes: mpsc::Receiver<Push>,
         thread: JoinHandle<()>,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         Self {
             world,
             host,
             pushes,
             thread: Some(thread),
+            shutdown,
         }
     }
 
@@ -207,9 +216,9 @@ impl Handle {
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        if self.host.send(Message::Shutdown).is_err() {
-            error!("atlas_rt: the simulation thread stopped before the shutdown");
-        }
+        self.shutdown.store(true, Ordering::Release);
+
+        let _ = self.host.send(Message::Shutdown);
 
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
@@ -233,6 +242,7 @@ struct Runtime {
     controller: Controller,
     movement: Vec2,
     pushes: mpsc::Sender<Push>,
+    shutdown: Arc<AtomicBool>,
     active: bool,
     paused: bool,
     snap_pending: bool,
@@ -244,6 +254,7 @@ impl Runtime {
         profile: PlayerProfile,
         parity: ParityPolicy,
         pushes: mpsc::Sender<Push>,
+        shutdown: Arc<AtomicBool>,
     ) -> Self {
         let scheduler = Scheduler::new(profile.tick_period());
 
@@ -261,14 +272,26 @@ impl Runtime {
             controller: Controller::new(),
             movement: Vec2::ZERO,
             pushes,
+            shutdown,
             active: false,
             paused: false,
             snap_pending: false,
         }
     }
 
+    /// Whether the host has dropped its handle and no queued work is worth
+    /// starting. Checked before each message, between a frame's ticks, and
+    /// inside an activation, so a drop joins without draining the inbox.
+    fn shutting_down(&self) -> bool {
+        self.shutdown.load(Ordering::Acquire)
+    }
+
     fn run(mut self, inbox: &mpsc::Receiver<Message>) {
         while let Ok(message) = inbox.recv() {
+            if self.shutting_down() {
+                break;
+            }
+
             match message {
                 Message::Frame { elapsed, sample } => self.on_frame(elapsed, sample),
                 Message::Paused(paused) => self.on_paused(paused),
@@ -318,6 +341,10 @@ impl Runtime {
         };
 
         for _ in 0..ticks {
+            if self.shutting_down() {
+                return;
+            }
+
             self.tick(&mut report);
         }
 
@@ -350,6 +377,10 @@ impl Runtime {
     }
 
     fn on_activation(&mut self, activation: Activation) {
+        if self.shutting_down() {
+            return;
+        }
+
         let Activation {
             world,
             snapshots,
@@ -378,6 +409,10 @@ impl Runtime {
 
             (planned, player)
         };
+
+        if self.shutting_down() {
+            return;
+        }
 
         self.tracked = planned.tracked;
         self.tracked.extend(tracked);

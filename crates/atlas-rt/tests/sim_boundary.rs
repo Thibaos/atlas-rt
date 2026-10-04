@@ -417,6 +417,75 @@ fn evaluation_takes_only_the_read_lock_and_pushes_while_the_host_reads() {
     drop(held_lock);
 }
 
+/// The marker command is queued behind the backlog, so it commits only if the
+/// sim drains every queued frame instead of stopping on the shutdown flag.
+/// The marker staying uncommitted is how the test sees that the drop did not
+/// wait for the backlog.
+#[test]
+fn a_queued_frame_backlog_does_not_delay_the_join() {
+    let (world, handle) = spawn_sim();
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    wait_ready(&handle);
+
+    // far more frames than the sim can reach before the handle drops
+    const BACKLOG: usize = 100_000;
+
+    for _ in 0..BACKLOG {
+        feed(&handle, period());
+    }
+
+    handle.command(Command::Cell(set(5, 5, 5, 3)));
+    feed(&handle, period());
+
+    drop(handle);
+
+    let guard = world.read().unwrap();
+
+    assert_eq!(
+        guard.get_voxel(&IVec3::new(5, 5, 5)),
+        None,
+        "the join drained the queued frames past the marker instead of stopping promptly"
+    );
+}
+
+/// A frame owes five ticks, and a held write lock stalls its first evaluation.
+/// The drop raises the flag while that tick is stuck; once the lock is freed
+/// the sim must stop between ticks, so the grain falls one cell, not five.
+#[test]
+fn a_shutdown_during_a_multi_tick_frame_stops_between_ticks() {
+    let (world, handle) = spawn_sim();
+
+    handle.activate(granular_activation_of(&[
+        set(6, 0, 6, 1),
+        set(6, 6, 6, GRAIN),
+    ]));
+    wait_ready(&handle);
+
+    let held = world.write().unwrap();
+
+    feed(&handle, period().saturating_mul(5));
+
+    let dropper = thread::spawn(move || drop(handle));
+
+    thread::sleep(Duration::from_millis(50));
+    drop(held);
+    dropper.join().unwrap();
+
+    let guard = world.read().unwrap();
+
+    assert_eq!(
+        guard.get_voxel(&IVec3::new(6, 5, 6)),
+        Some(GRAIN),
+        "the one tick in flight when the flag rose ran"
+    );
+    assert_eq!(
+        guard.get_voxel(&IVec3::new(6, 4, 6)),
+        None,
+        "the ticks behind the flag's check did not run"
+    );
+}
+
 #[test]
 fn pausing_stops_accumulation_and_resume_starts_from_an_empty_accumulator() {
     let (_world, handle) = spawn_sim();
