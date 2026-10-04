@@ -1224,7 +1224,11 @@ mod tests {
         assert_eq!(min.z, -2048, "the footprint starts at the lattice corner");
         assert_eq!(max.z, -2048 + 15, "the footprint is 16 cells deep");
         assert_eq!(min.y, -64, "bedrock is the floor");
-        assert_eq!(max.y, 0, "the surface sits at ground level");
+        assert!(
+            (-64..=32).contains(&max.y),
+            "the surface sits inside the height range, found {}",
+            max.y
+        );
     }
 
     #[test]

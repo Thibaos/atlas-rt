@@ -15,17 +15,18 @@
 //! 342_000.
 //!
 //! `generation_stage_weights`, release, Windows, same host, 2026-10-04, over
-//! generated flat terrain. The footprint's edge pins the volume; the fill writes
-//! one Micro-chunk entry per chunk layer from Bedrock to ground level:
+//! generated terrain. The footprint's edge pins the volume; the fill writes one
+//! Micro-chunk entry per chunk layer that reaches a column's surface, hashing
+//! each column's surface once per chunk rather than once per cell:
 //!
 //! | footprint edge | voxels    | chunks | generate  | emit     | generate % |
 //! | -------------- | --------- | ------ | --------- | -------- | ---------- |
-//! | 256            | 4.26M     | 9,216  | 10.1 ms   | 2.53 ms  | 79.8       |
-//! | 512            | 17.0M     | 36,864 | 39.0 ms   | 10.2 ms  | 79.5       |
+//! | 256            | 4.26M     | 12,931 | 16.6 ms   | 3.39 ms  | 83.1       |
+//! | 512            | 17.0M     | 51,726 | 59.7 ms   | 13.9 ms  | 81.1       |
 //!
 //! That gives the cumulative endpoints `world::load::progress` uses for the
-//! Generation path: generate 795_000, build 796_000. A full-Lattice Generation
-//! (1.09e9 voxels, 2.36M chunks) lands at about 3.7 s end to end.
+//! Generation path: generate 821_000, build 822_000. A full-Lattice Generation
+//! (1.09e9 voxels, 3.31M chunks) lands at about 5.2 s end to end.
 //!
 //! The budgets below are these figures with headroom for run-to-run variance.
 //! Emission reads Micro-chunk entries rather than walking voxels, so the

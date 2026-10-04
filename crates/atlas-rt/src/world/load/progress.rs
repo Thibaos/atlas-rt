@@ -22,12 +22,12 @@ const LOAD_STAGES: [(u32, u8, &str); 3] = [
 ];
 
 /// Cumulative stage endpoints in millionths for the generation path: generate
-/// 79.5%, build about 0.1%, emit 20.5% of the total, measured over generated
-/// Worlds at 256- and 512-edge footprints (generate 10.1 ms, emit 2.5 ms at
-/// 4.26M voxels; generate 39.0 ms, emit 10.2 ms at 17.0M). Measured with
+/// 82.1%, build about 0.1%, emit 17.8% of the total, measured over generated
+/// terrain at 256- and 512-edge footprints (generate 16.6 ms, emit 3.4 ms at
+/// 4.26M voxels; generate 59.7 ms, emit 13.9 ms at 17.0M). Measured with
 /// `cargo test --release -p atlas-rt --lib generation_stage_weights -- --ignored
 /// --nocapture`. Revisit when the generator changes.
-const GENERATE_STAGES: [(u32, u8, &str); 2] = [(795_000, 5, "generate"), (796_000, 6, "build")];
+const GENERATE_STAGES: [(u32, u8, &str); 2] = [(821_000, 5, "generate"), (822_000, 6, "build")];
 
 /// Emit's progress limit. Full progress requires a frame that includes the batch.
 const EMIT_END: u32 = 999_000;
@@ -350,18 +350,18 @@ mod tests {
         progress.end_stage(Stage::Generate);
 
         assert!(
-            (progress.load() - 0.795).abs() < 1e-6,
+            (progress.load() - 0.821).abs() < 1e-6,
             "generate ends at its measured share"
         );
 
         progress.end_stage(Stage::Build);
 
-        assert!((progress.load() - 0.796).abs() < 1e-6);
+        assert!((progress.load() - 0.822).abs() < 1e-6);
 
         progress.start_emit();
         progress.count_voxel(VOXEL_STEP * 2, VOXEL_STEP);
 
-        assert!(progress.load() > 0.796);
+        assert!(progress.load() > 0.822);
         assert!(progress.load() <= f64::from(EMIT_END) / f64::from(SCALE));
 
         progress.end_emit();
@@ -382,7 +382,7 @@ mod tests {
 
             assert!(current >= previous, "generate progress went backwards");
             assert!(
-                current <= 0.795 + 1e-6,
+                current <= 0.821 + 1e-6,
                 "the fill stays below the generate endpoint"
             );
 
@@ -391,6 +391,6 @@ mod tests {
 
         progress.end_stage(Stage::Generate);
 
-        assert!((progress.load() - 0.795).abs() < 1e-6);
+        assert!((progress.load() - 0.821).abs() < 1e-6);
     }
 }

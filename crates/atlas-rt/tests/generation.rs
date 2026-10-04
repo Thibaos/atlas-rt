@@ -29,7 +29,7 @@ fn generate(params: GenerationParams) -> (LoadedWorld, Status) {
     job.generate(params, 0)
         .unwrap_or_else(|refusal| panic!("the generation was refused: {refusal:?}"));
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
 
     let finished = loop {
         if let Some(finished) = job.poll() {
@@ -38,7 +38,7 @@ fn generate(params: GenerationParams) -> (LoadedWorld, Status) {
 
         assert!(
             Instant::now() < deadline,
-            "the generation did not settle within five seconds"
+            "the generation did not settle within fifteen seconds"
         );
 
         std::thread::sleep(Duration::from_millis(1));
@@ -112,18 +112,30 @@ fn a_generation_delivers_a_world_snapshots_palette_and_material_table() {
 fn the_generated_ground_is_walkable() {
     let (loaded, _) = generate(small());
 
-    // The surface is at ground level zero, and the fill is solid below it.
-    for level in -64..=0 {
-        assert!(
-            loaded.world.contains(&IVec3::new(-2048, level, -2048)),
-            "level {level} is solid, so spawn placement finds a floor"
-        );
-    }
+    // Every column in the footprint is solid from Bedrock to its own surface,
+    // so spawn placement finds a floor wherever it lands. The surface is read
+    // from the world: the highest filled level at the column.
+    for x in -2048..-2048 + 64 {
+        for z in -2048..-2048 + 64 {
+            let surface = (-64..=32)
+                .rev()
+                .find(|level| loaded.world.contains(&IVec3::new(x, *level, z)))
+                .unwrap_or_else(|| panic!("({x}, {z}) has no floor"));
 
-    assert!(
-        !loaded.world.contains(&IVec3::new(-2048, 1, -2048)),
-        "the surface is the top of the fill"
-    );
+            assert!(
+                (-32..=32).contains(&surface),
+                "the surface at ({x}, {z}) is {surface}, outside the range"
+            );
+            assert!(
+                loaded.world.contains(&IVec3::new(x, -64, z)),
+                "Bedrock floors the column at ({x}, {z})"
+            );
+            assert!(
+                !loaded.world.contains(&IVec3::new(x, surface + 1, z)),
+                "nothing sits above the surface at ({x}, {z})"
+            );
+        }
+    }
 }
 
 #[test]
@@ -248,7 +260,11 @@ fn the_generated_world_paints_every_material_index_it_uses() {
     let (loaded, _) = generate(small());
     let palette = loaded.palette;
 
+    let mut used = std::collections::BTreeSet::new();
+
     for (_, material) in loaded.world.iter_voxels() {
+        used.insert(material);
+
         let color = palette
             .get(usize::from(material))
             .unwrap_or_else(|| panic!("material {material} is inside the Palette"));
@@ -259,11 +275,18 @@ fn the_generated_world_paints_every_material_index_it_uses() {
         );
     }
 
-    let surface = loaded.world.get_voxel(&IVec3::new(-2048, 0, -2048));
-    let bedrock = loaded.world.get_voxel(&IVec3::new(-2048, -64, -2048));
-
-    assert_eq!(surface, bedrock, "the terrain-only fill is one material");
-    assert_eq!(surface, Some(Material::Stone.index()));
+    assert!(
+        used.len() > 1,
+        "the terrain uses more than one material, so layering reads"
+    );
+    assert!(
+        used.contains(&Material::Bedrock.index()),
+        "Bedrock paints the fill's floor"
+    );
+    assert!(
+        used.iter().any(|material| *material != Material::Bedrock.index()),
+        "the surface and subsurface differ from Bedrock"
+    );
 }
 
 #[test]
