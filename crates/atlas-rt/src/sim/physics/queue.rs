@@ -1,16 +1,34 @@
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
+
 use glam::IVec3;
-use rustc_hash::FxHashSet;
 
 use crate::world::World;
 use crate::world::material::{PhysicalMaterialTable, Rule};
 
-/// The voxel coordinates the voxel rules have not evaluated yet, held as
-/// single coordinates rather than regions and never as World state. Settled
-/// means absent, so a Falling granular cell blocks the player only while this
-/// holds it.
+/// A cell keyed the way one tick drains the queue: ascending y, then x, then z,
+/// which is not the coordinate order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct QueueCell(IVec3);
+
+impl Ord for QueueCell {
+    fn cmp(&self, other: &Self) -> Ordering {
+        (self.0.y, self.0.x, self.0.z).cmp(&(other.0.y, other.0.x, other.0.z))
+    }
+}
+
+impl PartialOrd for QueueCell {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// The voxel coordinates the voxel rules have not evaluated yet, held in the
+/// order a tick drains them and never as World state. Settled means absent, so
+/// a Falling granular cell blocks the player only while this holds it.
 #[derive(Clone, Debug, Default)]
 pub(in crate::sim) struct UpdateQueue {
-    cells: FxHashSet<IVec3>,
+    cells: BTreeSet<QueueCell>,
 }
 
 impl UpdateQueue {
@@ -25,7 +43,7 @@ impl UpdateQueue {
         granular_cells: Option<&[IVec3]>,
     ) {
         if let Some(cells) = granular_cells {
-            self.cells = cells.iter().copied().collect();
+            self.cells = cells.iter().copied().map(QueueCell).collect();
 
             return;
         }
@@ -33,21 +51,30 @@ impl UpdateQueue {
         self.cells = world
             .iter_voxels()
             .filter_map(|(position, voxel)| {
-                (table.get(voxel).rule == Rule::FallingGranular).then_some(position)
+                (table.get(voxel).rule == Rule::FallingGranular).then_some(QueueCell(position))
             })
             .collect();
     }
 
     pub(in crate::sim) fn contains(&self, cell: IVec3) -> bool {
-        self.cells.contains(&cell)
+        self.cells.contains(&QueueCell(cell))
     }
 
     pub(in crate::sim) fn insert(&mut self, cell: IVec3) {
-        self.cells.insert(cell);
+        self.cells.insert(QueueCell(cell));
     }
 
+    /// The queued cells in drain order, ascending y, then x, then z.
     pub(in crate::sim) fn iter(&self) -> impl Iterator<Item = &IVec3> {
-        self.cells.iter()
+        self.cells.iter().map(|cell| &cell.0)
+    }
+
+    /// The cells at or after `cell` in drain order, leaving the cells before it
+    /// queued.
+    pub(in crate::sim) fn split_off(&mut self, cell: IVec3) -> Self {
+        Self {
+            cells: self.cells.split_off(&QueueCell(cell)),
+        }
     }
 }
 
@@ -107,5 +134,64 @@ mod tests {
         seeded.seed(&world, &table, Some(&listed));
 
         assert_eq!(seeded.cells, scanned.cells);
+    }
+
+    #[test]
+    fn the_queue_iterates_in_drain_order() {
+        let mut queue = UpdateQueue::default();
+
+        for cell in [
+            IVec3::new(1, 5, 0),
+            IVec3::new(0, 4, 9),
+            IVec3::new(0, 4, 1),
+            IVec3::new(3, 4, 1),
+            IVec3::new(0, 6, 0),
+            IVec3::new(0, 4, 1),
+        ] {
+            queue.insert(cell);
+        }
+
+        let order: Vec<IVec3> = queue.iter().copied().collect();
+
+        assert_eq!(
+            order,
+            vec![
+                IVec3::new(0, 4, 1),
+                IVec3::new(0, 4, 9),
+                IVec3::new(3, 4, 1),
+                IVec3::new(1, 5, 0),
+                IVec3::new(0, 6, 0),
+            ],
+            "y leads, then x, then z, and a repeated cell stays one entry"
+        );
+    }
+
+    #[test]
+    fn split_off_leaves_the_earlier_cells_queued() {
+        let mut queue = UpdateQueue::default();
+
+        for cell in [
+            IVec3::new(0, 4, 0),
+            IVec3::new(1, 4, 0),
+            IVec3::new(0, 5, 0),
+            IVec3::new(0, 6, 0),
+        ] {
+            queue.insert(cell);
+        }
+
+        let tail = queue.split_off(IVec3::new(0, 5, 0));
+        let head: Vec<IVec3> = queue.iter().copied().collect();
+        let tail: Vec<IVec3> = tail.iter().copied().collect();
+
+        assert_eq!(
+            head,
+            vec![IVec3::new(0, 4, 0), IVec3::new(1, 4, 0)],
+            "the cells before the split stay in the queue"
+        );
+        assert_eq!(
+            tail,
+            vec![IVec3::new(0, 5, 0), IVec3::new(0, 6, 0)],
+            "the split cell leads the taken tail"
+        );
     }
 }

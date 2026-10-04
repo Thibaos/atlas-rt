@@ -393,8 +393,21 @@ _Avoid_: world swap, respawn, restart
 **Simulation tick**:
 One fixed-rate advance of the voxel rules and player movement. Player movement
 resolves first, then voxel rules. Input is sampled outside the tick and consumed
-by the controller during the tick.
+by the controller during the tick. A tick drains at most the cell cap of the
+Update queue and leaves the rest queued.
 _Avoid_: physics frame, render frame
+
+**Update queue**:
+The cells the voxel rules have not evaluated yet, held in the order a tick
+drains them: ascending y, then x, then z. Settled means absent, so a Falling
+granular cell blocks the player only while the queue holds it.
+_Avoid_: dirty list, work list
+
+**Cell cap**:
+The most queued cells one Simulation tick drains, a fixed count in the
+simulation beside the catch-up cap. The cells a tick does not reach stay queued
+with their wakes.
+_Avoid_: grain budget, work budget
 
 **Input sample**:
 The host-captured movement state and at most one pending jump edge supplied to

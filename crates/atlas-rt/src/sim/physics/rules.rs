@@ -1,7 +1,9 @@
 use glam::IVec3;
 use rustc_hash::FxHashSet;
 
+use crate::world::World;
 use crate::world::diff::edit::{VoxelChange, VoxelEdit};
+use crate::world::material::PhysicalMaterialTable;
 
 use super::field::Field;
 use super::queue::UpdateQueue;
@@ -15,42 +17,48 @@ pub enum ParityPolicy {
     AlwaysNegative,
 }
 
-/// One tick's rule outcome: the pending edits and the queue the next tick
-/// starts from.
-pub(in crate::sim) struct Outcome {
-    pub(in crate::sim) edits: Vec<VoxelEdit>,
-    pub(in crate::sim) queue: UpdateQueue,
-}
-
-/// Drains the queued cells in ascending y, then x, then z against `field`,
-/// records one claim per destination in emission order, and rebuilds the queue
-/// from the moves and their wakes. Nothing here writes to the World.
-pub(in crate::sim) fn drain(field: &Field, parity: ParityPolicy) -> Outcome {
-    let mut order: Vec<IVec3> = field.queued_cells().copied().collect();
-    order.sort_unstable_by_key(|cell| (cell.y, cell.x, cell.z));
-
-    let mut next = UpdateQueue::default();
+/// Drains at most `cap` of the queued cells in ascending y, then x, then z
+/// against `world`, records one claim per destination in emission order, folds
+/// the moves and their wakes back into `queue`, and leaves the cells it did not
+/// reach queued. Nothing here writes to the World.
+pub(in crate::sim) fn drain(
+    world: &World,
+    table: &PhysicalMaterialTable,
+    queue: &mut UpdateQueue,
+    parity: ParityPolicy,
+    cap: usize,
+) -> Vec<VoxelEdit> {
+    let field = Field::new(world, table, queue);
+    let boundary = field.queued_cells().nth(cap).copied();
     let mut claims = FxHashSet::default();
     let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
+    let mut requeued: Vec<IVec3> = Vec::new();
 
-    for src in order {
+    for src in field.queued_cells().take(cap).copied() {
         let Some(material) = field.grain(src) else {
             continue;
         };
 
-        let Some(dst) = destination(field, parity, src) else {
-            wake(field, &mut next, src.with_y(src.y.saturating_add(1)));
+        let Some(dst) = destination(&field, parity, src) else {
+            wake(&field, &mut requeued, src.with_y(src.y.saturating_add(1)));
 
             continue;
         };
 
         if !claims.insert(dst) {
-            next.insert(src);
+            requeued.push(src);
 
             continue;
         }
 
         moves.push((src, dst, material));
+        wake_above(&field, &mut requeued, src);
+    }
+
+    let mut next = boundary.map_or_else(UpdateQueue::default, |cell| queue.split_off(cell));
+
+    for cell in requeued {
+        next.insert(cell);
     }
 
     let mut edits = Vec::with_capacity(moves.len().saturating_mul(2));
@@ -66,10 +74,11 @@ pub(in crate::sim) fn drain(field: &Field, parity: ParityPolicy) -> Outcome {
         });
 
         next.insert(dst);
-        wake_above(field, &mut next, src);
     }
 
-    Outcome { edits, queue: next }
+    *queue = next;
+
+    edits
 }
 
 /// Where the grain goes this tick: straight down while the cell below is
@@ -126,14 +135,14 @@ const fn steps(side: Side, cell: IVec3, parity: ParityPolicy) -> [i32; 2] {
 }
 
 /// The settle wake: one cell straight up from a grain that failed to move.
-fn wake(field: &Field, next: &mut UpdateQueue, cell: IVec3) {
+fn wake(field: &Field, requeued: &mut Vec<IVec3>, cell: IVec3) {
     if field.grain(cell).is_some() {
-        next.insert(cell);
+        requeued.push(cell);
     }
 }
 
 /// The move wake: the three cells above the cell a grain vacated.
-fn wake_above(field: &Field, next: &mut UpdateQueue, vacated: IVec3) {
+fn wake_above(field: &Field, requeued: &mut Vec<IVec3>, vacated: IVec3) {
     let above = vacated.y.saturating_add(1);
 
     for x in [
@@ -141,7 +150,7 @@ fn wake_above(field: &Field, next: &mut UpdateQueue, vacated: IVec3) {
         vacated.x.saturating_sub(1),
         vacated.x.saturating_add(1),
     ] {
-        wake(field, next, IVec3::new(x, above, vacated.z));
+        wake(field, requeued, IVec3::new(x, above, vacated.z));
     }
 }
 
@@ -164,6 +173,190 @@ impl Side {
         match self {
             Self::X => cell.with_x(cell.x.saturating_add(step)),
             Self::Z => cell.with_z(cell.z.saturating_add(step)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::world::diff::batch::TrackedCoords;
+    use crate::world::diff::edit::edit_world;
+    use crate::world::material::parse_override;
+
+    const GRAIN: u8 = 2;
+    const PILLAR: u8 = 1;
+
+    fn table() -> PhysicalMaterialTable {
+        parse_override(&format!("material {GRAIN} falling_granular solid=true"))
+            .unwrap_or_else(|rejections| panic!("{rejections:?}"))
+    }
+
+    fn world_of(cells: &[(IVec3, u8)]) -> World {
+        let mut world = World::default();
+
+        for (position, material) in cells {
+            world.set_voxel(*position, *material);
+        }
+
+        world
+    }
+
+    fn queued(world: &World) -> UpdateQueue {
+        let mut queue = UpdateQueue::default();
+
+        queue.seed(world, &table(), None);
+
+        queue
+    }
+
+    fn order(queue: &UpdateQueue) -> Vec<IVec3> {
+        queue.iter().copied().collect()
+    }
+
+    fn clear(x: i32, y: i32, z: i32) -> VoxelEdit {
+        VoxelEdit {
+            position: IVec3::new(x, y, z),
+            change: VoxelChange::Clear,
+        }
+    }
+
+    fn set(x: i32, y: i32, z: i32, material: u8) -> VoxelEdit {
+        VoxelEdit {
+            position: IVec3::new(x, y, z),
+            change: VoxelChange::Set(material),
+        }
+    }
+
+    /// Five grains in open cells above nothing, so every one of them falls
+    /// straight down when the drain reaches it.
+    fn row() -> World {
+        let mut cells = Vec::new();
+
+        for x in 0..5 {
+            cells.push((IVec3::new(x, 5, 0), GRAIN));
+        }
+
+        world_of(&cells)
+    }
+
+    fn step(world: &mut World, queue: &mut UpdateQueue, cap: usize) -> Vec<VoxelEdit> {
+        let edits = drain(world, &table(), queue, ParityPolicy::Alternate, cap);
+
+        edit_world(world, &edits, &TrackedCoords::default())
+            .unwrap_or_else(|error| panic!("the edits must apply: {error}"));
+
+        edits
+    }
+
+    #[test]
+    fn a_tick_drains_at_most_the_cap_and_leaves_the_rest_queued() {
+        let world = row();
+        let mut queue = queued(&world);
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 2);
+
+        assert_eq!(
+            edits,
+            vec![
+                clear(0, 5, 0),
+                set(0, 4, 0, GRAIN),
+                clear(1, 5, 0),
+                set(1, 4, 0, GRAIN),
+            ],
+            "only the first two cells in drain order moved"
+        );
+        assert_eq!(
+            order(&queue),
+            vec![
+                IVec3::new(0, 4, 0),
+                IVec3::new(1, 4, 0),
+                IVec3::new(2, 5, 0),
+                IVec3::new(3, 5, 0),
+                IVec3::new(4, 5, 0),
+            ],
+            "the destinations are queued and the unreached cells stay queued"
+        );
+    }
+
+    #[test]
+    fn the_processed_cells_match_the_uncapped_drain() {
+        let world = row();
+        let mut capped = queued(&world);
+        let mut uncapped = queued(&world);
+
+        let capped_edits = drain(&world, &table(), &mut capped, ParityPolicy::Alternate, 2);
+        let uncapped_edits = drain(
+            &world,
+            &table(),
+            &mut uncapped,
+            ParityPolicy::Alternate,
+            usize::MAX,
+        );
+        let prefix: Vec<VoxelEdit> = uncapped_edits
+            .iter()
+            .take(capped_edits.len())
+            .copied()
+            .collect();
+
+        assert_eq!(
+            capped_edits, prefix,
+            "the cap cuts the uncapped drain short and changes nothing it keeps"
+        );
+        assert_eq!(
+            uncapped_edits.len(),
+            10,
+            "the uncapped drain moves every grain"
+        );
+    }
+
+    #[test]
+    fn a_capped_tick_keeps_the_first_claim_winner() {
+        let world = world_of(&[
+            (IVec3::new(4, 1, 6), PILLAR),
+            (IVec3::new(6, 1, 6), PILLAR),
+            (IVec3::new(7, 1, 6), GRAIN),
+            (IVec3::new(4, 2, 6), GRAIN),
+            (IVec3::new(6, 2, 6), GRAIN),
+        ]);
+        let mut queue = queued(&world);
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 3);
+
+        assert_eq!(
+            edits,
+            vec![
+                clear(7, 1, 6),
+                set(7, 0, 6, GRAIN),
+                clear(4, 2, 6),
+                set(5, 1, 6, GRAIN),
+            ],
+            "the cell with the open column under it falls, then the first grain to reach (5, 1, 6) takes it"
+        );
+        assert!(
+            queue.contains(IVec3::new(6, 2, 6)),
+            "the grain that lost the claim stays queued"
+        );
+    }
+
+    #[test]
+    fn a_capped_sequence_repeats_exactly() {
+        let mut first_world = row();
+        let mut first = queued(&first_world);
+        let mut second_world = row();
+        let mut second = queued(&second_world);
+
+        for tick in 0..6 {
+            let edits = step(&mut first_world, &mut first, 2);
+            let repeat = step(&mut second_world, &mut second, 2);
+
+            assert_eq!(
+                edits, repeat,
+                "tick {tick}: the same scene drains the same edits"
+            );
+            assert_eq!(
+                order(&first),
+                order(&second),
+                "tick {tick}: the remainder is queued in the same order"
+            );
         }
     }
 }

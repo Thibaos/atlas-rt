@@ -20,6 +20,7 @@ use crate::world::diff::{
 use crate::world::grid::in_lattice;
 use crate::world::material::PhysicalMaterialTable;
 
+use super::MAX_CELLS_PER_TICK;
 use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;
 use super::physics::field::Field;
@@ -428,31 +429,41 @@ impl Runtime {
 
     /// Runs one tick's movement on the player and one drain of the rule
     /// queue on the same read lock, so the rules read one immutable view of
-    /// the World for the whole tick and hand back a pending edit list. The
-    /// window starts before the lock is taken, so it carries any wait for a
-    /// host reader and stamps the jump deadline.
+    /// the World for the whole tick and hand back a pending edit list. At most
+    /// [`MAX_CELLS_PER_TICK`] cells are drained, and the rest of the queue
+    /// carries into the next tick. The window starts before the lock is taken,
+    /// so it carries any wait for a host reader and stamps the jump deadline.
     fn evaluate(&mut self) -> Duration {
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
 
         let guard = shared.read().unwrap_or_else(PoisonError::into_inner);
+        let mut queue = mem::take(&mut self.queue);
 
-        let field = Field::new(&guard, &self.materials, &self.queue);
+        {
+            let field = Field::new(&guard, &self.materials, &queue);
 
-        self.controller.advance(
-            &field,
-            &mut self.player,
-            self.profile,
-            self.movement,
-            started,
+            self.controller.advance(
+                &field,
+                &mut self.player,
+                self.profile,
+                self.movement,
+                started,
+            );
+        }
+
+        let edits = rules::drain(
+            &guard,
+            &self.materials,
+            &mut queue,
+            self.parity,
+            MAX_CELLS_PER_TICK,
         );
-
-        let outcome = rules::drain(&field, self.parity);
 
         drop(guard);
 
-        self.queue = outcome.queue;
-        self.rule_edits = outcome.edits;
+        self.queue = queue;
+        self.rule_edits = edits;
 
         started.elapsed()
     }
@@ -516,12 +527,7 @@ impl Runtime {
     /// the diff asks for, folding the snapshots into `merged`. A command
     /// that fails validation, or that changes nothing, leaves the World,
     /// the tracked set, and the queue alone.
-    fn apply_command(
-        &mut self,
-        guard: &mut World,
-        command: Command,
-        merged: &mut SnapshotFold,
-    ) {
+    fn apply_command(&mut self, guard: &mut World, command: Command, merged: &mut SnapshotFold) {
         let edits = match command {
             Command::Cell(edit) => {
                 if !edit.disagrees_with(guard) {

@@ -12,6 +12,24 @@ use glam::{IVec3, Vec3};
 
 use common::*;
 
+/// The cells one tick drains, which the sim holds in the private
+/// `MAX_CELLS_PER_TICK`. Pinned here the way the catch-up cap's five ticks are.
+const CAP: usize = 4096;
+
+/// One row of grains across the lattice x axis plus the single cell that drains
+/// after it, so a tick reaches the cap and stops one cell short of the queue.
+fn a_row_past_the_cap() -> Vec<VoxelEdit> {
+    let mut edits = Vec::with_capacity(CAP.saturating_add(1));
+
+    for x in -2048..2048 {
+        edits.push(set(x, 10, 0, GRAIN));
+    }
+
+    edits.push(set(2047, 10, 1, GRAIN));
+
+    edits
+}
+
 /// A nine by nine floor at y = 0, the ground every scene here stands on.
 fn floor() -> Vec<VoxelEdit> {
     let mut edits = Vec::new();
@@ -638,4 +656,57 @@ fn two_identical_90_tick_sequences_hash_the_same_under_both_parity_policies() {
             "two 90-tick sequences under {parity:?} hash the same"
         );
     }
+}
+
+#[test]
+fn a_tick_stops_at_the_cap_and_leaves_the_rest_queued() {
+    let (_world, handle) = spawn_sim();
+    let edits = a_row_past_the_cap();
+
+    assert_eq!(edits.len(), CAP.saturating_add(1));
+
+    handle.activate(granular_activation_of(&edits));
+    wait_ready(&handle);
+
+    one_tick(&handle);
+
+    let held = grains(&handle);
+    let moved = held.iter().filter(|cell| cell.y == 9).count();
+    let queued: Vec<IVec3> = held.iter().copied().filter(|cell| cell.y == 10).collect();
+
+    assert_eq!(moved, CAP, "a tick drains at most the cap's cells");
+    assert_eq!(
+        queued,
+        vec![IVec3::new(2047, 10, 1)],
+        "the cell behind the cap stays queued where it was"
+    );
+}
+
+#[test]
+fn a_scene_larger_than_the_cap_replays_identically() {
+    let mut runs = [0u64; 2];
+
+    for run in &mut runs {
+        let (_world, handle) = spawn_sim();
+
+        handle.activate(granular_activation_of(&a_row_past_the_cap()));
+        wait_ready(&handle);
+
+        let rested = world_hash(&handle);
+
+        for _ in 0..4 {
+            one_tick(&handle);
+        }
+
+        let moved = world_hash(&handle);
+
+        assert_ne!(moved, rested, "the capped ticks have to move the grains");
+
+        *run = moved;
+    }
+
+    assert_eq!(
+        runs[0], runs[1],
+        "two capped sequences over one scene and one cap hash the same"
+    );
 }

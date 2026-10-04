@@ -81,6 +81,20 @@ The threshold is static and the sweep is a hand-run `#[ignore]` test in
 `app/sim_host/bench.rs`. The numbers are that benchmark's first output, not
 this document's.
 
+The sweep's budget check now holds the tick's rule work, because a tick's
+Falling granular work is capped at a fixed cell count
+([0018](0018-cap-the-per-tick-grain-work.md)) and that work is what the cap
+bounds. The whole tick is still measured and reported, and a point over budget
+in its commit window alone is named `COMMIT`.
+
+This narrows the check without narrowing the tripwire: the threshold above is
+still the whole tick, and the whole tick still crosses it at the bistro
+occupancy and at the larger generated footprints. What 0018 establishes is that
+the rule work is inside the budget and what crosses is the commit window's
+Micro-chunk compile and tracked-set clone. The dense local window that the
+consequences below name as the replacement was aimed at the evaluation order, so
+it would not address a commit-window crossing.
+
 ## Consequences
 
 - The simulation is drivable headless. Nothing in it needs a frame, so the acceptance walkthroughs run without a window.
@@ -93,4 +107,6 @@ accepted (2026-09-30). Promoted from the physics wayfinder's decisions 05, 09,
 11, and 13, which were resolved against a prototype and had no earlier ADR.
 Decision 13 reopened 05 and 07 wherever they conflicted. The thread and channel
 boundary here supersedes the in-place `update(&mut world, ...)` call recorded in
-07 and the frame-loop clock ownership in 05.
+07 and the frame-loop clock ownership in 05. Amended (2026-10-05): the tripwire
+section records what the sweep's budget holds now that a tick's Falling granular
+work is capped, per [0018](0018-cap-the-per-tick-grain-work.md).

@@ -30,7 +30,8 @@ impl<'a> Field<'a> {
         }
     }
 
-    /// The coordinates the voxel rules have not evaluated yet, in no order.
+    /// The coordinates the voxel rules have not evaluated yet, in the order a
+    /// tick drains them.
     pub(in crate::sim) fn queued_cells(&self) -> impl Iterator<Item = &IVec3> {
         self.queued.iter()
     }
