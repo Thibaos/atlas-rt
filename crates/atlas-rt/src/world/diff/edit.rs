@@ -343,7 +343,7 @@ fn fold(
     }
 }
 
-fn mask_index(local: IVec3) -> usize {
+pub(in crate::world) fn mask_index(local: IVec3) -> usize {
     let x = usize::try_from(local.x).unwrap_or(0);
     let y = usize::try_from(local.y).unwrap_or(0);
     let z = usize::try_from(local.z).unwrap_or(0);
@@ -497,7 +497,7 @@ pub(in crate::world) fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
 }
 
 /// The chunk's content as `world` holds it, cell index `x + 8y + 64z` from the
-/// origin, which is the order `ChunkBuf::into_snapshot` emits materials in. A
+/// origin, which is the order the store's entry read emits materials in. A
 /// store that keeps one entry per Micro-chunk copies its mask and compacted
 /// materials straight out; a store with no entry shape probes every cell.
 pub(in crate::world) fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {

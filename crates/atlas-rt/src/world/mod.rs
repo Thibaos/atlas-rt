@@ -125,6 +125,12 @@ impl World {
         self.store.chunk_entry(origin)
     }
 
+    /// The World's live Micro-chunk entries in Region then Micro-chunk ordinal
+    /// order.
+    pub(in crate::world) fn entries(&self) -> Box<dyn Iterator<Item = store::MicroChunkEntry> + '_> {
+        self.store.entries()
+    }
+
     #[cfg(test)]
     pub(crate) fn storage_size(&self) -> store::StorageSize {
         self.store.storage_size()

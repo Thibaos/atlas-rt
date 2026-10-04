@@ -3,10 +3,14 @@ pub mod region;
 use std::fmt::Debug;
 
 use glam::IVec3;
+use rustc_hash::FxHashMap;
 
 use crate::world::{
     BoundsPolicy, InsertResult,
-    diff::edit::{EditError, MICRO_BYTES, MICRO_CELLS, cell_offset, mask_occupied, validate_entry},
+    diff::edit::{
+        EditError, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, cell_offset, mask_index, mask_occupied,
+        validate_entry,
+    },
     grid,
 };
 
@@ -38,6 +42,58 @@ pub struct ChunkEntry<'a> {
     pub materials: &'a [u8],
 }
 
+/// A live Micro-chunk as enumeration yields it: the origin, the Occupancy mask
+/// and the materials of the occupied cells in ascending cell order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicroChunkEntry {
+    pub origin: IVec3,
+    pub mask: [u8; MICRO_BYTES],
+    pub materials: Vec<u8>,
+}
+
+/// A Micro-chunk under construction during the default enumeration's voxel
+/// walk: the occupancy and the material at each cell. Cell order recovers the
+/// entry's compacted materials.
+struct Bucket {
+    mask: [u8; MICRO_BYTES],
+    materials: [u8; MICRO_CELLS],
+}
+
+impl Bucket {
+    const fn new() -> Self {
+        Self {
+            mask: [0u8; MICRO_BYTES],
+            materials: [0u8; MICRO_CELLS],
+        }
+    }
+
+    fn record(&mut self, index: usize, material: u8) {
+        if let Some(byte) = self.mask.get_mut(index / MICRO_EDGE) {
+            *byte |= 1u8 << (index % MICRO_EDGE);
+        }
+
+        if let Some(slot) = self.materials.get_mut(index) {
+            *slot = material;
+        }
+    }
+
+    fn into_entry(self, origin: IVec3) -> MicroChunkEntry {
+        let mut materials = Vec::new();
+
+        for (index, material) in self.materials.iter().enumerate() {
+            if mask_occupied(&self.mask, index) {
+                materials.push(*material);
+            }
+        }
+
+        MicroChunkEntry {
+            origin,
+            mask: self.mask,
+            materials,
+        }
+    }
+}
+
 /// The World's voxel storage.
 ///
 /// Positions are in-lattice. `insert` is the one operation that resolves the
@@ -65,6 +121,36 @@ pub trait VoxelStore: Debug + Send + Sync {
     /// entry.
     #[must_use]
     fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>>;
+
+    /// Enumerates the live Micro-chunk entries in Region then Micro-chunk
+    /// ordinal order.
+    ///
+    /// The default walks [`Self::iter`] and buckets by Micro-chunk origin, so a
+    /// store that only implements the primitives enumerates correctly and stays
+    /// comparable to the store that overrides it.
+    fn entries(&self) -> Box<dyn Iterator<Item = MicroChunkEntry> + '_> {
+        let mut buckets: FxHashMap<IVec3, Bucket> = FxHashMap::default();
+        let mut order: Vec<IVec3> = Vec::new();
+
+        for (position, material) in self.iter() {
+            let origin = grid::grid_origin(position, grid::MICRO_CHUNK_LENGTH);
+            let index = mask_index(position.saturating_sub(origin));
+
+            let bucket = buckets.entry(origin).or_insert_with(|| {
+                order.push(origin);
+                Bucket::new()
+            });
+
+            bucket.record(index, material);
+        }
+
+        let entries: Vec<MicroChunkEntry> = order
+            .into_iter()
+            .filter_map(|origin| buckets.remove(&origin).map(|bucket| bucket.into_entry(origin)))
+            .collect();
+
+        Box::new(entries.into_iter())
+    }
 
     /// Writes a Micro-chunk's whole entry: its 64-byte Occupancy mask and the
     /// materials of its occupied cells in ascending cell order. A zero mask

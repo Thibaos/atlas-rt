@@ -15,8 +15,9 @@
 //! 342_000.
 //!
 //! The budgets below are these figures with headroom for run-to-run variance.
-//! Emission dominates, and its per-voxel record reserve, `total / 256` per
-//! bucket and 8 bytes per voxel overall, is the largest remaining CPU cost.
+//! Emission reads Micro-chunk entries rather than walking voxels, so the
+//! per-voxel record reserve the first draft kept, `total / 256` per bucket and
+//! 8 bytes per voxel overall, is gone and only the final sort remains.
 //!
 //! `edit_path_timings`, release, AMD Ryzen 7 9800X3D, 2026-10-02. The compile
 //! is measured alone over the touched chunks, with the mutation, validation,
@@ -144,9 +145,9 @@
 //! | rank ns/call         |            16.23 |  4.65 |
 //!
 //! On the assets, the store scan and the emitter separate. `scan` is a bare
-//! `iter_voxels` fold; `emit - scan` approximates the emitter's per-voxel record
-//! construction, bucketing, and final sort, so it is the emitter's own cost and
-//! not the store read:
+//! `iter_voxels` fold and `emit` reads Micro-chunk entries, so `emit - scan` no
+//! longer isolates the emitter's own work; it contrasts the two ways to read
+//! the same content:
 //!
 //! | asset  | scan ns/vox | emit ns/vox | emit - scan ns/vox |
 //! | ------ | ----------- | ----------- | ------------------ |
@@ -384,7 +385,7 @@ mod load_bench {
             println!("dominant        {stage} {share}%");
         }
 
-        println!("reserve         emission's per-voxel record is the largest remaining CPU cost");
+        println!("reserve         emission reads Micro-chunk entries; its per-voxel record is gone");
 
         let stage_budgets = [
             WORLD_NEW.budget(voxels, micro_chunks, 0),
@@ -1007,15 +1008,15 @@ mod edit_bench {
     }
 }
 
-/// The `rank` scan's cost on each read path, and the emission stage split into
-/// the store scan and the emitter's own record, bucket, and sort work.
+/// The `rank` scan's cost on each read path, and the two ways to read the
+/// World: the voxel walk and the Micro-chunk entry read.
 ///
 /// The three paths are `get_voxel` over occupied cells, `iter_voxels` over the
-/// world, and `emit_snapshots`, which walks `iter_voxels`. `rank` is timed
-/// directly over the occupied cells of every live Micro-chunk to give its
-/// per-call floor. `scan` is a bare `iter_voxels` fold on the asset, so
-/// `emit - scan` is the emitter's per-voxel record construction, bucketing, and
-/// final sort rather than the store read.
+/// world, and `emit_snapshots`, which reads entries. `rank` is timed directly
+/// over the occupied cells of every live Micro-chunk to give its per-call
+/// floor. `scan` is a bare `iter_voxels` fold on the asset, so `emit - scan`
+/// contrasts the voxel walk with the entry read rather than isolating the
+/// emitter's own work.
 mod read_bench {
     use std::hint::black_box;
     use std::time::{Duration, Instant};

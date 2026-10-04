@@ -5,7 +5,7 @@ use glam::IVec3;
 use crate::world::{
     diff::edit::{EditError, MICRO_BYTES, validate_entry},
     grid,
-    store::{ChunkEntry, VoxelStore},
+    store::{ChunkEntry, MicroChunkEntry, VoxelStore},
 };
 
 #[cfg(test)]
@@ -528,6 +528,75 @@ impl Iterator for Voxels<'_> {
     }
 }
 
+struct Entries<'a> {
+    store: &'a RegionStore,
+    slot: usize,
+    ordinal: usize,
+}
+
+impl<'a> Entries<'a> {
+    const fn new(store: &'a RegionStore) -> Self {
+        Self {
+            store,
+            slot: 0,
+            ordinal: 0,
+        }
+    }
+
+    const fn advance_slot(&mut self) {
+        self.slot = self.slot.saturating_add(1);
+        self.ordinal = 0;
+    }
+}
+
+impl Iterator for Entries<'_> {
+    type Item = MicroChunkEntry;
+
+    fn next(&mut self) -> Option<MicroChunkEntry> {
+        loop {
+            let slot = self.store.regions.get(self.slot)?;
+            let Some(region) = slot.as_ref() else {
+                self.advance_slot();
+                continue;
+            };
+
+            if self.ordinal >= MICRO_CHUNKS_PER_REGION {
+                self.advance_slot();
+                continue;
+            }
+
+            let ordinal = self.ordinal;
+            self.ordinal = self.ordinal.saturating_add(1);
+
+            let entry = region.index.get(ordinal).copied().unwrap_or(EMPTY);
+            let Some(offset) = entry_offset(entry) else {
+                continue;
+            };
+
+            let Some(mask) = region.blob.get(offset..offset.strict_add(MASK_BYTES)) else {
+                continue;
+            };
+
+            let mut owned = [0u8; MICRO_BYTES];
+
+            owned.copy_from_slice(mask);
+
+            let populated = entry_popcount(region, offset);
+            let base = offset.strict_add(MASK_BYTES);
+
+            let Some(materials) = region.blob.get(base..base.strict_add(populated)) else {
+                continue;
+            };
+
+            return Some(MicroChunkEntry {
+                origin: cell_position(self.slot, ordinal, 0),
+                mask: owned,
+                materials: materials.to_vec(),
+            });
+        }
+    }
+}
+
 impl VoxelStore for RegionStore {
     fn set(&mut self, position: IVec3, material: u8) -> bool {
         let slot = region_slot(position);
@@ -642,6 +711,10 @@ impl VoxelStore for RegionStore {
         let materials = region.blob.get(base..base.strict_add(populated))?;
 
         Some(ChunkEntry { mask, materials })
+    }
+
+    fn entries(&self) -> Box<dyn Iterator<Item = MicroChunkEntry> + '_> {
+        Box::new(Entries::new(self))
     }
 
     fn write_entry(
@@ -1378,6 +1451,41 @@ mod tests {
         }
     }
 
+    /// A store that yields its voxels in reverse, so the default enumeration's
+    /// bucketing is exercised with out-of-order cells.
+    #[derive(Debug)]
+    struct ReversedStore(RegionStore);
+
+    impl VoxelStore for ReversedStore {
+        fn set(&mut self, position: IVec3, material: u8) -> bool {
+            self.0.set(position, material)
+        }
+
+        fn get(&self, position: IVec3) -> Option<u8> {
+            self.0.get(position)
+        }
+
+        fn clear(&mut self, position: IVec3) {
+            self.0.clear(position);
+        }
+
+        fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
+            Box::new(self.0.iter().collect::<Vec<_>>().into_iter().rev())
+        }
+
+        fn count(&self) -> usize {
+            self.0.count()
+        }
+
+        fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>> {
+            self.0.chunk_entry(origin)
+        }
+
+        fn storage_size(&self) -> StorageSize {
+            self.0.storage_size()
+        }
+    }
+
     fn chunk_origin(rng: &mut Rng, span: u64) -> IVec3 {
         let mut axis = || {
             i32::try_from(rng.below(span))
@@ -1639,6 +1747,80 @@ mod tests {
                 .is_some_and(Option::is_none),
             "the emptied region is released"
         );
+    }
+
+    #[test]
+    fn entry_enumeration_matches_the_per_cell_default() {
+        let seed = 0x00DE_FACE;
+        let mut rng = Rng::new(seed);
+        let mut region = RegionStore::default();
+        let mut wrapper = PerCellStore(RegionStore::default());
+
+        for case in 0..256u32 {
+            let origin = chunk_origin(&mut rng, 24);
+            let mask = random_mask(&mut rng, 8);
+            let materials = entry_materials(&mask, &mut rng);
+
+            let context = format!("seed {seed:#x} case {case} at {origin}");
+
+            region
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
+            wrapper
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
+        }
+
+        let entries: Vec<MicroChunkEntry> = region.entries().collect();
+        let default_entries: Vec<MicroChunkEntry> = wrapper.entries().collect();
+
+        assert_eq!(entries, default_entries, "seed {seed:#x}");
+
+        let keys: Vec<(usize, usize)> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    region_slot(entry.origin),
+                    micro_chunk_ordinal(entry.origin),
+                )
+            })
+            .collect();
+
+        assert!(
+            keys.windows(2).all(|pair| pair[0] < pair[1]),
+            "the enumeration is strictly increasing in Region then ordinal"
+        );
+    }
+
+    #[test]
+    fn the_default_enumeration_buckets_out_of_order_voxels() {
+        let seed = 0x00BA_5EBA;
+        let mut rng = Rng::new(seed);
+        let mut region = RegionStore::default();
+        let mut reversed = ReversedStore(RegionStore::default());
+
+        for case in 0..128u32 {
+            let origin = chunk_origin(&mut rng, 24);
+            let mask = random_mask(&mut rng, 8);
+            let materials = entry_materials(&mask, &mut rng);
+
+            let context = format!("seed {seed:#x} case {case} at {origin}");
+
+            region
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
+            reversed
+                .write_entry(origin, &mask, &materials)
+                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
+        }
+
+        let mut entries: Vec<MicroChunkEntry> = region.entries().collect();
+        let mut reversed_entries: Vec<MicroChunkEntry> = reversed.entries().collect();
+
+        entries.sort_unstable_by_key(|entry| entry.origin.to_array());
+        reversed_entries.sort_unstable_by_key(|entry| entry.origin.to_array());
+
+        assert_eq!(entries, reversed_entries, "seed {seed:#x}");
     }
 
     #[test]
