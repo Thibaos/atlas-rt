@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use atlas_rt::world::diff::batch::{self};
 use atlas_rt::world::diff::edit::{MICRO_BYTES, MicroChunkEdit, VoxelEdit, edit_world};
+use atlas_rt::world::generation::GenerationParams;
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
@@ -473,6 +474,15 @@ impl AtlasRtView {
             .map_err(|_| format!("edit {index} field {name} has the wrong type"))
     }
 
+    /// The Seed and footprint as the job's Generation parameters, with the
+    /// Seed's bits reinterpreted from the host's signed integer.
+    pub(super) const fn generation_params(seed: i64, footprint: Vector3i) -> GenerationParams {
+        GenerationParams::new(
+            seed.cast_unsigned(),
+            glam::IVec3::new(footprint.x, footprint.y, footprint.z),
+        )
+    }
+
     pub(super) fn validate_edit(
         coords: Vector3i,
         mask: &PackedByteArray,
@@ -544,6 +554,7 @@ mod tests {
         },
     };
     use glam::IVec3;
+    use godot::builtin::Vector3i;
 
     const ORIGIN: IVec3 = IVec3::ZERO;
 
@@ -790,5 +801,24 @@ mod tests {
         );
         assert!(tracked.contains(&neighbour), "the neighbour stays resident");
         assert_queue_matches_world(&input, &world);
+    }
+
+    #[test]
+    fn a_seed_and_footprint_become_the_jobs_parameters() {
+        use crate::view::api::AtlasRtView as View;
+
+        let params = View::generation_params(0x5EED, Vector3i::new(64, 1, 128));
+
+        assert_eq!(params.seed, 0x5EED);
+        assert_eq!(params.footprint, IVec3::new(64, 1, 128));
+    }
+
+    #[test]
+    fn a_negative_seed_names_one_world_by_its_bits() {
+        use crate::view::api::AtlasRtView as View;
+
+        let params = View::generation_params(-1, Vector3i::new(8, 1, 8));
+
+        assert_eq!(params.seed, u64::MAX);
     }
 }

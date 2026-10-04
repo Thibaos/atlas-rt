@@ -342,6 +342,38 @@ impl AtlasRtView {
         true
     }
 
+    /// Returns at once. The build runs on a thread with no renderer access, and
+    /// the finished snapshots reach the renderer a few frames later. The old
+    /// world stops being displayed on this call. `footprint` is the ground
+    /// area's extent, x by z, from the lattice's negative corner; the fill spans
+    /// the full lattice depth, so y is ignored. A negative extent fails the job
+    /// with a reason rather than being refused here, as a bad file does for a
+    /// load.
+    #[func]
+    pub fn generate_world(&mut self, seed: i64, footprint: Vector3i) -> bool {
+        if self.job.is_none() {
+            return false;
+        }
+
+        let Some(job) = self.job.as_mut() else {
+            return false;
+        };
+
+        let version = Self::batch_version(&self.pipeline);
+        let params = Self::generation_params(seed, footprint);
+
+        if let Err(refusal) = job.generate(params, version) {
+            Self::report_refusal("generate_world", refusal);
+
+            return false;
+        }
+
+        self.display.suppress(version);
+        self.suppress_display();
+
+        true
+    }
+
     #[func]
     pub fn clear_world(&mut self) -> bool {
         if self.job.is_none() {
