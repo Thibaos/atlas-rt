@@ -8,6 +8,9 @@ mod profile;
 mod runtime;
 mod scheduler;
 
+#[cfg(test)]
+mod bench;
+
 pub use input::{InputSample, PlayerState};
 pub use physics::rules::ParityPolicy;
 pub use profile::{PlayerProfile, ProfileError};

@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::mem;
 use std::sync::mpsc::{self, RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, PoisonError, RwLock};
@@ -6,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use glam::{IVec3, Vec2};
+use rustc_hash::FxHashMap;
 use tracing::error;
 
 use crate::world::World;
@@ -432,7 +434,7 @@ impl Runtime {
 
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
-        let mut merged: Vec<MicroChunkSnapshot> = Vec::new();
+        let mut merged = SnapshotFold::default();
 
         {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
@@ -453,7 +455,7 @@ impl Runtime {
                 match outcome {
                     Ok(batch) => {
                         self.tracked = batch.tracked;
-                        merge_snapshots(&mut merged, batch.snapshots);
+                        merged.merge(batch.snapshots);
                     }
                     Err(error) => error!("atlas_rt: dropped a failed rule batch: {error}"),
                 }
@@ -467,7 +469,7 @@ impl Runtime {
         }
 
         let elapsed = started.elapsed();
-        let pushed = (!merged.is_empty()).then_some(merged);
+        let pushed = (!merged.is_empty()).then(|| merged.into_vec());
 
         (elapsed, pushed)
     }
@@ -480,7 +482,7 @@ impl Runtime {
         &mut self,
         guard: &mut World,
         command: Command,
-        merged: &mut Vec<MicroChunkSnapshot>,
+        merged: &mut SnapshotFold,
     ) {
         let edits = match command {
             Command::Cell(edit) => {
@@ -507,7 +509,7 @@ impl Runtime {
         match edit_world(guard, &edits, &self.tracked) {
             Ok(batch) => {
                 self.tracked = batch.tracked;
-                merge_snapshots(merged, batch.snapshots);
+                merged.merge(batch.snapshots);
 
                 for edit in &edits {
                     self.wake(edit.position);
@@ -531,18 +533,141 @@ impl Runtime {
     }
 }
 
-/// Folds one batch's snapshots into the tick's list, keeping the last
-/// snapshot per Micro-chunk so a chunk edited twice reaches the renderer in
-/// its final state.
-fn merge_snapshots(merged: &mut Vec<MicroChunkSnapshot>, snapshots: Vec<MicroChunkSnapshot>) {
-    for snapshot in snapshots {
-        if let Some(slot) = merged
-            .iter_mut()
-            .find(|earlier| earlier.global_coords == snapshot.global_coords)
-        {
-            *slot = snapshot;
-        } else {
-            merged.push(snapshot);
+/// Folds a tick's batches into one snapshot list, keyed by Micro-chunk so a
+/// chunk edited more than once reaches the renderer once, in its final state.
+#[derive(Default)]
+pub(super) struct SnapshotFold {
+    merged: Vec<MicroChunkSnapshot>,
+    slots: FxHashMap<IVec3, usize>,
+}
+
+impl SnapshotFold {
+    /// Folds one batch in, the last snapshot per Micro-chunk winning. A chunk
+    /// already folded keeps its place, so the output order is the order the
+    /// chunks were first touched, the order the linear scan it replaced kept.
+    pub(super) fn merge(&mut self, snapshots: Vec<MicroChunkSnapshot>) {
+        for snapshot in snapshots {
+            match self.slots.entry(snapshot.global_coords) {
+                Entry::Occupied(slot) => {
+                    let previous = self.merged.get_mut(*slot.get());
+
+                    debug_assert!(previous.is_some(), "a fold slot always names a snapshot");
+
+                    if let Some(previous) = previous {
+                        *previous = snapshot;
+                    }
+                }
+                Entry::Vacant(slot) => {
+                    slot.insert(self.merged.len());
+                    self.merged.push(snapshot);
+                }
+            }
+        }
+    }
+
+    pub(super) const fn is_empty(&self) -> bool {
+        self.merged.is_empty()
+    }
+
+    pub(super) fn into_vec(self) -> Vec<MicroChunkSnapshot> {
+        self.merged
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A local xorshift so the fold oracle test can collide coordinates across
+    /// batches without reaching into the World test support.
+    fn below(state: &mut u64, bound: u64) -> u64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+
+        state.checked_rem(bound).unwrap_or_default()
+    }
+
+    fn snapshot(x: i32, z: i32, material: u8) -> MicroChunkSnapshot {
+        let mut mask = [0u8; 64];
+
+        if let Some(first) = mask.first_mut() {
+            *first = 1;
+        }
+
+        MicroChunkSnapshot {
+            global_coords: IVec3::new(x, 0, z),
+            mask,
+            materials: vec![material],
+        }
+    }
+
+    /// The linear scan the map replaced: first-touch order, last write wins.
+    fn merge_linear(merged: &mut Vec<MicroChunkSnapshot>, snapshots: Vec<MicroChunkSnapshot>) {
+        for snapshot in snapshots {
+            if let Some(slot) = merged
+                .iter_mut()
+                .find(|earlier| earlier.global_coords == snapshot.global_coords)
+            {
+                *slot = snapshot;
+            } else {
+                merged.push(snapshot);
+            }
+        }
+    }
+
+    #[test]
+    fn a_chunk_touched_twice_keeps_its_last_snapshot() {
+        let mut fold = SnapshotFold::default();
+
+        fold.merge(vec![snapshot(0, 0, 1), snapshot(8, 0, 2)]);
+        fold.merge(vec![snapshot(0, 0, 3)]);
+
+        let merged = fold.into_vec();
+
+        assert_eq!(merged.len(), 2, "the chunk reaches the renderer once");
+        assert_eq!(
+            merged.first().map(|snapshot| snapshot.global_coords),
+            Some(IVec3::new(0, 0, 0))
+        );
+        assert_eq!(
+            merged.first().map(|snapshot| snapshot.materials.clone()),
+            Some(vec![3]),
+            "the later edit wins"
+        );
+        assert_eq!(
+            merged.get(1).map(|snapshot| snapshot.global_coords),
+            Some(IVec3::new(8, 0, 0))
+        );
+    }
+
+    #[test]
+    fn the_fold_matches_the_linear_scan_across_batches() {
+        for case in 0..64u64 {
+            let mut fold = SnapshotFold::default();
+            let mut oracle: Vec<MicroChunkSnapshot> = Vec::new();
+            let mut state = 0xB0_1D ^ case;
+
+            for _ in 0..below(&mut state, 6) {
+                let batch: Vec<MicroChunkSnapshot> = (0..below(&mut state, 8))
+                    .map(|_| {
+                        let x = i32::try_from(below(&mut state, 3))
+                            .unwrap_or_default()
+                            .saturating_mul(8);
+                        let z = i32::try_from(below(&mut state, 3))
+                            .unwrap_or_default()
+                            .saturating_mul(8);
+                        let material = u8::try_from(below(&mut state, 256)).unwrap_or_default();
+
+                        snapshot(x, z, material)
+                    })
+                    .collect();
+
+                fold.merge(batch.clone());
+                merge_linear(&mut oracle, batch);
+            }
+
+            assert_eq!(fold.into_vec(), oracle, "case {case}");
         }
     }
 }
