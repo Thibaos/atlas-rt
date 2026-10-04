@@ -1,4 +1,5 @@
 mod input;
+pub mod launch;
 mod player;
 mod sim_host;
 mod timers;
@@ -10,7 +11,7 @@ use std::{
 };
 
 use anyhow::Context;
-use glam::{Mat4, camera::lh::proj::vulkan::perspective};
+use glam::{Mat4, Vec4, camera::lh::proj::vulkan::perspective};
 
 use tracing::{error, info, warn};
 use winit::{
@@ -36,14 +37,18 @@ use atlas_rt::{
             edit::{VoxelChange, VoxelEdit, edit_world},
             snapshot::emit_snapshots,
         },
+        generation,
         grid::LATTICE_HALF_EXTENT,
-        material::load_table,
+        load::progress::Progress,
+        material::{PhysicalMaterialTable, load_table},
+        palette::get_effective_palette,
         raycast::{VoxelHit, screen_center_ray},
         vox::open_file,
     },
 };
 
 use input::{Input, InputButton, InputKey};
+use launch::WorldRequest;
 use player::PlayerController;
 use sim_host::SimHost;
 use timers::ScheduleController;
@@ -57,7 +62,7 @@ pub struct App {
     delta_time: Duration,
     focused: bool,
 
-    pub voxel_data: dot_vox::DotVoxData,
+    palette: [Vec4; 256],
     world: Arc<RwLock<World>>,
     tracked: TrackedCoords,
     profile: PlayerProfile,
@@ -83,26 +88,26 @@ pub struct App {
 impl App {
     /// # Errors
     ///
-    /// Returns an error if the GPU could not be initialized or the loaded
-    /// World's snapshots cannot be emitted.
+    /// Returns an error if the GPU could not be initialized, the loaded
+    /// World's palette cannot be built, the generated World cannot be built,
+    /// or its snapshots cannot be emitted.
     pub fn new(
         event_loop: &EventLoop<()>,
-        world_path: &str,
+        request: WorldRequest,
         clip_oob: bool,
         fly: bool,
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let asset_path = format!("crates/atlas-rt/assets/{world_path}");
-        let voxel_data = open_file(&asset_path);
-        let (world, clipped) = if clip_oob {
-            World::new_clipped(&voxel_data)
-        } else {
-            (World::new(&voxel_data), 0)
+        let (world, palette, materials) = match request {
+            WorldRequest::Load(world_path) => Self::load(&world_path, clip_oob)?,
+            WorldRequest::Generate(params) => {
+                let generated = generation::generate(&Progress::generate_path(), params)
+                    .map_err(|reason| anyhow::anyhow!("the generation failed: {reason}"))?;
+
+                (generated.world, generated.palette, generated.materials)
+            }
         };
-        if clipped > 0 {
-            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
-        }
 
         let world = Arc::new(RwLock::new(world));
 
@@ -122,7 +127,6 @@ impl App {
         };
 
         let profile = PlayerProfile::default();
-        let materials = load_table(Some(Path::new(&asset_path)));
 
         let sim = if fly {
             info!("fly mode: free camera, no simulation thread");
@@ -158,7 +162,7 @@ impl App {
 
             render_mode: RenderMode::default(),
 
-            voxel_data,
+            palette,
             world,
             tracked,
             profile,
@@ -171,6 +175,31 @@ impl App {
             #[cfg(debug_assertions)]
             mode_toggle_pending: false,
         })
+    }
+
+    /// Loads a `.vox` file into a World with its Palette and Physical material
+    /// table.
+    fn load(
+        world_path: &str,
+        clip_oob: bool,
+    ) -> anyhow::Result<(World, [Vec4; 256], PhysicalMaterialTable)> {
+        let asset_path = format!("crates/atlas-rt/assets/{world_path}");
+        let voxel_data = open_file(&asset_path);
+        let palette = get_effective_palette(&voxel_data)
+            .with_context(|| format!("could not build the palette for {world_path}"))?;
+        let (world, clipped) = if clip_oob {
+            World::new_clipped(&voxel_data)
+        } else {
+            (World::new(&voxel_data), 0)
+        };
+
+        if clipped > 0 {
+            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
+        }
+
+        let materials = load_table(Some(Path::new(&asset_path)));
+
+        Ok((world, palette, materials))
     }
 
     /// # Errors
@@ -359,7 +388,7 @@ impl ApplicationHandler for App {
                 let pipeline = {
                     let guard = self.world.read().unwrap_or_else(PoisonError::into_inner);
 
-                    FramePipeline::new(&self.gpu, window.clone(), &self.voxel_data, &guard)
+                    FramePipeline::new(&self.gpu, window.clone(), self.palette, &guard)
                 };
 
                 match pipeline {

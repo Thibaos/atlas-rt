@@ -4,8 +4,7 @@ pub mod decision;
 use std::sync::Arc;
 
 use anyhow::Context;
-use dot_vox::DotVoxData;
-use glam::IVec3;
+use glam::{IVec3, Vec4};
 use vulkano::{
     DeviceSize, Packed24_8,
     acceleration_structure::{AabbPositions, AccelerationStructure, AccelerationStructureInstance},
@@ -30,10 +29,7 @@ use crate::{
             rebuild::{RebuildLogEntry, RebuildPlan},
         },
     },
-    world::{
-        grid::{REGION_LENGTH, region_id},
-        palette::get_effective_palette,
-    },
+    world::grid::{REGION_LENGTH, region_id},
 };
 
 struct ResidentRegion {
@@ -136,14 +132,13 @@ impl RegionStore {
 
     /// # Errors
     ///
-    /// Returns an error if effective-palette construction, `Self::new_empty`,
-    /// packing regions, or store rebuild fails.
+    /// Returns an error if `Self::new_empty`, packing regions, or store rebuild
+    /// fails.
     pub fn new(
         gpu: &RenderContext,
-        voxel_data: &DotVoxData,
+        palette: [Vec4; 256],
         input: &RendererInput,
     ) -> anyhow::Result<Self> {
-        let palette = get_effective_palette(voxel_data)?;
         let mut store = Self::new_empty(gpu)?;
 
         store.upload_palette(gpu, palette.map(|color| color.to_array()))?;

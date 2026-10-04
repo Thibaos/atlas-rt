@@ -5,9 +5,13 @@
 //! table it delivers. The job is the same one a load runs on, so a Generation
 //! and a load are interchangeable to the host.
 
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
+use atlas_rt::sim::{self, Activation, ParityPolicy, PlayerProfile};
 use atlas_rt::world::{
+    World,
+    diff::batch::TrackedCoords,
     diff::snapshot::{MicroChunkSnapshot, emit_snapshots},
     generation::GenerationParams,
     grid::LATTICE_HALF_EXTENT,
@@ -16,6 +20,8 @@ use atlas_rt::world::{
     vocabulary::{Material, Vocabulary},
 };
 use glam::{IVec3, Vec4};
+
+mod common;
 
 /// A small footprint, so the run stays within the poll deadline.
 const FOOTPRINT: IVec3 = IVec3::splat(64);
@@ -136,6 +142,67 @@ fn the_generated_ground_is_walkable() {
             );
         }
     }
+}
+
+#[test]
+fn a_generated_world_activates_and_the_player_stands_on_its_surface() {
+    let (loaded, _) = generate(small());
+
+    let tracked: TrackedCoords = loaded
+        .snapshots
+        .iter()
+        .filter(|snapshot| snapshot.occupied_count() > 0)
+        .map(|snapshot| snapshot.global_coords)
+        .collect();
+
+    let world = Arc::new(RwLock::new(World::default()));
+    let handle = sim::spawn(
+        Arc::clone(&world),
+        PlayerProfile::default(),
+        ParityPolicy::default(),
+    )
+    .unwrap_or_else(|error| panic!("the simulation must spawn: {error}"));
+
+    handle.activate(Activation {
+        world: loaded.world,
+        snapshots: loaded.snapshots,
+        tracked,
+        materials: loaded.materials,
+    });
+
+    let player = common::wait_ready(&handle);
+
+    assert!(player.grounded, "the player stands on generated ground");
+
+    let profile = PlayerProfile::default();
+    let guard = world
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let start_x = (player.feet.x - profile.width * 0.5 + 1.0e-3).floor() as i32;
+    let end_x = (player.feet.x + profile.width * 0.5 - 1.0e-3).floor() as i32;
+    let start_z = (player.feet.z - profile.depth * 0.5 + 1.0e-3).floor() as i32;
+    let end_z = (player.feet.z + profile.depth * 0.5 - 1.0e-3).floor() as i32;
+
+    let mut support = i32::MIN;
+
+    for x in start_x..=end_x {
+        for z in start_z..=end_z {
+            let surface = (-64..=32)
+                .rev()
+                .find(|level| guard.contains(&IVec3::new(x, *level, z)))
+                .unwrap_or_else(|| panic!("({x}, {z}) has no floor"));
+
+            support = support.max(surface);
+        }
+    }
+
+    drop(guard);
+
+    assert!(
+        (player.feet.y - (support as f32 + 1.0)).abs() < 1.0e-3,
+        "the feet rest on the highest surface under the collider: feet {} against surface {support}",
+        player.feet.y
+    );
 }
 
 #[test]

@@ -1,8 +1,7 @@
 pub mod task;
 
 use anyhow::Context;
-use dot_vox::DotVoxData;
-use glam::{Mat4, camera::lh::proj::vulkan::perspective};
+use glam::{Mat4, Vec4, camera::lh::proj::vulkan::perspective};
 use std::sync::Arc;
 
 use vulkano::{
@@ -145,13 +144,13 @@ impl FramePipeline {
     pub fn new(
         gpu: &RenderContext,
         window: Arc<Window>,
-        voxel_data: &DotVoxData,
+        palette: [Vec4; 256],
         world: &World,
     ) -> anyhow::Result<Self> {
         let input = RendererInput::new()?;
         input.submit_batch(emit_snapshots(world)?)?;
 
-        let store = RegionStore::new(gpu, voxel_data, &input)?;
+        let store = RegionStore::new(gpu, palette, &input)?;
         let surface = Surface::from_window(&gpu.instance, &window)?;
         let window_size = window.inner_size();
         let swapchain_id = create_swapchain(gpu, &surface, window_size)?;
