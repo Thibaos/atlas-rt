@@ -24,7 +24,7 @@ accepted (2026-10-03). Amended (2026-10-04) after measurement: a Generation
 writes Micro-chunk entries rather than cells, and `emit_snapshots` reads entries
 rather than walking voxels. Both replace a decision taken in the first draft,
 and both are recorded under Consequences with their measured cost. Widens
-**World load**, **World job** and **Palette** in `CONTEXT.md`, adds its terms
+**World load**, **World job** and **Palette** in `GLOSSARY.md`, adds its terms
 under **World generation**, and adds **Micro-chunk entry**.
 
 ## Considered Options

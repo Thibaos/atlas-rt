@@ -3,7 +3,7 @@
 The Player collider moves by swept test, resolved horizontal before vertical.
 Support and head clearance both read the collider's full footprint rather than
 its center, and an automatic step is refused as a whole or not at all. The
-[Player profile](../CONTEXT.md) owns every dimension and motion value, and this
+[Player profile](../GLOSSARY.md) owns every dimension and motion value, and this
 record deliberately does not restate them.
 
 ## Considered options

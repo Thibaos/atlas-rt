@@ -47,4 +47,4 @@ Read `docs/agents/triage-labels.md` before changing an issue's `Status:` line. I
 
 ### Domain docs
 
-One context: `CONTEXT.md` holds the glossary, `docs/adr/` holds the decisions. See `docs/agents/domain.md`.
+One context: `GLOSSARY.md` holds the glossary, `docs/adr/` holds the decisions. See `docs/agents/domain.md`.
