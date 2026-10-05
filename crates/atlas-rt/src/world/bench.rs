@@ -14,19 +14,22 @@
 //! the cumulative endpoints `world::load::progress` uses: 21_000, 129_000,
 //! 342_000.
 //!
-//! `generation_stage_weights`, release, Windows, same host, 2026-10-04, over
-//! generated terrain. The footprint's edge pins the volume; the fill writes one
-//! Micro-chunk entry per chunk layer that reaches a column's surface, hashing
-//! each column's surface once per chunk rather than once per cell:
+//! `generation_stage_weights`, release, Windows, same host, 2026-10-05, over
+//! generated terrain behind the coherent height field. The footprint's edge
+//! pins the volume; the fill writes one Micro-chunk entry per chunk layer that
+//! reaches a column's surface, hashing each column's surface once per chunk
+//! rather than once per cell:
 //!
-//! | footprint edge | voxels    | chunks | generate  | emit     | generate % |
-//! | -------------- | --------- | ------ | --------- | -------- | ---------- |
-//! | 256            | 4.26M     | 12,931 | 16.6 ms   | 3.39 ms  | 83.1       |
-//! | 512            | 17.0M     | 51,726 | 59.7 ms   | 13.9 ms  | 81.1       |
+//! | footprint edge | voxels   | chunks  | generate | emit     | generate % |
+//! | -------------- | -------- | ------- | -------- | -------- | ---------- |
+//! | 256            | 4.56M    | 9,646   | 17.1 ms  | 3.08 ms  | 84.8       |
+//! | 512            | 17.7M    | 37,555  | 64.2 ms  | 13.2 ms  | 82.9       |
+//! | 4096           | 1.08e9   | 2.30M   | 4.134 s  | 963 ms   | 81.1       |
 //!
 //! That gives the cumulative endpoints `world::load::progress` uses for the
-//! Generation path: generate 821_000, build 822_000. A full-Lattice Generation
-//! (1.09e9 voxels, 3.31M chunks) lands at about 5.2 s end to end.
+//! Generation path: generate 829_000, build 830_000, the mean of the three
+//! measured shares. A full-Lattice Generation (1.08e9 voxels, 2.30M chunks)
+//! lands at about 5.1 s end to end, and 5.5 s through the World job.
 //!
 //! The budgets below are these figures with headroom for run-to-run variance.
 //! Emission reads Micro-chunk entries rather than walking voxels, so the

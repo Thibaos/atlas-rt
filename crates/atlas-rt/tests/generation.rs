@@ -568,6 +568,14 @@ fn the_generated_material_table_settles_falling_granular() {
     );
 }
 
+/// The full Lattice's Generation budget, not a ceiling: the coherent field
+/// measures 5.485 s through the World job for 1,080,446,867 voxels and
+/// 2,299,202 Snapshots, against the white noise field's about 5.2 s. The
+/// headroom is for run-to-run variance. The corner hashes are not hoisted per
+/// Micro-chunk, because the field pays the height function once per column and
+/// lands inside the budget without it.
+const FULL_LATTICE_BUDGET: Duration = Duration::from_secs(8);
+
 #[test]
 #[ignore = "bench: cargo test --release -p atlas-rt --test generation the_full_lattice -- --ignored --nocapture"]
 fn the_full_lattice_generation_runs_in_seconds_not_minutes() {
@@ -578,12 +586,12 @@ fn the_full_lattice_generation_runs_in_seconds_not_minutes() {
     assert_eq!(status, Status::Ready);
     assert!(loaded.world.voxel_count() > 0);
     assert!(
-        elapsed < Duration::from_secs(30),
-        "a full-Lattice Generation took {elapsed:.3?}, not seconds"
+        elapsed < FULL_LATTICE_BUDGET,
+        "a full-Lattice Generation took {elapsed:.3?}, over the {FULL_LATTICE_BUDGET:.3?} budget"
     );
 
     println!(
-        "full lattice: {} voxels, {} snapshots, {elapsed:.3?}",
+        "full lattice: {} voxels, {} snapshots, {elapsed:.3?} (budget {FULL_LATTICE_BUDGET:.3?})",
         loaded.world.voxel_count(),
         loaded.snapshots.len()
     );

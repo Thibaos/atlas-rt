@@ -669,15 +669,38 @@ mod tests {
         assert!(refused.is_err());
     }
 
+    /// The fill advances through the Generate span without reaching its end:
+    /// `fillable_chunks` counts every layer from Bedrock to the ceiling, and the
+    /// fill skips the layers above a chunk column's own surface, so it reports
+    /// 0.634 at this footprint where white noise reported about 0.795. Only the
+    /// stage's own end reaches the endpoint.
     #[test]
     fn progress_advances_during_the_generate_stage() {
         let progress = Progress::generate_path();
-        let _ = generate(&progress, GenerationParams::new(0x5EED, IVec3::splat(64)))
-            .unwrap_or_else(|error| panic!("{error}"));
+        let mut world = World::empty();
+        let mut granular_cells = Vec::new();
 
-        // The generate stage ends at its share, and progress never went
-        // backwards while the fill ran.
-        assert!(progress.load() >= 0.795 - 1e-6);
+        fill(
+            &mut world,
+            &progress,
+            GenerationParams::new(0x5EED, IVec3::splat(64)),
+            &mut granular_cells,
+        );
+
+        let filled = progress.load();
+
+        assert!(
+            filled >= 0.62,
+            "the fill advances through the Generate span, reaching {filled}"
+        );
+        assert!(world.voxel_count() > 0, "the fill wrote a World");
+
+        progress.end_stage(Stage::Generate);
+
+        assert!(
+            (progress.load() - 0.829).abs() < 1e-6,
+            "the Generate stage ends at its measured share"
+        );
     }
 
     #[test]
