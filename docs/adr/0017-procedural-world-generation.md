@@ -25,7 +25,9 @@ writes Micro-chunk entries rather than cells, and `emit_snapshots` reads entries
 rather than walking voxels. Both replace a decision taken in the first draft,
 and both are recorded under Consequences with their measured cost. Widens
 **World load**, **World job** and **Palette** in `GLOSSARY.md`, adds its terms
-under **World generation**, and adds **Micro-chunk entry**.
+under **World generation**, and adds **Micro-chunk entry**. The rejected-float
+option below is the one the Height field took, in fixed point, recorded by
+[0019](0019-integer-gradient-noise-height-field.md).
 
 ## Considered Options
 

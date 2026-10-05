@@ -190,8 +190,8 @@ a Generation, not the whole)
 **Seed**:
 The integer that fixes a generated World: one Seed gives one World, voxel for
 voxel and Snapshot for Snapshot, on every machine and every build. A Seed's
-features separate by fixed tags rather than by draw order, so a feature added
-later leaves the Worlds of the features before it unchanged.
+features draw the noise they are built from out of it, so a Seed that reaches no
+noise fixes nothing.
 _Avoid_: random value, noise seed (the Seed fixes every feature, not one)
 
 **Vocabulary**:
@@ -202,8 +202,10 @@ _Avoid_: material list, material system
 
 **Height field**:
 The ground surface of a generated World: one quantized level per column, from
-which the fill's top and its material layering follow. It is a pure function of
-the Seed and the column, so one column's surface never depends on another's.
+which the fill's top and its material layering follow. It is coherent noise that
+varies with the Seed and the column, so neighbouring columns are correlated
+rather than independent draws of their own, and the level is the same on every
+machine and every build.
 _Avoid_: heightmap (a sampled asset), terrain (the whole content)
 
 **Bedrock**:
