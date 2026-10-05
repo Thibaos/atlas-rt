@@ -67,6 +67,7 @@ pub struct App {
     tracked: TrackedCoords,
     profile: PlayerProfile,
     sim: Option<SimHost>,
+    free_camera: bool,
 
     player_controller: PlayerController,
     player_input: Input,
@@ -95,7 +96,8 @@ impl App {
         event_loop: &EventLoop<()>,
         request: WorldRequest,
         clip_oob: bool,
-        fly: bool,
+        free_camera: bool,
+        no_sim: bool,
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
@@ -137,8 +139,8 @@ impl App {
 
         let profile = PlayerProfile::default();
 
-        let sim = if fly {
-            info!("fly mode: free camera, no simulation thread");
+        let sim = if no_sim {
+            info!("no-sim: the World runs no voxel rules");
             None
         } else {
             Some(SimHost::spawn(
@@ -177,6 +179,7 @@ impl App {
             tracked,
             profile,
             sim,
+            free_camera,
 
             window: None,
             pipeline: None,
@@ -298,18 +301,22 @@ impl App {
         }
     }
 
+    /// The frame's camera: the simulation's last pushed pose unless the camera
+    /// flies free of it, in which case the keys move it and the pose is
+    /// ignored.
     fn next_player_view(&mut self) -> Mat4 {
         if self.focused {
             self.player_controller
                 .rotate(self.player_input.mouse_motion);
         }
 
-        match self
+        let held = self
             .sim
             .as_ref()
             .filter(|sim| sim.ready())
-            .map(|sim| sim.frame_state(Instant::now()))
-        {
+            .map(|sim| sim.frame_state(Instant::now()));
+
+        match held.filter(|_| !self.free_camera) {
             Some(state) => self
                 .player_controller
                 .place_eye(state.feet, self.profile.eye_offset),
@@ -323,7 +330,7 @@ impl App {
 
     /// Fires the center ray and turns the hit into a cell clear: a command
     /// the simulation commits when one is running, a direct write under the
-    /// World's lock in fly mode.
+    /// World's lock when it is not.
     fn dig(&mut self) {
         let Some(hit) = self.center_hit() else {
             return;
@@ -334,15 +341,13 @@ impl App {
             change: VoxelChange::Clear,
         };
 
-        if self.sim.is_none() {
-            self.apply_fly_edit(edit);
+        if let Some(sim) = self.sim.as_ref() {
+            sim.command(Command::Cell(edit));
 
             return;
         }
 
-        if let Some(sim) = self.sim.as_ref() {
-            sim.command(Command::Cell(edit));
-        }
+        self.apply_direct_edit(edit);
     }
 
     fn center_hit(&mut self) -> Option<VoxelHit> {
@@ -363,7 +368,7 @@ impl App {
             .raycast(ray)
     }
 
-    fn apply_fly_edit(&mut self, edit: VoxelEdit) {
+    fn apply_direct_edit(&mut self, edit: VoxelEdit) {
         let batch = {
             let mut world = self.world.write().unwrap_or_else(PoisonError::into_inner);
 

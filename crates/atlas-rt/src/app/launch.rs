@@ -4,6 +4,15 @@
 //! A run with no flags loads the default `.vox` file, exactly as before. A
 //! `--seed` selects a Generation instead, and `--footprint` bounds its ground.
 //! The Seed's bits are reinterpreted from the host's signed integer.
+//!
+//! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
+//! character controller and leaves the simulation running, so the free camera
+//! can watch a World settle. `--no-sim` spawns no simulation thread, so no
+//! voxel rule runs and the World only changes where the host edits it.
+//!
+//! The free camera flies on the keys the character controller reads, so under
+//! `--fly` those keys also drive the simulated player. `--no-sim` has no
+//! character controller to drive, so the camera flies free there too.
 
 use glam::IVec3;
 
@@ -19,12 +28,16 @@ pub enum WorldRequest {
     Generate(GenerationParams),
 }
 
-/// A parsed command line: the World to build and whether to run without the
-/// simulation.
+/// A parsed command line: the World to build, whether the camera flies free of
+/// the simulated player, and whether to run without the simulation.
+///
+/// Without a simulation there is no player pose to follow, so the camera flies
+/// free whether or not `free_camera` is set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub request: WorldRequest,
-    pub fly: bool,
+    pub free_camera: bool,
+    pub no_sim: bool,
 }
 
 /// Parses the binary's arguments. Unrecognized flags are ignored, as before.
@@ -37,7 +50,8 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world = None;
     let mut seed = None;
     let mut footprint = None;
-    let fly = args.iter().any(|arg| arg == "--fly");
+    let free_camera = args.iter().any(|arg| arg == "--fly");
+    let no_sim = args.iter().any(|arg| arg == "--no-sim");
 
     let mut index = 0;
 
@@ -67,7 +81,11 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         None => WorldRequest::Load(world.unwrap_or_else(|| DEFAULT_WORLD.to_owned())),
     };
 
-    Ok(Launch { request, fly })
+    Ok(Launch {
+        request,
+        free_camera,
+        no_sim,
+    })
 }
 
 /// The value after the flag at `index`, or a reason naming the flag.
@@ -130,7 +148,8 @@ mod tests {
             launch.request,
             WorldRequest::Load(String::from(DEFAULT_WORLD))
         );
-        assert!(!launch.fly);
+        assert!(!launch.free_camera);
+        assert!(!launch.no_sim);
     }
 
     #[test]
@@ -142,8 +161,27 @@ mod tests {
     }
 
     #[test]
-    fn fly_is_read() {
-        assert!(launch(&["--fly"]).fly);
+    fn fly_frees_the_camera_and_leaves_the_simulation_running() {
+        let launch = launch(&["--fly"]);
+
+        assert!(launch.free_camera);
+        assert!(!launch.no_sim, "--fly is about the camera, not the simulation");
+    }
+
+    #[test]
+    fn no_sim_spawns_no_simulation_without_freeing_the_camera() {
+        let launch = launch(&["--no-sim"]);
+
+        assert!(launch.no_sim);
+        assert!(!launch.free_camera);
+    }
+
+    #[test]
+    fn fly_and_no_sim_are_independent() {
+        let launch = launch(&["--fly", "--no-sim"]);
+
+        assert!(launch.free_camera);
+        assert!(launch.no_sim);
     }
 
     #[test]
