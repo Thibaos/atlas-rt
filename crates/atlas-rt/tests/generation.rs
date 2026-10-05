@@ -72,6 +72,94 @@ const fn small() -> GenerationParams {
     GenerationParams::new(SEED, FOOTPRINT)
 }
 
+/// The largest difference in levels two adjacent columns may carry. Over a
+/// 64-edge footprint the worst adjacent pair is 2 levels against a mean of 0.351,
+/// and a sweep of 24 seeds at footprints 16 and 64 reached no pair above 2. The
+/// per-column white noise this replaced ran at a mean of 21.7 and opened with a
+/// 16-level pair at the footprint's corner.
+const COHERENT_STEP_BOUND: u32 = 2;
+
+/// The footprint the two-Seed and coherence tests run at, in place of the pinned
+/// fingerprint's small one.
+const SHAPE_FOOTPRINT: i32 = 64;
+
+/// A Seed other than [`SEED`]. Against the pre-01 height function, seeds 0 and
+/// 0xDEAD_BEEF built byte-identical Worlds at footprint 16.
+const DIFFERENT_SEED: u64 = 0xDEAD_BEEF;
+
+/// The footprint the pinned fingerprint is taken at. It is small because the
+/// fingerprint has to be a fixed constant, not because the promise is smaller
+/// there.
+const PINNED_FOOTPRINT: i32 = 16;
+
+/// The FNV-1a fingerprint of the Snapshots one Seed emits at one footprint,
+/// checked in beside the test that reads it. It is the guard for "the same Seed
+/// survives a rebuild": the Snapshots are the delivery contract the renderer
+/// consumes, and their emitted order is defined, so this constant fixes the
+/// World a Seed builds. Rewrite it only when the terrain function changes on
+/// purpose, never to make a red test green.
+const PINNED_SNAPSHOT_FINGERPRINT: u64 = 0xfa15_592e_2a94_3fbd;
+
+/// The two column offsets that make an adjacent pair of columns on the xz plane.
+const ADJACENT_COLUMNS: [(i32, i32); 2] = [(1, 0), (0, 1)];
+
+/// Runs one Generation for one Seed and footprint through the real job, asserting
+/// it succeeds.
+fn generate_seeded(seed: u64, footprint: i32) -> LoadedWorld {
+    let params = GenerationParams::new(seed, IVec3::splat(footprint));
+    let (loaded, status) = generate(params);
+
+    assert_eq!(
+        status,
+        Status::Ready,
+        "the Generation for Seed {seed:#x} at footprint {footprint} must succeed"
+    );
+
+    loaded
+}
+
+/// The level of the highest filled cell at one column: the surface the fill
+/// wrote, read back from the World.
+fn surface_at(world: &World, x: i32, z: i32) -> i32 {
+    (-64..=32)
+        .rev()
+        .find(|level| world.contains(&IVec3::new(x, *level, z)))
+        .unwrap_or_else(|| panic!("({x}, {z}) has no floor"))
+}
+
+/// An FNV-1a fingerprint of a Generation's Snapshots, in the order they were
+/// emitted: the octets of every Snapshot's coordinates, then every Snapshot's
+/// occupancy mask and material list.
+///
+/// The Snapshots carry a defined order, which is why the fingerprint is taken
+/// over them rather than over the World's voxel walk: the store's iteration
+/// order is not part of any contract.
+fn snapshot_fingerprint(snapshots: &[MicroChunkSnapshot]) -> u64 {
+    const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+    let mut hash = OFFSET_BASIS;
+
+    let octets = snapshots
+        .iter()
+        .flat_map(|snapshot| snapshot.global_coords.to_array())
+        .flat_map(i32::to_le_bytes)
+        .chain(snapshots.iter().flat_map(|snapshot| {
+            snapshot
+                .mask
+                .iter()
+                .copied()
+                .chain(snapshot.materials.iter().copied())
+        }));
+
+    for octet in octets {
+        hash ^= u64::from(octet);
+        hash = hash.wrapping_mul(PRIME);
+    }
+
+    hash
+}
+
 #[test]
 fn a_generation_delivers_a_world_snapshots_palette_and_material_table() {
     let (loaded, status) = generate(small());
@@ -231,6 +319,102 @@ fn two_generations_from_one_seed_are_equal() {
     assert_eq!(
         first.snapshots, second.snapshots,
         "and Snapshot for Snapshot"
+    );
+}
+
+/// Guards the second half of the Seed promise: two Seeds build two Worlds. The
+/// test beside this one asks one Seed for the same World twice, which a height
+/// function that ignores the Seed passes trivially, so it takes two distinct
+/// Seeds and an inequality to catch one. Seeds 0 and [`DIFFERENT_SEED`] are the
+/// pair the defect was measured with.
+#[test]
+fn two_seeds_differ() {
+    let first = generate_seeded(0, PINNED_FOOTPRINT);
+    let second = generate_seeded(DIFFERENT_SEED, PINNED_FOOTPRINT);
+    let mut first_voxels: Vec<(IVec3, u8)> = first.world.iter_voxels().collect();
+    let mut second_voxels: Vec<(IVec3, u8)> = second.world.iter_voxels().collect();
+
+    // Sorted, because the store's iteration order is not a contract: an
+    // unsorted comparison could report two equal Worlds as different.
+    first_voxels.sort_unstable_by_key(|(position, material)| (position.to_array(), *material));
+    second_voxels.sort_unstable_by_key(|(position, material)| (position.to_array(), *material));
+
+    assert_ne!(
+        first_voxels, second_voxels,
+        "two Seeds must not build the same World voxel for voxel"
+    );
+    assert_ne!(
+        first.snapshots, second.snapshots,
+        "two Seeds must not build the same World Snapshot for Snapshot"
+    );
+}
+
+/// Guards the Height field's coherence: two adjacent columns carry levels that
+/// differ by at most [`COHERENT_STEP_BOUND`]. Every adjacent pair on the
+/// footprint is checked, so one independent column is caught.
+#[test]
+fn the_surface_is_coherent() {
+    let loaded = generate_seeded(SEED, SHAPE_FOOTPRINT);
+    let edge = SHAPE_FOOTPRINT;
+    let start = LATTICE_HALF_EXTENT.cast_signed().saturating_neg();
+    let mut worst = 0u32;
+    let mut pairs = 0i32;
+
+    for x in 0..edge {
+        for z in 0..edge {
+            let here = surface_at(&loaded.world, start + x, start + z);
+
+            for (dx, dz) in ADJACENT_COLUMNS {
+                if x + dx >= edge || z + dz >= edge {
+                    continue;
+                }
+
+                let step = here.abs_diff(surface_at(&loaded.world, start + x + dx, start + z + dz));
+
+                assert!(
+                    step <= COHERENT_STEP_BOUND,
+                    "the columns ({}, {}) and ({}, {}) differ by {step} levels, past the bound of {COHERENT_STEP_BOUND}",
+                    start + x,
+                    start + z,
+                    start + x + dx,
+                    start + z + dz
+                );
+
+                worst = worst.max(step);
+                pairs = pairs.saturating_add(1);
+            }
+        }
+    }
+
+    let adjacent_pairs = 2 * edge * (edge - 1);
+
+    assert_eq!(
+        usize::try_from(pairs).unwrap_or(0),
+        usize::try_from(adjacent_pairs).unwrap_or(0),
+        "every adjacent pair is checked"
+    );
+    assert!(
+        worst > 0,
+        "a surface with no step at all is not a measured surface"
+    );
+}
+
+/// Guards the pinning promise: the same Seed survives a rebuild. The Snapshots
+/// one Seed emits at one footprint are reduced to an FNV-1a fingerprint and held
+/// against [`PINNED_SNAPSHOT_FINGERPRINT`], so a refactor of the noise cannot
+/// move every World without this test failing.
+#[test]
+fn a_seed_pins_a_world() {
+    let loaded = generate_seeded(SEED, PINNED_FOOTPRINT);
+
+    assert!(
+        !loaded.snapshots.is_empty(),
+        "a pinned World has Snapshots to fingerprint"
+    );
+    assert_eq!(
+        snapshot_fingerprint(&loaded.snapshots),
+        PINNED_SNAPSHOT_FINGERPRINT,
+        "the Snapshots for Seed {SEED:#x} at footprint {PINNED_FOOTPRINT} moved"
     );
 }
 
