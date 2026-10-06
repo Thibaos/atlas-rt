@@ -14,8 +14,8 @@ use crate::{
     host::display_gate::DisplayGate,
     world::{
         budget::cell_budget,
-        generation::{GeneratedWorld, GenerationParams, generate},
-        load::progress::{Path, Progress, Stage},
+        generation::GenerationParams,
+        load::progress::{Path, Progress},
     },
 };
 
@@ -482,30 +482,12 @@ fn run_pipeline(
     Ok(RunResult::Loaded(Box::new(supplied)))
 }
 
-/// The Generation pipeline, from params to the snapshots the renderer takes. It
-/// shares the emit and delivery shape with the load pipeline, so its only
-/// output is plain data too. A Generation never consults the cell budget.
+/// The Generation pipeline, a thin wrapper around the supply: it runs the supply
+/// on this thread and formats its error once, so the job keeps storing a string.
 fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunResult, String> {
-    let GeneratedWorld {
-        world,
-        palette,
-        materials,
-        granular_cells,
-    } = generate(progress, params)?;
+    let supplied = supply::generate(params, progress).map_err(|error| format!("{error:#}"))?;
 
-    progress.end_stage(Stage::Build);
-
-    let snapshots = supply::emit(progress, &world, "the generated world")
-        .map_err(|error| format!("{error:#}"))?;
-
-    Ok(RunResult::Loaded(Box::new(SuppliedWorld {
-        world,
-        snapshots,
-        palette,
-        materials,
-        granular_cells: Some(granular_cells),
-        clipped: 0,
-    })))
+    Ok(RunResult::Loaded(Box::new(supplied)))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
