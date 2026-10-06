@@ -1,10 +1,11 @@
 use std::sync::{Arc, Mutex};
 
 use atlas_rt::world::diff::batch::{self};
-use atlas_rt::world::diff::edit::{MICRO_BYTES, MicroChunkEdit, VoxelEdit, edit_world};
+use atlas_rt::world::diff::edit::{MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::generation::GenerationParams;
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldUpdateJob};
 use atlas_rt::world::load::supply::{FileWorldSource, WorldSource};
+use atlas_rt::world::micro::MICRO_BYTES;
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -551,8 +552,9 @@ mod tests {
         World,
         diff::{
             batch::TrackedCoords,
-            edit::{MICRO_BYTES, MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
+            edit::{MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
         },
+        micro::MICRO_BYTES,
     };
     use glam::IVec3;
     use godot::builtin::Vector3i;

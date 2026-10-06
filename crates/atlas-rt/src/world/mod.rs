@@ -4,6 +4,7 @@ pub mod generation;
 pub mod grid;
 pub mod load;
 pub mod material;
+pub mod micro;
 pub mod palette;
 pub mod raycast;
 pub(crate) mod store;
@@ -114,7 +115,7 @@ impl World {
     pub(in crate::world) fn write_entry(
         &mut self,
         origin: IVec3,
-        mask: &[u8; diff::edit::MICRO_BYTES],
+        mask: &[u8; micro::MICRO_BYTES],
         materials: &[u8],
     ) -> Result<(), diff::edit::EditError> {
         self.store.write_entry(origin, mask, materials)

@@ -4,8 +4,9 @@ use std::sync::{Mutex, PoisonError};
 use glam::IVec3;
 
 use crate::world::{
-    diff::edit::{EditError, MICRO_BYTES, validate_entry},
+    diff::edit::{EditError, validate_entry},
     grid,
+    micro::MICRO_BYTES,
     store::{ChunkEntry, MicroChunkEntry, VoxelStore},
 };
 
@@ -18,7 +19,6 @@ const MICRO_CHUNK_SIDE_AREA: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
 const MICRO_CHUNK_AREA: usize = MICRO_CHUNK * MICRO_CHUNK;
 const MICRO_CHUNK_CELLS: usize = MICRO_CHUNK * MICRO_CHUNK * MICRO_CHUNK;
 const MICRO_CHUNKS_PER_REGION: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
-const MASK_BYTES: usize = MICRO_CHUNK_CELLS / 8;
 
 /// Blocks are 8-byte aligned and sized to an 8-byte class, so each index entry
 /// carries both its offset and its class rather than needing a second table.
@@ -120,7 +120,7 @@ impl Region {
         if occupied {
             let cell = cell_index(position);
             let at = offset
-                .strict_add(MASK_BYTES)
+                .strict_add(MICRO_BYTES)
                 .strict_add(rank(entry_mask(self, offset), cell));
 
             if let Some(slot) = self.blob.get_mut(at) {
@@ -131,7 +131,7 @@ impl Region {
         }
 
         let cell = cell_index(position);
-        let used = MASK_BYTES.strict_add(entry_popcount(self, offset));
+        let used = MICRO_BYTES.strict_add(entry_popcount(self, offset));
         let required = used.strict_add(1);
 
         let offset = if required > class_size(class) {
@@ -152,7 +152,7 @@ impl Region {
         };
 
         let at = offset
-            .strict_add(MASK_BYTES)
+            .strict_add(MICRO_BYTES)
             .strict_add(rank(entry_mask(self, offset), cell));
         let content_end = offset.strict_add(used);
 
@@ -418,7 +418,7 @@ pub(in crate::world) fn rank(mask: &[u8], cell: usize) -> usize {
 fn entry_mask(region: &Region, offset: usize) -> &[u8] {
     region
         .blob
-        .get(offset..offset.strict_add(MASK_BYTES))
+        .get(offset..offset.strict_add(MICRO_BYTES))
         .unwrap_or(&[])
 }
 
@@ -432,10 +432,10 @@ fn entry_popcount(region: &Region, offset: usize) -> usize {
 /// Claims a block for a Micro-chunk's first write, from the 72-byte class's
 /// free list if it holds one, else by appending.
 fn write_new_entry(region: &mut Region, ordinal: usize, position: IVec3, material: u8) {
-    let class = class_of_size(MASK_BYTES.strict_add(1));
+    let class = class_of_size(MICRO_BYTES.strict_add(1));
     let offset = alloc_block(region, class);
 
-    if let Some(mask) = region.blob.get_mut(offset..offset.strict_add(MASK_BYTES)) {
+    if let Some(mask) = region.blob.get_mut(offset..offset.strict_add(MICRO_BYTES)) {
         mask.fill(0);
     }
 
@@ -445,7 +445,7 @@ fn write_new_entry(region: &mut Region, ordinal: usize, position: IVec3, materia
         *slot = bit;
     }
 
-    if let Some(slot) = region.blob.get_mut(offset.strict_add(MASK_BYTES)) {
+    if let Some(slot) = region.blob.get_mut(offset.strict_add(MICRO_BYTES)) {
         *slot = material;
     }
 
@@ -538,7 +538,7 @@ impl Iterator for Voxels<'_> {
                 continue;
             };
 
-            let Some(mask) = region.blob.get(offset..offset.strict_add(MASK_BYTES)) else {
+            let Some(mask) = region.blob.get(offset..offset.strict_add(MICRO_BYTES)) else {
                 self.advance_micro_chunk();
                 continue;
             };
@@ -566,7 +566,7 @@ impl Iterator for Voxels<'_> {
 
             let material = region
                 .blob
-                .get(offset.strict_add(MASK_BYTES).strict_add(rank))
+                .get(offset.strict_add(MICRO_BYTES).strict_add(rank))
                 .copied()?;
 
             return Some((cell_position(self.slot, self.ordinal, cell), material));
@@ -619,7 +619,7 @@ impl Iterator for Entries<'_> {
                 continue;
             };
 
-            let Some(mask) = region.blob.get(offset..offset.strict_add(MASK_BYTES)) else {
+            let Some(mask) = region.blob.get(offset..offset.strict_add(MICRO_BYTES)) else {
                 continue;
             };
 
@@ -628,7 +628,7 @@ impl Iterator for Entries<'_> {
             owned.copy_from_slice(mask);
 
             let populated = entry_popcount(region, offset);
-            let base = offset.strict_add(MASK_BYTES);
+            let base = offset.strict_add(MICRO_BYTES);
 
             let Some(materials) = region.blob.get(base..base.strict_add(populated)) else {
                 continue;
@@ -720,7 +720,7 @@ impl VoxelStore for RegionStore {
 
         region
             .blob
-            .get(offset.strict_add(MASK_BYTES).strict_add(rank(mask, cell)))
+            .get(offset.strict_add(MICRO_BYTES).strict_add(rank(mask, cell)))
             .copied()
     }
 
@@ -756,7 +756,7 @@ impl VoxelStore for RegionStore {
         let cell = cell_index(position);
         let popcount = entry_popcount(region, offset);
         let position_rank = rank(entry_mask(region, offset), cell);
-        let base = offset.strict_add(MASK_BYTES);
+        let base = offset.strict_add(MICRO_BYTES);
         let content_end = base.strict_add(popcount);
 
         region.blob.copy_within(
@@ -815,9 +815,9 @@ impl VoxelStore for RegionStore {
             .unwrap_or(EMPTY);
         let offset = entry_offset(entry)?;
 
-        let mask = region.blob.get(offset..offset.strict_add(MASK_BYTES))?;
+        let mask = region.blob.get(offset..offset.strict_add(MICRO_BYTES))?;
         let populated = entry_popcount(region, offset);
-        let base = offset.strict_add(MASK_BYTES);
+        let base = offset.strict_add(MICRO_BYTES);
         let materials = region.blob.get(base..base.strict_add(populated))?;
 
         Some(ChunkEntry { mask, materials })
@@ -875,7 +875,7 @@ impl VoxelStore for RegionStore {
         let replacing = old_offset.is_some();
         let written_bounds = entry_cell_bounds(origin, mask);
         let old_popcount = old_offset.map_or(0, |offset| entry_popcount(region, offset));
-        let class = class_of_size(MASK_BYTES.strict_add(occupied));
+        let class = class_of_size(MICRO_BYTES.strict_add(occupied));
         let reuse = old_offset.filter(|_| entry_class(entry) == class);
 
         let offset = if let Some(offset) = reuse {
@@ -903,11 +903,11 @@ impl VoxelStore for RegionStore {
             .saturating_sub(old_popcount)
             .saturating_add(occupied);
 
-        if let Some(dst) = region.blob.get_mut(offset..offset.strict_add(MASK_BYTES)) {
+        if let Some(dst) = region.blob.get_mut(offset..offset.strict_add(MICRO_BYTES)) {
             dst.copy_from_slice(mask);
         }
 
-        let base = offset.strict_add(MASK_BYTES);
+        let base = offset.strict_add(MICRO_BYTES);
 
         if let Some(dst) = region.blob.get_mut(base..base.strict_add(occupied)) {
             dst.copy_from_slice(materials);
@@ -1026,12 +1026,12 @@ mod tests {
 
     /// A full Micro-chunk's 576-byte entry.
     fn full_entry() -> usize {
-        class_size(class_of_size(MASK_BYTES + MICRO_CHUNK_CELLS))
+        class_size(class_of_size(MICRO_BYTES + MICRO_CHUNK_CELLS))
     }
 
     /// A one-voxel Micro-chunk's entry: 65 bytes padded to 72.
     fn single_entry() -> usize {
-        class_size(class_of_size(MASK_BYTES + 1))
+        class_size(class_of_size(MICRO_BYTES + 1))
     }
 
     /// The bytes a Micro-chunk's growth from empty to full leaves allocated:
@@ -1447,7 +1447,7 @@ mod tests {
 
                 let mask = region
                     .blob
-                    .get(offset..offset.strict_add(MASK_BYTES))
+                    .get(offset..offset.strict_add(MICRO_BYTES))
                     .unwrap_or(&[]);
 
                 bits =

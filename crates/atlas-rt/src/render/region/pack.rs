@@ -450,6 +450,7 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::render::pipeline::task::RenderMode;
+    use crate::world::micro::{MICRO_AREA, MICRO_BYTES, MICRO_EDGE};
 
     use super::*;
 
@@ -502,15 +503,14 @@ mod contract {
     #[test]
     fn glsl_matches_rust() {
         let side = MC_PER_REGION_SIDE as u64;
-        let voxel = MICRO_CHUNK_LENGTH as u64;
 
         assert_eq!(uint("REGION_TABLE_ENTRIES"), REGION_COUNT as u64);
         assert_eq!(uint("REGION_ID_MASK"), REGION_COUNT as u64 - 1);
         assert_eq!(uint("MC_STRIDE_Y"), side);
         assert_eq!(uint("MC_STRIDE_Z"), side * side);
-        assert_eq!(uint("VOXEL_STRIDE_Y"), voxel);
-        assert_eq!(uint("VOXEL_STRIDE_Z"), voxel * voxel);
-        assert_eq!(uint("MASK_BYTES"), voxel * voxel * voxel / 8);
+        assert_eq!(uint("VOXEL_STRIDE_Y"), MICRO_EDGE as u64);
+        assert_eq!(uint("VOXEL_STRIDE_Z"), MICRO_AREA as u64);
+        assert_eq!(uint("MASK_BYTES"), MICRO_BYTES as u64);
         assert_eq!(uint("OFFSET_SENTINEL"), OFFSET_SENTINEL as u64);
 
         assert_eq!(uint("MODE_VOXEL"), RenderMode::Voxel as u32 as u64);

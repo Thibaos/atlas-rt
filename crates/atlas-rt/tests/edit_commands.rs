@@ -5,9 +5,8 @@
 mod common;
 
 use atlas_rt::sim::Command;
-use atlas_rt::world::diff::edit::{
-    MICRO_AREA, MICRO_BYTES, MICRO_EDGE, MicroChunkEdit, VoxelChange, VoxelEdit,
-};
+use atlas_rt::world::diff::edit::{MicroChunkEdit, VoxelChange, VoxelEdit};
+use atlas_rt::world::micro::{MICRO_AREA, MICRO_BYTES, MICRO_EDGE};
 use atlas_rt::world::raycast::Ray;
 use glam::{IVec3, Vec3};
 
