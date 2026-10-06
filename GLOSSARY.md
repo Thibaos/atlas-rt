@@ -214,9 +214,9 @@ here up to its Height field level, and nothing is generated below it.
 _Avoid_: sea level, ground level (the Height field's own zero, not the floor)
 
 **Generation params**:
-What a Generation is asked for with: a Seed and a footprint, the footprint
+What a Generation is asked for with: a Seed and an extent, the extent
 defaulting to the full Lattice so a development run can generate a small World.
-_Avoid_: world size, config
+_Avoid_: footprint, world size, config
 
 ## Ray tracing
 

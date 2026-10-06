@@ -1,6 +1,6 @@
 //! A Generation, driven through the world job seam from outside the crate.
 //!
-//! A test asks for a Generation with a Seed and a footprint, polls to
+//! A test asks for a Generation with a Seed and an extent, polls to
 //! completion, and takes the World, Snapshots, Palette and Physical material
 //! table it delivers. The job is the same one a load runs on, so a Generation
 //! and a load are interchangeable to the host.
@@ -23,8 +23,8 @@ use glam::{IVec3, Vec4};
 
 mod common;
 
-/// A small footprint, so the run stays within the poll deadline.
-const FOOTPRINT: IVec3 = IVec3::splat(64);
+/// A small extent, so the run stays within the poll deadline.
+const EXTENT: IVec3 = IVec3::splat(64);
 const SEED: u64 = 0x5EED_1234;
 
 /// The activation test's own Seed. Its spawn block, the six by six columns under
@@ -69,30 +69,30 @@ fn generate(params: GenerationParams) -> (LoadedWorld, Status) {
 }
 
 const fn small() -> GenerationParams {
-    GenerationParams::new(SEED, FOOTPRINT)
+    GenerationParams::new(SEED, EXTENT)
 }
 
 /// The largest difference in levels two adjacent columns may carry. Over a
-/// 64-edge footprint the worst adjacent pair is 2 levels against a mean of 0.351,
-/// and a sweep of 24 seeds at footprints 16 and 64 reached no pair above 2. The
+/// 64-edge extent the worst adjacent pair is 2 levels against a mean of 0.351,
+/// and a sweep of 24 seeds at extents 16 and 64 reached no pair above 2. The
 /// per-column white noise this replaced ran at a mean of 21.7 and opened with a
-/// 16-level pair at the footprint's corner.
+/// 16-level pair at the extent's corner.
 const COHERENT_STEP_BOUND: u32 = 2;
 
-/// The footprint the two-Seed and coherence tests run at, in place of the pinned
+/// The extent the two-Seed and coherence tests run at, in place of the pinned
 /// fingerprint's small one.
-const SHAPE_FOOTPRINT: i32 = 64;
+const SHAPE_EXTENT: i32 = 64;
 
 /// A Seed other than [`SEED`]. Against the pre-01 height function, seeds 0 and
-/// 0xDEAD_BEEF built byte-identical Worlds at footprint 16.
+/// 0xDEAD_BEEF built byte-identical Worlds at extent 16.
 const DIFFERENT_SEED: u64 = 0xDEAD_BEEF;
 
-/// The footprint the pinned fingerprint is taken at. It is small because the
+/// The extent the pinned fingerprint is taken at. It is small because the
 /// fingerprint has to be a fixed constant, not because the promise is smaller
 /// there.
-const PINNED_FOOTPRINT: i32 = 16;
+const PINNED_EXTENT: i32 = 16;
 
-/// The FNV-1a fingerprint of the Snapshots one Seed emits at one footprint,
+/// The FNV-1a fingerprint of the Snapshots one Seed emits at one extent,
 /// checked in beside the test that reads it. It is the guard for "the same Seed
 /// survives a rebuild": the Snapshots are the delivery contract the renderer
 /// consumes, and their emitted order is defined, so this constant fixes the
@@ -103,16 +103,16 @@ const PINNED_SNAPSHOT_FINGERPRINT: u64 = 0xfa15_592e_2a94_3fbd;
 /// The two column offsets that make an adjacent pair of columns on the xz plane.
 const ADJACENT_COLUMNS: [(i32, i32); 2] = [(1, 0), (0, 1)];
 
-/// Runs one Generation for one Seed and footprint through the real job, asserting
+/// Runs one Generation for one Seed and extent through the real job, asserting
 /// it succeeds.
-fn generate_seeded(seed: u64, footprint: i32) -> LoadedWorld {
-    let params = GenerationParams::new(seed, IVec3::splat(footprint));
+fn generate_seeded(seed: u64, extent: i32) -> LoadedWorld {
+    let params = GenerationParams::new(seed, IVec3::splat(extent));
     let (loaded, status) = generate(params);
 
     assert_eq!(
         status,
         Status::Ready,
-        "the Generation for Seed {seed:#x} at footprint {footprint} must succeed"
+        "the Generation for Seed {seed:#x} at extent {extent} must succeed"
     );
 
     loaded
@@ -218,7 +218,7 @@ fn a_generation_delivers_a_world_snapshots_palette_and_material_table() {
 fn the_generated_ground_is_walkable() {
     let (loaded, _) = generate(small());
 
-    // Every column in the footprint is solid from Bedrock to its own surface,
+    // Every column in the extent is solid from Bedrock to its own surface,
     // so spawn placement finds a floor wherever it lands. The surface is read
     // from the world: the highest filled level at the column.
     for x in -2048..-2048 + 64 {
@@ -246,7 +246,7 @@ fn the_generated_ground_is_walkable() {
 
 #[test]
 fn a_generated_world_activates_and_the_player_stands_on_its_surface() {
-    let (loaded, _) = generate(GenerationParams::new(WALKABLE_SEED, FOOTPRINT));
+    let (loaded, _) = generate(GenerationParams::new(WALKABLE_SEED, EXTENT));
 
     let tracked: TrackedCoords = loaded
         .snapshots
@@ -329,8 +329,8 @@ fn two_generations_from_one_seed_are_equal() {
 /// pair the defect was measured with.
 #[test]
 fn two_seeds_differ() {
-    let first = generate_seeded(0, PINNED_FOOTPRINT);
-    let second = generate_seeded(DIFFERENT_SEED, PINNED_FOOTPRINT);
+    let first = generate_seeded(0, PINNED_EXTENT);
+    let second = generate_seeded(DIFFERENT_SEED, PINNED_EXTENT);
     let mut first_voxels: Vec<(IVec3, u8)> = first.world.iter_voxels().collect();
     let mut second_voxels: Vec<(IVec3, u8)> = second.world.iter_voxels().collect();
 
@@ -351,11 +351,11 @@ fn two_seeds_differ() {
 
 /// Guards the Height field's coherence: two adjacent columns carry levels that
 /// differ by at most [`COHERENT_STEP_BOUND`]. Every adjacent pair on the
-/// footprint is checked, so one independent column is caught.
+/// extent is checked, so one independent column is caught.
 #[test]
 fn the_surface_is_coherent() {
-    let loaded = generate_seeded(SEED, SHAPE_FOOTPRINT);
-    let edge = SHAPE_FOOTPRINT;
+    let loaded = generate_seeded(SEED, SHAPE_EXTENT);
+    let edge = SHAPE_EXTENT;
     let start = LATTICE_HALF_EXTENT.cast_signed().saturating_neg();
     let mut worst = 0u32;
     let mut pairs = 0i32;
@@ -400,12 +400,12 @@ fn the_surface_is_coherent() {
 }
 
 /// Guards the pinning promise: the same Seed survives a rebuild. The Snapshots
-/// one Seed emits at one footprint are reduced to an FNV-1a fingerprint and held
+/// one Seed emits at one extent are reduced to an FNV-1a fingerprint and held
 /// against [`PINNED_SNAPSHOT_FINGERPRINT`], so a refactor of the noise cannot
 /// move every World without this test failing.
 #[test]
 fn a_seed_pins_a_world() {
-    let loaded = generate_seeded(SEED, PINNED_FOOTPRINT);
+    let loaded = generate_seeded(SEED, PINNED_EXTENT);
 
     assert!(
         !loaded.snapshots.is_empty(),
@@ -414,16 +414,16 @@ fn a_seed_pins_a_world() {
     assert_eq!(
         snapshot_fingerprint(&loaded.snapshots),
         PINNED_SNAPSHOT_FINGERPRINT,
-        "the Snapshots for Seed {SEED:#x} at footprint {PINNED_FOOTPRINT} moved"
+        "the Snapshots for Seed {SEED:#x} at extent {PINNED_EXTENT} moved"
     );
 }
 
 #[test]
-fn the_footprint_defaults_to_the_full_lattice() {
+fn the_extent_defaults_to_the_full_lattice() {
     let params = GenerationParams::full_lattice(SEED);
     let half = LATTICE_HALF_EXTENT.cast_signed();
 
-    assert_eq!(params.footprint, IVec3::splat(2 * half));
+    assert_eq!(params.extent, IVec3::splat(2 * half));
 }
 
 #[test]
@@ -514,7 +514,7 @@ fn a_failed_generation_reports_a_reason() {
     assert_eq!(job.status(), Status::Failed);
     assert!(
         job.error()
-            .is_some_and(|error| error.contains("negative extent")),
+            .is_some_and(|error| error.contains("negative component")),
         "the failure names the reason"
     );
 }

@@ -109,6 +109,8 @@ impl App {
                 (world, palette, materials, None)
             }
             WorldRequest::Generate(params) => {
+                info!("generating a World from seed {}", params.seed);
+
                 let generated = generation::generate(&Progress::generate_path(), params)
                     .map_err(|reason| anyhow::anyhow!("the generation failed: {reason}"))?;
 

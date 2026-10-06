@@ -110,7 +110,7 @@ fn snapshot_fold_timings() {
 }
 
 const SURFACE_SEED: u64 = 0x5EED_1234;
-const SURFACE_FOOTPRINTS: [i32; 4] = [512, 1024, 2048, 4096];
+const SURFACE_EXTENTS: [i32; 4] = [512, 1024, 2048, 4096];
 
 /// Caps the settle, so a surface that never empties its queue cannot hold the
 /// bench.
@@ -118,7 +118,7 @@ const SETTLE_TICKS: usize = 20_000;
 
 /// One generated surface's grains, its first tick's moves, and its settle.
 struct SurfaceRun {
-    footprint: i32,
+    extent: i32,
     voxels: usize,
     grains: usize,
     first_moves: usize,
@@ -158,15 +158,15 @@ fn commit_tick(
     moves
 }
 
-/// Generates one footprint, seeds the queue and the tracked set the way an
+/// Generates one extent, seeds the queue and the tracked set the way an
 /// activation does, and drives the runtime's capped commit until the queue is
 /// empty.
-fn measure_surface(footprint: i32) -> SurfaceRun {
+fn measure_surface(extent: i32) -> SurfaceRun {
     let generated = generate(
         &Progress::generate_path(),
-        GenerationParams::new(SURFACE_SEED, IVec3::splat(footprint)),
+        GenerationParams::new(SURFACE_SEED, IVec3::splat(extent)),
     )
-    .unwrap_or_else(|error| panic!("the {footprint} footprint must generate: {error}"));
+    .unwrap_or_else(|error| panic!("the {extent} extent must generate: {error}"));
 
     let grains = generated.granular_cells.len();
     let voxels = generated.world.voxel_count();
@@ -174,7 +174,7 @@ fn measure_surface(footprint: i32) -> SurfaceRun {
     let mut world = generated.world;
     let mut queue = UpdateQueue::default();
     let snapshots = emit_snapshots(&world)
-        .unwrap_or_else(|error| panic!("the {footprint} snapshots must emit: {error}"));
+        .unwrap_or_else(|error| panic!("the {extent} snapshots must emit: {error}"));
     let mut tracked: TrackedCoords = snapshots
         .iter()
         .filter(|snapshot| snapshot.occupied_count() > 0)
@@ -204,7 +204,7 @@ fn measure_surface(footprint: i32) -> SurfaceRun {
     let settle_ticks = queue.iter().next().is_none().then_some(ticks);
 
     SurfaceRun {
-        footprint,
+        extent,
         voxels,
         grains,
         first_moves,
@@ -222,7 +222,7 @@ fn print_surface_run(run: &SurfaceRun) {
 
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>6.1}% {:>12} {:>11.3?} {:>12}",
-        run.footprint,
+        run.extent,
         run.voxels,
         run.grains,
         run.first_moves,
@@ -241,16 +241,16 @@ fn print_surface_run(run: &SurfaceRun) {
 /// so the figures are the cap's. The grain count and the moves are
 /// world-generation issue 08's figures, re-taken on the coherent field.
 #[test]
-#[ignore = "bench: cargo test --release generation_first_tick_timings -- --ignored --nocapture (ATLAS_BENCH_SURFACE_FOOTPRINT pins one footprint edge)"]
+#[ignore = "bench: cargo test --release generation_first_tick_timings -- --ignored --nocapture (ATLAS_BENCH_SURFACE_EXTENT pins one extent edge)"]
 fn generation_first_tick_timings() {
-    let footprints: Vec<i32> = std::env::var("ATLAS_BENCH_SURFACE_FOOTPRINT").map_or_else(
-        |_| SURFACE_FOOTPRINTS.to_vec(),
+    let extents: Vec<i32> = std::env::var("ATLAS_BENCH_SURFACE_EXTENT").map_or_else(
+        |_| SURFACE_EXTENTS.to_vec(),
         |edge| {
-            let footprint = edge
+            let extent = edge
                 .parse::<i32>()
-                .unwrap_or_else(|error| panic!("the footprint edge must be an integer: {error}"));
+                .unwrap_or_else(|error| panic!("the extent edge must be an integer: {error}"));
 
-            vec![footprint]
+            vec![extent]
         },
     );
 
@@ -259,10 +259,10 @@ fn generation_first_tick_timings() {
     );
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>7} {:>12} {:>11} {:>12}",
-        "footprint", "voxels", "grains", "first moves", "share", "settle ticks", "settle", "moves"
+        "extent", "voxels", "grains", "first moves", "share", "settle ticks", "settle", "moves"
     );
 
-    for footprint in footprints {
-        print_surface_run(&measure_surface(footprint));
+    for extent in extents {
+        print_surface_run(&measure_surface(extent));
     }
 }

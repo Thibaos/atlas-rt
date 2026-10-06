@@ -47,9 +47,9 @@ The 512-edge window reads 2.3% above the full Lattice on spread and 2.5 levels
 high on its mean, because that window holds only four by four cells of the base
 octave. The full-Lattice figures are the ones the scale was chosen against.
 
-Coherence, over a 64-edge footprint at seed 0x5EED_1234: the worst adjacent pair
+Coherence, over a 64-edge extent at seed 0x5EED_1234: the worst adjacent pair
 of columns differs by 2 levels against a mean of 0.351, and a sweep of 24 seeds
-at footprint 16 and footprint 64 reaches no pair above 2. The white noise field's
+at extent 16 and extent 64 reaches no pair above 2. The white noise field's
 mean adjacent step was 21.7, so its ground changed level at almost every column
 and had no landform at any scale.
 

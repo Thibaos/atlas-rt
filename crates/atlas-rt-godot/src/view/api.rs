@@ -344,13 +344,12 @@ impl AtlasRtView {
 
     /// Returns at once. The build runs on a thread with no renderer access, and
     /// the finished snapshots reach the renderer a few frames later. The old
-    /// world stops being displayed on this call. `footprint` is the ground
-    /// area's extent, x by z, from the lattice's negative corner; the fill spans
-    /// the full lattice depth, so y is ignored. A negative extent fails the job
-    /// with a reason rather than being refused here, as a bad file does for a
-    /// load.
+    /// world stops being displayed on this call. `extent` is the ground area,
+    /// x by z, from the lattice's negative corner; the fill spans the full
+    /// lattice depth, so y is ignored. A negative extent fails the job with a
+    /// reason rather than being refused here, as a bad file does for a load.
     #[func]
-    pub fn generate_world(&mut self, seed: i64, footprint: Vector3i) -> bool {
+    pub fn generate_world(&mut self, seed: i64, extent: Vector3i) -> bool {
         if self.job.is_none() {
             return false;
         }
@@ -360,7 +359,7 @@ impl AtlasRtView {
         };
 
         let version = Self::batch_version(&self.pipeline);
-        let params = Self::generation_params(seed, footprint);
+        let params = Self::generation_params(seed, extent);
 
         if let Err(refusal) = job.generate(params, version) {
             Self::report_refusal("generate_world", refusal);

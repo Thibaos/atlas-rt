@@ -23,11 +23,11 @@ const LOAD_STAGES: [(u32, u8, &str); 3] = [
 
 /// Cumulative stage endpoints in millionths for the generation path: generate
 /// 82.9%, build about 0.1%, emit 17.1% of the total, measured over generated
-/// terrain at 256-, 512- and 4096-edge footprints (generate 17.1 ms, emit
+/// terrain at 256-, 512- and 4096-edge extents (generate 17.1 ms, emit
 /// 3.1 ms at 4.56M voxels; generate 64.2 ms, emit 13.2 ms at 17.7M; generate
 /// 4.134 s, emit 0.963 s at 1.08e9). The endpoint is the mean of the three
-/// generate shares; the small footprints read a little higher on generate
-/// because emit's final sort grows with the footprint's Snapshot count.
+/// generate shares; the small extents read a little higher on generate
+/// because emit's final sort grows with the extent's Snapshot count.
 /// Measured with
 /// `cargo test --release -p atlas-rt --lib generation_stage_weights -- --ignored
 /// --nocapture`. Revisit when the generator changes.

@@ -89,7 +89,7 @@ in its commit window alone is named `COMMIT`.
 
 This narrows the check without narrowing the tripwire: the threshold above is
 still the whole tick, and the whole tick still crosses it at the bistro
-occupancy and at the larger generated footprints. What 0018 establishes is that
+occupancy and at the larger generated extents. What 0018 establishes is that
 the rule work is inside the budget and what crosses is the commit window's
 Micro-chunk compile and tracked-set clone. The dense local window that the
 consequences below name as the replacement was aimed at the evaluation order, so

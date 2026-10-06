@@ -474,12 +474,12 @@ impl AtlasRtView {
             .map_err(|_| format!("edit {index} field {name} has the wrong type"))
     }
 
-    /// The Seed and footprint as the job's Generation parameters, with the
+    /// The Seed and extent as the job's Generation parameters, with the
     /// Seed's bits reinterpreted from the host's signed integer.
-    pub(super) const fn generation_params(seed: i64, footprint: Vector3i) -> GenerationParams {
+    pub(super) const fn generation_params(seed: i64, extent: Vector3i) -> GenerationParams {
         GenerationParams::new(
             seed.cast_unsigned(),
-            glam::IVec3::new(footprint.x, footprint.y, footprint.z),
+            glam::IVec3::new(extent.x, extent.y, extent.z),
         )
     }
 
@@ -804,13 +804,13 @@ mod tests {
     }
 
     #[test]
-    fn a_seed_and_footprint_become_the_jobs_parameters() {
+    fn a_seed_and_extent_become_the_jobs_parameters() {
         use crate::view::api::AtlasRtView as View;
 
         let params = View::generation_params(0x5EED, Vector3i::new(64, 1, 128));
 
         assert_eq!(params.seed, 0x5EED);
-        assert_eq!(params.footprint, IVec3::new(64, 1, 128));
+        assert_eq!(params.extent, IVec3::new(64, 1, 128));
     }
 
     #[test]

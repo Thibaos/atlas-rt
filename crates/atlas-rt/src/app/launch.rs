@@ -1,8 +1,9 @@
 //! The standalone binary's flags: which World supply to build and how to view
 //! it.
 //!
-//! A run with no flags loads the default `.vox` file, exactly as before. A
-//! `--seed` selects a Generation instead, and `--footprint` bounds its ground.
+//! A run with no flags generates a World from a random Seed, so every run opens
+//! on a different World. `--world` loads a `.vox` file instead, `--seed` pins
+//! the Seed so a run repeats, and `--extent` bounds a Generation's ground.
 //! The Seed's bits are reinterpreted from the host's signed integer.
 //!
 //! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
@@ -14,12 +15,14 @@
 //! `--fly` those keys also drive the simulated player. `--no-sim` has no
 //! character controller to drive, so the camera flies free there too.
 
+use std::{
+    collections::hash_map::RandomState,
+    hash::{BuildHasher, Hasher},
+};
+
 use glam::IVec3;
 
 use atlas_rt::world::generation::GenerationParams;
-
-/// The `.vox` file a run with no `--world` loads.
-const DEFAULT_WORLD: &str = "castle.vox";
 
 /// The World a run builds at startup: a `.vox` load or a Generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -44,12 +47,12 @@ pub struct Launch {
 ///
 /// # Errors
 ///
-/// Returns a reason when a value flag has no value, when a Seed or footprint is
-/// not an integer, or when `--footprint` is given without `--seed`.
+/// Returns a reason when a value flag has no value, when a Seed or extent is
+/// not an integer, or when `--extent` is given beside `--world`.
 pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world = None;
     let mut seed = None;
-    let mut footprint = None;
+    let mut extent = None;
     let free_camera = args.iter().any(|arg| arg == "--fly");
     let no_sim = args.iter().any(|arg| arg == "--no-sim");
 
@@ -65,20 +68,23 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
                 seed = Some(parse_seed(value_after(args, index)?)?);
                 index = index.strict_add(2);
             }
-            "--footprint" => {
-                footprint = Some(parse_footprint(value_after(args, index)?)?);
+            "--extent" => {
+                extent = Some(parse_extent(value_after(args, index)?)?);
                 index = index.strict_add(2);
             }
             _ => index = index.strict_add(1),
         }
     }
 
-    let request = match seed {
-        Some(seed) => WorldRequest::Generate(generation_params(seed, footprint)),
-        None if footprint.is_some() => {
-            return Err(String::from("--footprint needs --seed to generate a World"));
+    let request = match (world, seed) {
+        (_, Some(seed)) => WorldRequest::Generate(generation_params(seed, extent)),
+        (Some(_), None) if extent.is_some() => {
+            return Err(String::from(
+                "--world loads a file, so --extent has nothing to bound",
+            ));
         }
-        None => WorldRequest::Load(world.unwrap_or_else(|| DEFAULT_WORLD.to_owned())),
+        (Some(world), None) => WorldRequest::Load(world),
+        (None, None) => WorldRequest::Generate(generation_params(random_seed(), extent)),
     };
 
     Ok(Launch {
@@ -86,6 +92,12 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         free_camera,
         no_sim,
     })
+}
+
+/// A Seed for a run that names none, drawn from the random hash keys the
+/// standard library takes from the operating system.
+fn random_seed() -> u64 {
+    RandomState::new().build_hasher().finish()
 }
 
 /// The value after the flag at `index`, or a reason naming the flag.
@@ -113,16 +125,16 @@ fn parse_seed(value: &str) -> Result<u64, String> {
         .map_err(|_| format!("the seed {value} is not an integer"))
 }
 
-fn parse_footprint(value: &str) -> Result<i32, String> {
+fn parse_extent(value: &str) -> Result<i32, String> {
     value
         .parse::<i32>()
-        .map_err(|_| format!("the footprint {value} is not an integer"))
+        .map_err(|_| format!("the extent {value} is not an integer"))
 }
 
-/// The Generation parameters: a square footprint when one is given, the full
+/// The Generation parameters: a square extent when one is given, the full
 /// Lattice otherwise.
-const fn generation_params(seed: u64, footprint: Option<i32>) -> GenerationParams {
-    match footprint {
+const fn generation_params(seed: u64, extent: Option<i32>) -> GenerationParams {
+    match extent {
         Some(edge) => GenerationParams::new(seed, IVec3::splat(edge)),
         None => GenerationParams::full_lattice(seed),
     }
@@ -141,15 +153,27 @@ mod tests {
     }
 
     #[test]
-    fn no_flags_load_the_default_world() {
+    fn no_flags_generate_a_world_from_a_random_seed() {
         let launch = launch(&[]);
+        let WorldRequest::Generate(params) = launch.request else {
+            panic!("a run with no flags generates");
+        };
 
-        assert_eq!(
-            launch.request,
-            WorldRequest::Load(String::from(DEFAULT_WORLD))
-        );
+        assert_eq!(params.extent, GenerationParams::full_lattice(0).extent);
         assert!(!launch.free_camera);
         assert!(!launch.no_sim);
+    }
+
+    #[test]
+    fn the_random_seed_changes_between_runs() {
+        let WorldRequest::Generate(first) = launch(&[]).request else {
+            panic!("a run with no flags generates");
+        };
+        let WorldRequest::Generate(second) = launch(&[]).request else {
+            panic!("a run with no flags generates");
+        };
+
+        assert_ne!(first.seed, second.seed);
     }
 
     #[test]
@@ -217,29 +241,35 @@ mod tests {
     }
 
     #[test]
-    fn a_footprint_flag_builds_a_square_footprint() {
+    fn an_extent_flag_builds_a_square_extent() {
         assert_eq!(
-            launch(&["--seed", "7", "--footprint", "128"]).request,
+            launch(&["--seed", "7", "--extent", "128"]).request,
             WorldRequest::Generate(GenerationParams::new(7, IVec3::splat(128)))
         );
     }
 
     #[test]
-    fn the_footprint_defaults_to_the_full_lattice() {
+    fn the_extent_defaults_to_the_full_lattice() {
         let request = launch(&["--seed", "7"]).request;
         let WorldRequest::Generate(params) = request else {
             panic!("a Seed generates");
         };
 
-        assert_eq!(
-            params.footprint,
-            GenerationParams::full_lattice(7).footprint
-        );
+        assert_eq!(params.extent, GenerationParams::full_lattice(7).extent);
     }
 
     #[test]
-    fn a_footprint_without_a_seed_is_refused() {
-        let refused = parse(&args(&["--footprint", "128"]));
+    fn an_extent_alone_bounds_a_generated_world() {
+        let WorldRequest::Generate(params) = launch(&["--extent", "128"]).request else {
+            panic!("an extent alone generates");
+        };
+
+        assert_eq!(params.extent, IVec3::splat(128));
+    }
+
+    #[test]
+    fn an_extent_beside_a_world_is_refused() {
+        let refused = parse(&args(&["--world", "sponza.vox", "--extent", "128"]));
 
         assert!(refused.is_err());
     }
@@ -247,13 +277,13 @@ mod tests {
     #[test]
     fn a_flag_without_a_value_is_refused() {
         assert!(parse(&args(&["--seed"])).is_err());
-        assert!(parse(&args(&["--footprint"])).is_err());
+        assert!(parse(&args(&["--extent"])).is_err());
         assert!(parse(&args(&["--world"])).is_err());
     }
 
     #[test]
-    fn a_non_integer_seed_or_footprint_is_refused() {
+    fn a_non_integer_seed_or_extent_is_refused() {
         assert!(parse(&args(&["--seed", "soon"])).is_err());
-        assert!(parse(&args(&["--seed", "1", "--footprint", "wide"])).is_err());
+        assert!(parse(&args(&["--seed", "1", "--extent", "wide"])).is_err());
     }
 }

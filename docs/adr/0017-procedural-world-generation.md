@@ -2,8 +2,8 @@
 
 atlas-rt could obtain a World only by loading a `.vox` file. A second World
 supply now builds one from a program: a Generation is bounded by the Lattice,
-runs in one pass off the main thread, and is asked for with a Seed and a
-footprint. One Seed fixes one World completely, voxel for voxel and Snapshot
+runs in one pass off the main thread, and is asked for with a Seed and an
+extent. One Seed fixes one World completely, voxel for voxel and Snapshot
 for Snapshot, on every machine and every build. The `.vox` load is unchanged
 and remains the other supply.
 
@@ -27,7 +27,8 @@ and both are recorded under Consequences with their measured cost. Widens
 **World load**, **World job** and **Palette** in `GLOSSARY.md`, adds its terms
 under **World generation**, and adds **Micro-chunk entry**. The rejected-float
 option below is the one the Height field took, in fixed point, recorded by
-[0019](0019-integer-gradient-noise-height-field.md).
+[0019](0019-integer-gradient-noise-height-field.md). Amended (2026-10-06): the
+standalone binary generates by default, and `--world` keeps the load.
 
 ## Considered Options
 
@@ -77,10 +78,14 @@ option below is the one the Height field took, in fixed point, recorded by
 - A Generation bypasses `budget::cell_budget()`, which refuses a load past its
   budget before allocating. A generated World has no budget by request, and the
   load path stays the budget's only guard.
-- Measured on a 512x512 footprint of 16,897,321 voxels in 49,151 Micro-chunks,
+- Measured on a 512x512 extent of 16,897,321 voxels in 49,151 Micro-chunks,
   in release, then scaled by 64 to the full Lattice. Filling cell by cell costs
   47.5 ns per cell, filling by entry 1.3, emitting by voxel 13.4 and emitting by
   entry 0.7. End to end that is about 66 seconds against about 2.2 seconds, of
   which the World is about 1.21 GB and the Snapshots about 1.4 GB.
-- The footprint is a parameter rather than a constant, so a development run
+- The extent is a parameter rather than a constant, so a development run
   generates a small World.
+- The standalone binary generates by default. A run with no `--seed` and no
+  `--world` draws a random Seed and logs it, so each run opens on a different
+  World and the logged Seed repeats that World. `--world` still loads a file,
+  and `--extent` now bounds the default Generation as well as a pinned one.

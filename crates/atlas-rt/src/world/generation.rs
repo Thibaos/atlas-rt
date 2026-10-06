@@ -89,15 +89,15 @@ const GRADIENT_MASK: u64 = GRADIENTS.len() as u64 - 1;
 pub struct GenerationParams {
     pub seed: u64,
     /// The ground area's extent, x by z, from the lattice's negative corner. The
-    /// fill spans the full lattice depth, so a y extent does not bound it. A
-    /// footprint with any negative extent is refused.
-    pub footprint: IVec3,
+    /// fill spans the full lattice depth, so a y extent does not bound it. Any
+    /// negative component is refused.
+    pub extent: IVec3,
 }
 
 impl GenerationParams {
     #[must_use]
-    pub const fn new(seed: u64, footprint: IVec3) -> Self {
-        Self { seed, footprint }
+    pub const fn new(seed: u64, extent: IVec3) -> Self {
+        Self { seed, extent }
     }
 
     /// The full Lattice: one Generation parameter, the benchmark run.
@@ -105,7 +105,7 @@ impl GenerationParams {
     pub const fn full_lattice(seed: u64) -> Self {
         Self {
             seed,
-            footprint: IVec3::splat(LATTICE_EXTENT.cast_signed()),
+            extent: IVec3::splat(LATTICE_EXTENT.cast_signed()),
         }
     }
 }
@@ -130,12 +130,12 @@ pub struct GeneratedWorld {
 ///
 /// # Errors
 ///
-/// Returns a reason when the footprint has a negative extent.
+/// Returns a reason when the extent has a negative component.
 pub fn generate(progress: &Progress, params: GenerationParams) -> Result<GeneratedWorld, String> {
-    if params.footprint.cmplt(IVec3::ZERO).any() {
+    if params.extent.cmplt(IVec3::ZERO).any() {
         return Err(format!(
-            "the footprint {} has a negative extent",
-            params.footprint
+            "the extent {} has a negative component",
+            params.extent
         ));
     }
 
@@ -156,7 +156,7 @@ pub fn generate(progress: &Progress, params: GenerationParams) -> Result<Generat
     })
 }
 
-/// The terrain fill: every column in the footprint is solid from Bedrock to
+/// The terrain fill: every column in the extent is solid from Bedrock to
 /// its own surface level, with materials chosen by depth below that surface.
 /// Pure and column-independent: a column's surface is the Seed's gradient noise
 /// at that column, so no floating point enters and no column depends on another.
@@ -168,9 +168,7 @@ fn fill(
 ) {
     let half = LATTICE_HALF_EXTENT.cast_signed();
     let lower = IVec3::splat(half.saturating_neg());
-    let upper = lower
-        .saturating_add(params.footprint)
-        .min(IVec3::splat(half));
+    let upper = lower.saturating_add(params.extent).min(IVec3::splat(half));
 
     if upper.x <= lower.x || upper.z <= lower.z {
         return;
@@ -201,8 +199,8 @@ fn fill(
 }
 
 /// How many Micro-chunks the fill writes: one per chunk layer from Bedrock to
-/// the surface range's ceiling, over the footprint's columns. A chunk layer is
-/// counted when any column of the footprint reaches into it, so the count is an
+/// the surface range's ceiling, over the extent's columns. A chunk layer is
+/// counted when any column of the extent reaches into it, so the count is an
 /// upper bound and the reported progress is never below the truth.
 fn fillable_chunks(lower: IVec3, upper: IVec3) -> usize {
     let edge = MICRO_CHUNK_LENGTH.cast_signed();
@@ -511,10 +509,10 @@ mod tests {
 
     const SEED: u64 = 0x5EED;
 
-    fn generated(footprint: IVec3) -> GeneratedWorld {
+    fn generated(extent: IVec3) -> GeneratedWorld {
         generate(
             &Progress::generate_path(),
-            GenerationParams::new(SEED, footprint),
+            GenerationParams::new(SEED, extent),
         )
         .unwrap_or_else(|error| panic!("{error}"))
     }
@@ -543,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn the_same_seed_and_footprint_are_deterministic() {
+    fn the_same_seed_and_extent_are_deterministic() {
         let a = generated(IVec3::splat(16));
         let b = generated(IVec3::splat(16));
 
@@ -643,7 +641,7 @@ mod tests {
     }
 
     #[test]
-    fn nothing_is_generated_outside_the_footprint() {
+    fn nothing_is_generated_outside_the_extent() {
         let world = generated(IVec3::splat(8)).world;
         let start = LATTICE_HALF_EXTENT.cast_signed().saturating_neg();
         let surface = surface_level(SEED, start + 7, start + 7);
@@ -654,13 +652,13 @@ mod tests {
             world
                 .get_voxel(&IVec3::new(start + 7, surface, start + 7))
                 .is_some(),
-            "the last in-footprint column is generated"
+            "the last in-extent column is generated"
         );
-        assert!(world.voxel_count() > 0, "the in-footprint columns fill");
+        assert!(world.voxel_count() > 0, "the in-extent columns fill");
     }
 
     #[test]
-    fn a_negative_footprint_is_refused() {
+    fn a_negative_extent_is_refused() {
         let refused = generate(
             &Progress::generate_path(),
             GenerationParams::new(0x5EED, IVec3::new(0, -1, 0)),
@@ -672,7 +670,7 @@ mod tests {
     /// The fill advances through the Generate span without reaching its end:
     /// `fillable_chunks` counts every layer from Bedrock to the ceiling, and the
     /// fill skips the layers above a chunk column's own surface, so it reports
-    /// 0.634 at this footprint where white noise reported about 0.795. Only the
+    /// 0.634 at this extent where white noise reported about 0.795. Only the
     /// stage's own end reaches the endpoint.
     #[test]
     fn progress_advances_during_the_generate_stage() {
@@ -716,7 +714,7 @@ mod tests {
     }
 
     /// The measurement behind [`HEIGHT_SCALE`]: the surface's distribution over a
-    /// 512-edge footprint, printing the range, the standard deviation, the share
+    /// 512-edge extent, printing the range, the standard deviation, the share
     /// of columns clamped at each end, the mean adjacent step and the share of
     /// columns whose surface is below ground level. It prints rather than
     /// asserts, because it chooses a constant once.

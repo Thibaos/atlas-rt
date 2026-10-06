@@ -15,12 +15,12 @@
 //! 342_000.
 //!
 //! `generation_stage_weights`, release, Windows, same host, 2026-10-05, over
-//! generated terrain behind the coherent height field. The footprint's edge
+//! generated terrain behind the coherent height field. The extent's edge
 //! pins the volume; the fill writes one Micro-chunk entry per chunk layer that
 //! reaches a column's surface, hashing each column's surface once per chunk
 //! rather than once per cell:
 //!
-//! | footprint edge | voxels   | chunks  | generate | emit     | generate % |
+//! | extent edge    | voxels   | chunks  | generate | emit     | generate % |
 //! | -------------- | -------- | ------- | -------- | -------- | ---------- |
 //! | 256            | 4.56M    | 9,646   | 17.1 ms  | 3.08 ms  | 84.8       |
 //! | 512            | 17.7M    | 37,555  | 64.2 ms  | 13.2 ms  | 82.9       |
@@ -457,9 +457,9 @@ mod load_bench {
     /// reports the generate and emit stages make. The numbers here are what the
     /// generation weights in `world::load::progress` are derived from.
     #[test]
-    #[ignore = "bench: cargo test --release generation_stage_weights -- --ignored --nocapture (ATLAS_BENCH_FOOTPRINT pins the footprint edge, otherwise 256)"]
+    #[ignore = "bench: cargo test --release generation_stage_weights -- --ignored --nocapture (ATLAS_BENCH_EXTENT pins the extent edge, otherwise 256)"]
     fn generation_stage_weights() {
-        let edge = std::env::var("ATLAS_BENCH_FOOTPRINT")
+        let edge = std::env::var("ATLAS_BENCH_EXTENT")
             .ok()
             .and_then(|value| value.parse::<i32>().ok())
             .unwrap_or(256);
@@ -467,7 +467,7 @@ mod load_bench {
         run_generation_weights(IVec3::splat(edge));
     }
 
-    fn run_generation_weights(footprint: IVec3) {
+    fn run_generation_weights(extent: IVec3) {
         use crate::world::{
             generation::{GenerationParams, generate},
             load::progress::Progress,
@@ -477,7 +477,7 @@ mod load_bench {
 
         let progress = Progress::generate_path();
         let start = Instant::now();
-        let generated = generate(&progress, GenerationParams::new(seed, footprint))
+        let generated = generate(&progress, GenerationParams::new(seed, extent))
             .unwrap_or_else(|error| panic!("{error}"));
         let generate_stage = start.elapsed();
 
@@ -496,7 +496,7 @@ mod load_bench {
             u32::try_from(millionths).unwrap_or(0)
         };
 
-        println!("footprint       {footprint}");
+        println!("extent          {extent}");
         println!("voxels          {voxels}");
         println!("micro chunks    {}", snapshots.len());
         println!(

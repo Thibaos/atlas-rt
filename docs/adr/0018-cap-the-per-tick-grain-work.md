@@ -29,7 +29,7 @@ seed still takes the generator's list rather than scanning the World, the cheap
 path from the world-generation issue 10, though the set it builds is ordered
 rather than hashed, so seeding is O(n log n) in the granular cells where the
 hash set it replaced was O(n). Measured at activation, which is the only place
-that cost lands: 13.6 ms for the 512 footprint's 129,627 grains, 67 ms for
+that cost lands: 13.6 ms for the 512 extent's 129,627 grains, 67 ms for
 1024's 516,579, 265 ms for 2048's 2,065,906, and 1.10 s for the full lattice's
 8,259,231. The full-lattice figure is about 4.5 times issue 10's 4.9 s scan,
 which it replaced, so the ordered set costs less there than the scan did even
@@ -96,7 +96,7 @@ because the rule work is not what carries that tick over. See the consequences.
   Moving the check is a deliberate narrowing, and it leaves the tripwire in
   [0012](0012-simulation-thread-and-clock-ownership.md) partly unmet: that
   record's threshold is the whole tick, and the whole tick still crosses 4 ms at
-  the bistro occupancy and at the larger generated footprints. What this
+  the bistro occupancy and at the larger generated extents. What this
   decision establishes is that the rule work, which the cap owns, is inside the
   budget. The commit window that crosses it is not.
 - That window carries `edit_world`'s compile of every touched Micro-chunk, which
@@ -110,10 +110,10 @@ because the rule work is not what carries that tick over. See the consequences.
   all, is open work.
 - `generated_surface_tick_timings` in `app/sim_host/bench.rs` drives a
   Generation's own Sand surface, the scene the cap exists for. Its p95 over 256
-  ticks is 3.0 ms at the 512 footprint, 4.0 ms at 1024, 7.4 ms at 2048, and
+  ticks is 3.0 ms at the 512 extent, 4.0 ms at 1024, 7.4 ms at 2048, and
   17.6 ms at the full lattice, of which the rule work is 1.0, 1.2, 1.6, and
   1.8 ms. The rule work is what the cap bounds, it stays inside the 4 ms budget
-  at every footprint, and it is what the bench asserts. The full-lattice tick is
+  at every extent, and it is what the bench asserts. The full-lattice tick is
   over the frame budget and stays over it, which is the gap recorded above. The
   surface settles over thousands of ticks rather than stalling one, which is the
   criterion this decision took on.

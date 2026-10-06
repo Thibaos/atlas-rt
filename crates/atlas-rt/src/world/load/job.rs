@@ -1206,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn a_generations_bounds_follow_its_footprint() {
+    fn a_generations_bounds_follow_its_extent() {
         let mut job = WorldUpdateJob::new();
         job.arrive();
 
@@ -1221,12 +1221,12 @@ mod tests {
         let (min, max) = loaded
             .world
             .voxel_bounds()
-            .unwrap_or_else(|| panic!("a footprint generates terrain"));
+            .unwrap_or_else(|| panic!("an extent generates terrain"));
 
-        assert_eq!(min.x, -2048, "the footprint starts at the lattice corner");
-        assert_eq!(max.x, -2048 + 15, "the footprint is 16 cells wide");
-        assert_eq!(min.z, -2048, "the footprint starts at the lattice corner");
-        assert_eq!(max.z, -2048 + 15, "the footprint is 16 cells deep");
+        assert_eq!(min.x, -2048, "the extent starts at the lattice corner");
+        assert_eq!(max.x, -2048 + 15, "the extent is 16 cells wide");
+        assert_eq!(min.z, -2048, "the extent starts at the lattice corner");
+        assert_eq!(max.z, -2048 + 15, "the extent is 16 cells deep");
         assert_eq!(min.y, -64, "bedrock is the floor");
         assert!(
             (-64..=32).contains(&max.y),
@@ -1326,7 +1326,7 @@ mod tests {
         assert_eq!(job.status(), Status::Failed);
         assert!(
             job.error()
-                .is_some_and(|error| error.contains("negative extent")),
+                .is_some_and(|error| error.contains("negative component")),
             "the failure names the reason"
         );
         assert!(job.take_loaded().is_none(), "no world came out of it");

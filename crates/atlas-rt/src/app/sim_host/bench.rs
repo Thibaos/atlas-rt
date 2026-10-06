@@ -66,7 +66,7 @@ const SYNTH_EDGE: i32 = 100;
 const SYNTH_MATERIAL: u8 = 0;
 
 const SURFACE_SEED: u64 = 0x5EED_1234;
-const SURFACE_FOOTPRINTS: [i32; 4] = [512, 1024, 2048, 4096];
+const SURFACE_EXTENTS: [i32; 4] = [512, 1024, 2048, 4096];
 
 /// The surface bench's ticks, more than the sweep's because a full-lattice
 /// surface starts on its deepest level, where a 4096-cell tick reaches cells
@@ -604,11 +604,11 @@ fn print_crossings(points: &[SweepPoint]) {
     }
 }
 
-/// One generated surface's measured ticks: the footprint, the Falling granular
+/// One generated surface's measured ticks: the extent, the Falling granular
 /// cells its Generation wrote, the activation before the first tick, and the
 /// tick timings they settled under.
 struct SurfacePoint {
-    footprint: i32,
+    extent: i32,
     voxels: usize,
     grains: usize,
     activate: Duration,
@@ -623,15 +623,15 @@ struct SurfacePoint {
 /// level, so the grain count is millions and no tick may drain them all. The
 /// activation is measured too, because it seeds the queue with every one of
 /// those grains.
-fn surface_point(footprint: i32) -> SurfacePoint {
-    let params = GenerationParams::new(SURFACE_SEED, IVec3::splat(footprint));
+fn surface_point(extent: i32) -> SurfacePoint {
+    let params = GenerationParams::new(SURFACE_SEED, IVec3::splat(extent));
     let generated = generate(&Progress::generate_path(), params)
-        .unwrap_or_else(|error| panic!("the {footprint} footprint must generate: {error}"));
+        .unwrap_or_else(|error| panic!("the {extent} extent must generate: {error}"));
 
     let grains = generated.granular_cells.len();
     let voxels = generated.world.voxel_count();
     let snapshots = emit_snapshots(&generated.world)
-        .unwrap_or_else(|error| panic!("the {footprint} snapshots must emit: {error}"));
+        .unwrap_or_else(|error| panic!("the {extent} snapshots must emit: {error}"));
     let tracked: TrackedCoords = snapshots
         .iter()
         .filter(|snapshot| snapshot.occupied_count() > 0)
@@ -658,7 +658,7 @@ fn surface_point(footprint: i32) -> SurfacePoint {
     drop(host);
 
     SurfacePoint {
-        footprint,
+        extent,
         voxels,
         grains,
         activate,
@@ -670,7 +670,7 @@ fn surface_point(footprint: i32) -> SurfacePoint {
 fn print_surface_header() {
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>11} {:>11} {:>11} {:>10} {:>8} {:>8}",
-        "footprint",
+        "extent",
         "voxels",
         "grains",
         "activate",
@@ -686,7 +686,7 @@ fn print_surface_header() {
 fn print_surface_row(point: &SurfacePoint) {
     println!(
         "{:>9} {:>12} {:>10} {:>11.3?} {:>11.3?} {:>11.3?} {:>11.3?} {:>10} {:>8} {:>8}",
-        point.footprint,
+        point.extent,
         point.voxels,
         point.grains,
         point.activate,
@@ -721,24 +721,20 @@ fn generated_surface_tick_timings() {
 
     let mut failures = Failures::default();
 
-    for footprint in SURFACE_FOOTPRINTS {
-        let point = surface_point(footprint);
+    for extent in SURFACE_EXTENTS {
+        let point = surface_point(extent);
 
         print_surface_row(&point);
 
-        failures.record(
-            point
-                .timings
-                .budget_check(&format!("footprint {footprint}")),
-        );
+        failures.record(point.timings.budget_check(&format!("extent {extent}")));
 
         assert!(
             point.moving > 0,
-            "footprint {footprint}: the surface has to churn for a timing to mean anything"
+            "extent {extent}: the surface has to churn for a timing to mean anything"
         );
         assert!(
             point.grains > point.timings.chunks_p95.saturating_mul(8),
-            "footprint {footprint}: {} grains have to stand well above the cap's work for the cap to be what bounds the tick",
+            "extent {extent}: {} grains have to stand well above the cap's work for the cap to be what bounds the tick",
             point.grains
         );
     }
