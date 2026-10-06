@@ -260,13 +260,20 @@ impl App {
     fn request_log(&mut self) {
         self.log_frames = self.log_frames.saturating_add(1);
 
-        if self.schedule_controller.check("log").is_some() {
-            let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
-            info!("{fps:.0} fps");
-
-            self.log_frames = 0;
-            self.log_since = Instant::now();
+        if self.schedule_controller.check("log").is_none() {
+            return;
         }
+
+        let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
+
+        if let Some(sim) = self.sim.as_ref() {
+            info!("{fps:.0} fps, {} grains queued", sim.queued());
+        } else {
+            info!("{fps:.0} fps");
+        }
+
+        self.log_frames = 0;
+        self.log_since = Instant::now();
     }
 
     /// Sends one frame of elapsed time and sampled input to the simulation

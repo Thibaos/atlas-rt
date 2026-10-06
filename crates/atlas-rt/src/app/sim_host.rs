@@ -42,6 +42,7 @@ pub struct SimHost {
     view: ViewInterpolation,
     ready: bool,
     waited: bool,
+    queued: usize,
 }
 
 impl SimHost {
@@ -74,6 +75,7 @@ impl SimHost {
             view: ViewInterpolation::new(period),
             ready: false,
             waited: false,
+            queued: 0,
         })
     }
 
@@ -214,6 +216,13 @@ impl SimHost {
         self.ready
     }
 
+    /// The grains the queue held after the last tick the sim reported, which
+    /// is stale by at most one tick period and zero before the first tick.
+    #[must_use]
+    pub const fn queued(&self) -> usize {
+        self.queued
+    }
+
     /// The pose one frame draws from the pushes applied so far: feet
     /// interpolated between the previous and current tick as of `now`,
     /// discrete state from the current tick, valid from readiness on.
@@ -244,6 +253,8 @@ impl SimHost {
                         tick.report.discarded
                     );
                 }
+
+                self.queued = tick.report.queued;
 
                 self.view
                     .advance(Instant::now(), tick.player, tick.remainder);
@@ -544,5 +555,45 @@ mod tests {
             .get_voxel(&position);
 
         assert_eq!(held, Some(1), "the command landed in the World");
+    }
+
+    #[test]
+    fn the_host_reads_the_queue_depth_the_tick_reported() {
+        let (mut host, _world) = ready_host();
+
+        assert_eq!(host.queued(), 0, "nothing is queued before a tick reports");
+
+        host.command(Command::Cell(VoxelEdit {
+            position: IVec3::new(0, 400, 500),
+            change: VoxelChange::Set(1),
+        }));
+
+        host.frame(period(), InputSample::default());
+
+        let tick = take_tick(&host);
+        let woken = tick.report.queued;
+
+        assert_eq!(
+            woken, 4,
+            "the command wakes the edited cell and the three above it"
+        );
+
+        host.apply(Push::Tick(tick), &mut |_batch| Ok(()));
+
+        assert_eq!(
+            host.queued(),
+            woken,
+            "the depth the tick reported reaches the log's reader"
+        );
+
+        host.frame(period(), InputSample::default());
+
+        let tick = take_tick(&host);
+
+        assert_eq!(tick.report.queued, 0, "the drained wakes leave nothing");
+
+        host.apply(Push::Tick(tick), &mut |_batch| Ok(()));
+
+        assert_eq!(host.queued(), 0, "an empty queue reaches the log's reader");
     }
 }

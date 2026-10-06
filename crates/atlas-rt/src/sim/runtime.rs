@@ -85,12 +85,14 @@ pub struct TickEnd {
 }
 
 /// What one update did: ticks run, batches committed in tick order, ticks
-/// past the catch-up cap, and the summed evaluation and commit times.
+/// past the catch-up cap, the summed evaluation and commit times, and the
+/// grains the last tick left queued.
 #[derive(Debug)]
 pub struct UpdateReport {
     pub ticks: u32,
     pub batches: Vec<Vec<MicroChunkSnapshot>>,
     pub discarded: u64,
+    pub queued: usize,
     pub tick_time: Duration,
     pub commit_time: Duration,
 }
@@ -337,6 +339,7 @@ impl Runtime {
             ticks,
             batches: Vec::new(),
             discarded,
+            queued: self.queue.len(),
             tick_time: Duration::ZERO,
             commit_time: Duration::ZERO,
         };
@@ -367,6 +370,7 @@ impl Runtime {
 
         report.tick_time = report.tick_time.saturating_add(evaluated);
         report.commit_time = report.commit_time.saturating_add(committed);
+        report.queued = self.queue.len();
 
         if let Some(snapshots) = batch {
             report.batches.push(snapshots);

@@ -304,6 +304,47 @@ fn an_update_pushes_once_with_report_remainder_and_snap() {
     assert_silent(&handle);
 }
 
+/// The queue depth the host's log reads: the report carries what the last
+/// tick left queued, and a settled scene reports nothing left.
+#[test]
+fn the_report_carries_the_cells_the_last_tick_left_queued() {
+    let (_world, handle) = spawn_sim();
+    let mut edits = Vec::new();
+
+    for x in 0..=8 {
+        for z in 0..=8 {
+            edits.push(set(x, 0, z, 1));
+        }
+    }
+
+    edits.push(set(6, 6, 6, GRAIN));
+
+    handle.activate(granular_activation_of(&edits));
+    wait_ready(&handle);
+
+    let falling = run_tick(&handle);
+
+    assert!(
+        falling.report.queued > 0,
+        "the moving grain stays queued: {}",
+        falling.report.queued
+    );
+
+    let settled = (0..8)
+        .map(|_| run_tick(&handle))
+        .find(|tick| tick.report.queued == 0)
+        .expect("the settled grain leaves the queue empty");
+
+    assert_eq!(settled.report.ticks, 1);
+
+    let resting = run_tick(&handle);
+
+    assert_eq!(
+        resting.report.queued, 0,
+        "a settled queue stays empty until an edit wakes it"
+    );
+}
+
 #[test]
 fn an_update_runs_at_most_five_ticks_and_reports_the_discard() {
     let (_world, handle) = spawn_sim();

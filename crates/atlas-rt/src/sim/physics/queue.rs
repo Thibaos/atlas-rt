@@ -56,6 +56,10 @@ impl UpdateQueue {
             .collect();
     }
 
+    pub(in crate::sim) fn len(&self) -> usize {
+        self.cells.len()
+    }
+
     pub(in crate::sim) fn contains(&self, cell: IVec3) -> bool {
         self.cells.contains(&QueueCell(cell))
     }
