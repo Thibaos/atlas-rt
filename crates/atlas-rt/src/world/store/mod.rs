@@ -9,7 +9,7 @@ use crate::world::{
     InsertResult,
     diff::edit::{EditError, validate_entry},
     grid,
-    micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunkRef},
+    micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunk, MicroChunkRef},
 };
 
 pub use region::RegionStore;
@@ -33,13 +33,12 @@ impl StorageSize {
     }
 }
 
-/// A live Micro-chunk as enumeration yields it: the origin, the Occupancy mask
-/// and the materials of the occupied cells in ascending cell order.
+/// A live Micro-chunk as enumeration yields it: the origin and the payload of
+/// the occupied cells in ascending cell order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkEntry {
     pub origin: IVec3,
-    pub mask: [u8; MICRO_BYTES],
-    pub materials: Vec<u8>,
+    pub chunk: MicroChunk,
 }
 
 /// A Micro-chunk under construction during the default enumeration's voxel
@@ -75,11 +74,12 @@ impl Bucket {
             }
         }
 
-        MicroChunkEntry {
-            origin,
-            mask: self.mask,
-            materials,
-        }
+        let chunk = match MicroChunk::new(self.mask, materials) {
+            Ok(chunk) => chunk,
+            Err(error) => panic!("the bucket at {origin} recorded an impossible payload: {error}"),
+        };
+
+        MicroChunkEntry { origin, chunk }
     }
 }
 

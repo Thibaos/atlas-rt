@@ -153,16 +153,16 @@ pub fn pack_region(
             .get_mut(4usize.strict_mul(mc_index)..4usize.strict_mul(mc_index).strict_add(4))
             .with_context(|| format!("block offset slot {mc_index} out of range"))?;
         block.copy_from_slice(&block_offset.to_le_bytes());
-        debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+        debug_assert_eq!(snapshot.chunk.materials().len(), snapshot.occupied_count());
 
-        blocks.extend_from_slice(&snapshot.mask);
-        blocks.extend_from_slice(&snapshot.materials);
+        blocks.extend_from_slice(snapshot.chunk.mask());
+        blocks.extend_from_slice(snapshot.chunk.materials());
 
         while !blocks.len().is_multiple_of(8) {
             blocks.push(0);
         }
 
-        let (min_cell, max_cell) = occupied_cell_bounds(&snapshot.mask)?;
+        let (min_cell, max_cell) = occupied_cell_bounds(snapshot.chunk.mask())?;
 
         let min = mc_local_origin.saturating_add(min_cell);
         let max = mc_local_origin

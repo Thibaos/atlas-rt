@@ -9,6 +9,7 @@ use atlas_rt::{
             snapshot::MicroChunkSnapshot,
         },
         grid::region_index_of,
+        micro::MicroChunk,
     },
 };
 use glam::IVec3;
@@ -19,8 +20,7 @@ fn snapshot(coords: IVec3, material: u8) -> MicroChunkSnapshot {
 
     MicroChunkSnapshot {
         global_coords: coords,
-        mask,
-        materials: vec![material],
+        chunk: MicroChunk::new(mask, vec![material]).unwrap(),
     }
 }
 

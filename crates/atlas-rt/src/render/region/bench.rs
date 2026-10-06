@@ -40,6 +40,7 @@ mod rebuild_bench {
             World,
             diff::snapshot::{MicroChunkSnapshot, emit_snapshots},
             grid::region_index_of,
+            micro::MicroChunk,
         },
     };
 
@@ -59,37 +60,61 @@ mod rebuild_bench {
         regions
     }
 
-    /// The same content with every material advanced by one. The geometry is
-    /// unchanged, so the pool buffer is re-uploaded and the BLAS is reused.
-    fn paint(mut snapshots: Vec<MicroChunkSnapshot>) -> Vec<MicroChunkSnapshot> {
-        for snapshot in &mut snapshots {
-            for material in &mut snapshot.materials {
-                *material = material.wrapping_add(1);
-            }
-        }
-
+    /// The same content with every material advanced by one, rebuilt through the
+    /// payload's constructor. The geometry is unchanged, so the pool buffer is
+    /// re-uploaded and the BLAS is reused.
+    fn paint(snapshots: Vec<MicroChunkSnapshot>) -> Vec<MicroChunkSnapshot> {
         snapshots
+            .into_iter()
+            .map(|snapshot| {
+                let materials = snapshot
+                    .chunk
+                    .materials()
+                    .iter()
+                    .map(|material| material.wrapping_add(1))
+                    .collect();
+
+                MicroChunkSnapshot {
+                    global_coords: snapshot.global_coords,
+                    chunk: MicroChunk::new(*snapshot.chunk.mask(), materials)
+                        .expect("advancing every material keeps the count"),
+                }
+            })
+            .collect()
     }
 
     /// Cell 0 toggled in every Micro-chunk, so the hull moves and the BLAS has
     /// to rebuild. A chunk that holds only cell 0 is left alone, so the region
     /// never empties.
-    fn reshape(mut snapshots: Vec<MicroChunkSnapshot>) -> Vec<MicroChunkSnapshot> {
-        for snapshot in &mut snapshots {
-            if snapshot.mask[0] & 1 != 0 {
-                if snapshot.occupied_count() <= 1 {
-                    continue;
+    fn reshape(snapshots: Vec<MicroChunkSnapshot>) -> Vec<MicroChunkSnapshot> {
+        snapshots
+            .into_iter()
+            .map(|snapshot| {
+                let mut mask = *snapshot.chunk.mask();
+                let mut materials = snapshot.chunk.materials().to_vec();
+                let Some(first) = mask.first_mut() else {
+                    return snapshot;
+                };
+
+                if *first & 1 != 0 {
+                    if snapshot.occupied_count() <= 1 {
+                        return snapshot;
+                    }
+
+                    *first &= !1;
+                    materials.remove(0);
+                } else {
+                    *first |= 1;
+                    materials.insert(0, 7);
                 }
 
-                snapshot.mask[0] &= !1;
-                snapshot.materials.remove(0);
-            } else {
-                snapshot.mask[0] |= 1;
-                snapshot.materials.insert(0, 7);
-            }
-        }
-
-        snapshots
+                MicroChunkSnapshot {
+                    global_coords: snapshot.global_coords,
+                    chunk: MicroChunk::new(mask, materials)
+                        .expect("the toggled cell adds or drops its material"),
+                }
+            })
+            .collect()
     }
 
     /// The plan the apply built: uploads, BLAS builds, and whether a TLAS

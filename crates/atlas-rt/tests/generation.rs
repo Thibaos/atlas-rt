@@ -148,10 +148,11 @@ fn snapshot_fingerprint(snapshots: &[MicroChunkSnapshot]) -> u64 {
         .flat_map(i32::to_le_bytes)
         .chain(snapshots.iter().flat_map(|snapshot| {
             snapshot
-                .mask
+                .chunk
+                .mask()
                 .iter()
                 .copied()
-                .chain(snapshot.materials.iter().copied())
+                .chain(snapshot.chunk.materials().iter().copied())
         }));
 
     for octet in octets {

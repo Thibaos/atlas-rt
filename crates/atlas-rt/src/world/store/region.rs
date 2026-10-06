@@ -6,7 +6,7 @@ use glam::IVec3;
 use crate::world::{
     diff::edit::{EditError, validate_entry},
     grid,
-    micro::{self, MICRO_BYTES, MicroChunkRef},
+    micro::{self, MICRO_BYTES, MicroChunk, MicroChunkRef},
     store::{MicroChunkEntry, VoxelStore},
 };
 
@@ -571,11 +571,15 @@ impl Iterator for Entries<'_> {
                 continue;
             };
 
-            return Some(MicroChunkEntry {
-                origin: cell_position(self.slot, ordinal, 0),
-                mask: owned,
-                materials: materials.to_vec(),
-            });
+            let origin = cell_position(self.slot, ordinal, 0);
+            let chunk = match MicroChunk::new(owned, materials.to_vec()) {
+                Ok(chunk) => chunk,
+                Err(error) => {
+                    panic!("the entry at {origin} holds an impossible payload: {error}")
+                }
+            };
+
+            return Some(MicroChunkEntry { origin, chunk });
         }
     }
 }

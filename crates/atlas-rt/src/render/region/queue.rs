@@ -476,6 +476,7 @@ mod tests {
             World,
             diff::snapshot::emit_snapshots,
             grid::{MICRO_CHUNK_LENGTH, region_index_of},
+            micro::MicroChunk,
         },
     };
 
@@ -494,17 +495,12 @@ mod tests {
         );
         MicroChunkSnapshot {
             global_coords: coords,
-            mask,
-            materials,
+            chunk: MicroChunk::new(mask, materials).expect("the cells and their materials agree"),
         }
     }
 
     fn zero(coords: IVec3) -> MicroChunkSnapshot {
-        MicroChunkSnapshot {
-            global_coords: coords,
-            mask: [0u8; 64],
-            materials: Vec::new(),
-        }
+        MicroChunkSnapshot::cleared(coords)
     }
 
     #[test]
@@ -518,7 +514,7 @@ mod tests {
         let drained = queue.drain_pending();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].global_coords, coords);
-        assert_eq!(drained[0].materials, vec![2, 5]);
+        assert_eq!(drained[0].chunk.materials(), vec![2, 5]);
     }
 
     #[test]
@@ -538,7 +534,7 @@ mod tests {
         let drained = queue.drain_pending();
         let by_coords: HashMap<_, _> = drained
             .iter()
-            .map(|s| (s.global_coords, s.materials.clone()))
+            .map(|s| (s.global_coords, s.chunk.materials().to_vec()))
             .collect();
 
         assert_eq!(by_coords[&IVec3::new(0, 0, 0)], vec![9]);
@@ -937,8 +933,8 @@ mod tests {
                     ry.wrapping_mul(256).wrapping_add(ly.wrapping_mul(8)),
                     rz.wrapping_mul(256).wrapping_add(lz.wrapping_mul(8)),
                 ),
-                mask: pattern_mask,
-                materials: pattern_materials.clone(),
+                chunk: MicroChunk::new(pattern_mask, pattern_materials.clone())
+                    .expect("the pattern's four bits carry four materials"),
             });
         }
 

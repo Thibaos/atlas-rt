@@ -71,6 +71,8 @@ fn assemble(tracked: &TrackedCoords, snapshots: Vec<MicroChunkSnapshot>) -> Batc
 mod tests {
     use std::collections::HashMap;
 
+    use crate::world::micro::MicroChunk;
+
     use super::*;
 
     fn snapshot(coords: IVec3, material: u8) -> MicroChunkSnapshot {
@@ -79,8 +81,7 @@ mod tests {
 
         MicroChunkSnapshot {
             global_coords: coords,
-            mask,
-            materials: vec![material],
+            chunk: MicroChunk::new(mask, vec![material]).expect("one material, one cell"),
         }
     }
 

@@ -11,7 +11,7 @@ use crate::world::{
         snapshot::MicroChunkSnapshot,
     },
     grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice, region_index_in_lattice, region_index_of},
-    micro::{self, MICRO_BYTES, MICRO_CELLS},
+    micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunk, MicroChunkError},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,15 +48,14 @@ impl VoxelEdit {
 
 /// A Micro-chunk as a host commands it.
 ///
-/// The origin, the occupancy mask, and the material indices of the occupied
-/// cells in ascending cell-index order. Diffed against the World at commit,
-/// so a later write never derives a no-op against a World that lacks an
-/// earlier one.
+/// The origin and the payload: the occupancy mask, and the material indices of
+/// the occupied cells in ascending cell-index order. Diffed against the World
+/// at commit, so a later write never derives a no-op against a World that lacks
+/// an earlier one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkEdit {
     pub origin: IVec3,
-    pub mask: [u8; MICRO_BYTES],
-    pub materials: Vec<u8>,
+    pub chunk: MicroChunk,
 }
 
 impl MicroChunkEdit {
@@ -70,16 +69,18 @@ impl MicroChunkEdit {
     /// lattice or off the Micro-chunk grid, and when the materials do not
     /// match the mask's occupancy.
     pub fn diff(&self, world: &World) -> Result<Vec<VoxelEdit>, EditError> {
-        validate_entry(self.origin, &self.mask, &self.materials)?;
+        let chunk = self.chunk.as_ref();
+
+        validate_entry(self.origin, chunk.mask, chunk.materials)?;
 
         let mut edits = Vec::new();
         let mut next_material = 0usize;
 
         for index in 0..MICRO_CELLS {
-            let occupied = micro::occupied_cell(&self.mask, index);
+            let occupied = chunk.occupied_cell(index);
 
             let incoming = if occupied {
-                let material = self.materials.get(next_material).copied();
+                let material = chunk.materials.get(next_material).copied();
                 next_material = next_material.saturating_add(1);
                 material
             } else {
@@ -123,15 +124,12 @@ pub(in crate::world) fn validate_entry(
         return Err(EditError::rejected(origin, EditReason::NotChunkOrigin));
     }
 
-    let occupied = micro::occupied_count(mask);
+    if let Err(error) = micro::check_materials(mask, materials) {
+        let MicroChunkError::MaterialCount { occupied, given } = error;
 
-    if occupied != materials.len() {
         return Err(EditError::rejected(
             origin,
-            EditReason::MaterialCount {
-                occupied,
-                given: materials.len(),
-            },
+            EditReason::MaterialCount { occupied, given },
         ));
     }
 
@@ -448,6 +446,18 @@ pub(in crate::world) fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
     touched
 }
 
+/// The owned payload an entry read yields.
+///
+/// The store maintains the materials count from the mask's occupancy, so a
+/// disagreement means the store is corrupt and the read says so instead of
+/// fabricating a payload.
+fn owned(origin: IVec3, mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> MicroChunk {
+    match MicroChunk::new(mask, materials) {
+        Ok(chunk) => chunk,
+        Err(error) => panic!("the payload read for {origin} is inconsistent: {error}"),
+    }
+}
+
 /// The chunk's content as `world` holds it, cell index `x + 8y + 64z` from the
 /// origin, which is the order the store's entry read emits materials in. A
 /// store that keeps one entry per Micro-chunk copies its mask and compacted
@@ -456,8 +466,7 @@ pub(in crate::world) fn compile_chunk(world: &World, origin: IVec3) -> MicroChun
     if let Some(entry) = world.chunk_entry(origin) {
         return MicroChunkSnapshot {
             global_coords: origin,
-            mask: *entry.mask,
-            materials: entry.materials.to_vec(),
+            chunk: owned(origin, *entry.mask, entry.materials.to_vec()),
         };
     }
 
@@ -483,8 +492,7 @@ pub(in crate::world) fn probe_chunk(world: &World, origin: IVec3) -> MicroChunkS
 
     MicroChunkSnapshot {
         global_coords: origin,
-        mask,
-        materials,
+        chunk: owned(origin, mask, materials),
     }
 }
 
@@ -500,13 +508,13 @@ mod tests {
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},
         },
         grid::{MICRO_CHUNK_LENGTH, grid_origin},
-        micro::{MICRO_AREA, MICRO_EDGE},
+        micro::{self, MICRO_AREA, MICRO_EDGE, MicroChunk},
         test_support::{Rng, u8_below},
     };
 
     use super::{
-        EditError, EditReason, MICRO_BYTES, MICRO_CELLS, VoxelChange, VoxelEdit, edit_world,
-        projected_count,
+        EditError, EditReason, MICRO_BYTES, MICRO_CELLS, MicroChunkEdit, VoxelChange, VoxelEdit,
+        edit_world, projected_count,
     };
 
     const CHUNK: i32 = MICRO_CHUNK_LENGTH as i32;
@@ -533,8 +541,7 @@ mod tests {
 
         MicroChunkSnapshot {
             global_coords: origin,
-            mask,
-            materials: vec![material],
+            chunk: MicroChunk::new(mask, vec![material]).expect("one material, one cell"),
         }
     }
 
@@ -566,8 +573,7 @@ mod tests {
 
         let rebuilt = MicroChunkSnapshot {
             global_coords: snapshot.global_coords,
-            mask,
-            materials,
+            chunk: MicroChunk::new(mask, materials).expect("the world's walk agrees with itself"),
         };
 
         assert_eq!(
@@ -861,18 +867,18 @@ mod tests {
         };
 
         assert_eq!(
-            snapshot.materials,
+            snapshot.chunk.materials(),
             vec![1, 2, 4, 3],
             "the materials at cell indices 0, 7, 8 and 64, in that order"
         );
         assert_eq!(snapshot.occupied_count(), 4);
         assert_eq!(
-            snapshot.mask.first().copied(),
+            snapshot.chunk.mask().first().copied(),
             Some(0b1000_0001),
             "cells 0 and 7 land in the first mask byte"
         );
         assert_eq!(
-            snapshot.mask.get(8).copied(),
+            snapshot.chunk.mask().get(8).copied(),
             Some(1),
             "cell 64 lands in the ninth mask byte"
         );
@@ -1240,23 +1246,145 @@ mod tests {
         );
 
         let mut shifted = compiled.clone();
+        let mut materials = shifted.chunk.materials().to_vec();
 
-        if let Some(material) = shifted.materials.first_mut() {
+        if let Some(material) = materials.first_mut() {
             *material = material.wrapping_add(1);
         }
+
+        shifted.chunk =
+            MicroChunk::new(*shifted.chunk.mask(), materials).expect("the count is unchanged");
 
         assert!(
             !matches_emit(&shifted, Some(&emitted)),
             "one material shifted by a slot must fail the comparison"
         );
 
+        // a payload cannot carry a material without the cell that holds it, so
+        // the dropped material goes with its cell
         let mut dropped = compiled;
-        dropped.materials.pop();
+        let mut mask = *dropped.chunk.mask();
+        let mut materials = dropped.chunk.materials().to_vec();
+        let last = (0..MICRO_CELLS).rfind(|&cell| micro::occupied_cell(&mask, cell));
+
+        if let Some(cell) = last {
+            micro::set_cell(&mut mask, cell, false);
+            materials.pop();
+        }
+
+        dropped.chunk = MicroChunk::new(mask, materials).expect("the cell and its material go");
 
         assert!(
             !matches_emit(&dropped, Some(&emitted)),
             "one material dropped must fail the comparison"
         );
+    }
+
+    /// A random payload as the cells it occupies, in ascending cell-index order,
+    /// with the material each of those cells holds. It is the round trip's
+    /// expected value, taken before any command reaches the World.
+    fn random_cells(rng: &mut Rng) -> Vec<(usize, u8)> {
+        let mut cells: Vec<(usize, u8)> = Vec::new();
+
+        for cell in 0..MICRO_CELLS {
+            if rng.below(16) == 0 {
+                cells.push((cell, u8_below(rng, 256)));
+            }
+        }
+
+        if cells.is_empty() {
+            let cell = usize::try_from(rng.below(MICRO_CELLS as u64)).unwrap_or(0);
+
+            cells.push((cell, u8_below(rng, 256)));
+        }
+
+        cells
+    }
+
+    fn payload_of(cells: &[(usize, u8)]) -> ([u8; MICRO_BYTES], Vec<u8>) {
+        let mut mask = [0u8; MICRO_BYTES];
+        let mut materials = Vec::with_capacity(cells.len());
+
+        for (cell, material) in cells {
+            micro::set_cell(&mut mask, *cell, true);
+            materials.push(*material);
+        }
+
+        (mask, materials)
+    }
+
+    fn chunk_origin_in_lattice(rng: &mut Rng) -> IVec3 {
+        let axis = |rng: &mut Rng| {
+            i32::try_from(rng.below(9))
+                .unwrap_or(4)
+                .saturating_sub(4)
+                .saturating_mul(CHUNK)
+        };
+
+        IVec3::new(axis(rng), axis(rng), axis(rng))
+    }
+
+    /// A random Micro-chunk commanded into an empty World, written through the
+    /// store, then emitted: the store's entry and the Snapshot agree with the
+    /// cells the command was built from. Those cells are the expected values, so
+    /// the test cannot pass by reading back what the code built.
+    #[test]
+    fn a_commanded_chunk_round_trips_through_the_store_and_the_emitter() {
+        let seed = 0x00D0_11D1;
+        let mut rng = Rng::new(seed);
+
+        for case in 0..64u32 {
+            let cells = random_cells(&mut rng);
+            let (mask, materials) = payload_of(&cells);
+            let origin = chunk_origin_in_lattice(&mut rng);
+            let context = format!("seed {seed:#x} case {case} at {origin}");
+
+            let edit = MicroChunkEdit {
+                origin,
+                chunk: MicroChunk::new(mask, materials.clone())
+                    .unwrap_or_else(|error| panic!("{context}: the fixture is valid: {error}")),
+            };
+
+            let mut world = World::default();
+
+            let edits = edit
+                .diff(&world)
+                .unwrap_or_else(|error| panic!("{context}: the diff resolves: {error}"));
+
+            assert_eq!(edits.len(), cells.len(), "{context}: one edit per cell");
+
+            edit_world(&mut world, &edits, &TrackedCoords::default())
+                .unwrap_or_else(|error| panic!("{context}: the batch applies: {error}"));
+
+            let entry = world
+                .chunk_entry(origin)
+                .unwrap_or_else(|| panic!("{context}: the store holds the chunk"));
+
+            assert_eq!(entry.mask, &mask, "{context}: the store's mask");
+            assert_eq!(entry.materials, materials, "{context}: the store's order");
+
+            let snapshot = emit_snapshots(&world)
+                .unwrap_or_else(|error| panic!("{context}: the world emits: {error}"))
+                .into_iter()
+                .find(|snapshot| snapshot.global_coords == origin)
+                .unwrap_or_else(|| panic!("{context}: the emitter holds the chunk"));
+
+            assert_eq!(
+                snapshot.occupied_count(),
+                cells.len(),
+                "{context}: the occupied count is the command's"
+            );
+            assert_eq!(
+                snapshot.chunk.mask(),
+                &mask,
+                "{context}: the emitted cells are the command's"
+            );
+            assert_eq!(
+                snapshot.chunk.materials(),
+                materials,
+                "{context}: each emitted material sits at the command's cell"
+            );
+        }
     }
 
     #[test]

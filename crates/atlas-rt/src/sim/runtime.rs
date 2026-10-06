@@ -625,6 +625,7 @@ impl SnapshotFold {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::world::micro::MicroChunk;
 
     /// A local xorshift so the fold oracle test can collide coordinates across
     /// batches without reaching into the World test support.
@@ -645,8 +646,7 @@ mod tests {
 
         MicroChunkSnapshot {
             global_coords: IVec3::new(x, 0, z),
-            mask,
-            materials: vec![material],
+            chunk: MicroChunk::new(mask, vec![material]).expect("one material, one cell"),
         }
     }
 
@@ -679,7 +679,9 @@ mod tests {
             Some(IVec3::new(0, 0, 0))
         );
         assert_eq!(
-            merged.first().map(|snapshot| snapshot.materials.clone()),
+            merged
+                .first()
+                .map(|snapshot| snapshot.chunk.materials().to_vec()),
             Some(vec![3]),
             "the later edit wins"
         );

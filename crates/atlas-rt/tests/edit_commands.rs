@@ -6,7 +6,7 @@ mod common;
 
 use atlas_rt::sim::Command;
 use atlas_rt::world::diff::edit::{MicroChunkEdit, VoxelChange, VoxelEdit};
-use atlas_rt::world::micro::{MICRO_AREA, MICRO_BYTES, MICRO_EDGE};
+use atlas_rt::world::micro::{MICRO_AREA, MICRO_BYTES, MICRO_EDGE, MicroChunk};
 use atlas_rt::world::raycast::Ray;
 use glam::{IVec3, Vec3};
 
@@ -46,8 +46,7 @@ fn chunk_of(origin: IVec3, cells: &[(IVec3, u8)]) -> MicroChunkEdit {
 
     MicroChunkEdit {
         origin,
-        mask,
-        materials,
+        chunk: MicroChunk::new(mask, materials).unwrap(),
     }
 }
 
@@ -56,8 +55,7 @@ fn chunk_of(origin: IVec3, cells: &[(IVec3, u8)]) -> MicroChunkEdit {
 fn empty_chunk(origin: IVec3) -> MicroChunkEdit {
     MicroChunkEdit {
         origin,
-        mask: [0u8; MICRO_BYTES],
-        materials: Vec::new(),
+        chunk: MicroChunk::empty(),
     }
 }
 
@@ -281,8 +279,7 @@ fn an_out_of_lattice_command_is_dropped_and_the_sim_keeps_running() {
 
     handle.command(Command::MicroChunk(MicroChunkEdit {
         origin: IVec3::new(2048, 0, 0),
-        mask: [0u8; MICRO_BYTES],
-        materials: Vec::new(),
+        chunk: MicroChunk::empty(),
     }));
 
     let tick = run_tick(&handle);

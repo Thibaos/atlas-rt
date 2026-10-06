@@ -3,14 +3,13 @@ use glam::IVec3;
 use crate::world::{
     World,
     load::progress::{Progress, VOXEL_STEP},
-    micro,
+    micro::MicroChunk,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MicroChunkSnapshot {
     pub global_coords: IVec3,
-    pub mask: [u8; 64],
-    pub materials: Vec<u8>,
+    pub chunk: MicroChunk,
 }
 
 impl MicroChunkSnapshot {
@@ -19,14 +18,13 @@ impl MicroChunkSnapshot {
     pub const fn cleared(global_coords: IVec3) -> Self {
         Self {
             global_coords,
-            mask: [0u8; 64],
-            materials: Vec::new(),
+            chunk: MicroChunk::empty(),
         }
     }
 
     #[must_use]
     pub fn occupied_count(&self) -> usize {
-        micro::occupied_count(&self.mask)
+        self.chunk.occupied_count()
     }
 }
 
@@ -58,7 +56,7 @@ pub fn emit_snapshots_reporting(
 
     for entry in world.entries() {
         if let Some(progress) = progress {
-            seen = seen.saturating_add(entry.materials.len());
+            seen = seen.saturating_add(entry.chunk.materials().len());
 
             while seen >= next_step {
                 progress.count_voxel(total, next_step);
@@ -68,8 +66,7 @@ pub fn emit_snapshots_reporting(
 
         snapshots.push(MicroChunkSnapshot {
             global_coords: entry.origin,
-            mask: entry.mask,
-            materials: entry.materials,
+            chunk: entry.chunk,
         });
     }
 
@@ -142,11 +139,11 @@ pub(crate) mod tests {
 
                     let snapshot = MicroChunkSnapshot {
                         global_coords,
-                        mask,
-                        materials,
+                        chunk: MicroChunk::new(mask, materials)
+                            .context("the two-pass oracle built an invalid payload")?,
                     };
 
-                    debug_assert_eq!(snapshot.materials.len(), snapshot.occupied_count());
+                    debug_assert_eq!(snapshot.chunk.materials().len(), snapshot.occupied_count());
 
                     Ok(snapshot)
                 },
@@ -233,7 +230,7 @@ pub(crate) mod tests {
         assert_eq!(total, world.voxel_count());
 
         assert!(snapshots.iter().any(|s| {
-            s.global_coords == IVec3::new(-8, -8, -8) && s.mask[63] & 0b1000_0000 != 0
+            s.global_coords == IVec3::new(-8, -8, -8) && s.chunk.mask()[63] & 0b1000_0000 != 0
         }));
     }
 
@@ -248,7 +245,7 @@ pub(crate) mod tests {
         let snapshots = emit_snapshots(&world).unwrap();
         assert_eq!(snapshots.len(), 1);
         let snapshot = &snapshots[0];
-        assert_eq!(snapshot.materials, vec![1, 2, 3, 4]);
+        assert_eq!(snapshot.chunk.materials(), vec![1, 2, 3, 4]);
         assert_eq!(snapshot.occupied_count(), 4);
     }
 

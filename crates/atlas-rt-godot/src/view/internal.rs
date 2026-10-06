@@ -5,7 +5,7 @@ use atlas_rt::world::diff::edit::{MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::generation::GenerationParams;
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldUpdateJob};
 use atlas_rt::world::load::supply::{FileWorldSource, WorldSource};
-use atlas_rt::world::micro::{MICRO_BYTES, occupied_count};
+use atlas_rt::world::micro::{MICRO_BYTES, MicroChunk};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -525,19 +525,12 @@ impl AtlasRtView {
             }
         }
 
-        let occupied = occupied_count(&mask_bytes);
-
-        if materials.len() != occupied {
-            return Err(format!(
-                "materials length {} does not match mask popcount {occupied}",
-                materials.len()
-            ));
-        }
+        let chunk =
+            MicroChunk::new(mask_bytes, materials.to_vec()).map_err(|error| error.to_string())?;
 
         Ok(MicroChunkEdit {
             origin: glam::IVec3::new(coords.x, coords.y, coords.z),
-            mask: mask_bytes,
-            materials: materials.to_vec(),
+            chunk,
         })
     }
 }
@@ -550,7 +543,7 @@ mod tests {
             batch::TrackedCoords,
             edit::{MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
         },
-        micro::MICRO_BYTES,
+        micro::{MICRO_BYTES, MicroChunk},
     };
     use glam::IVec3;
     use godot::builtin::Vector3i;
@@ -560,8 +553,7 @@ mod tests {
     fn chunk(origin: IVec3, mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> MicroChunkEdit {
         MicroChunkEdit {
             origin,
-            mask,
-            materials,
+            chunk: MicroChunk::new(mask, materials).expect("the fixture's count matches"),
         }
     }
 

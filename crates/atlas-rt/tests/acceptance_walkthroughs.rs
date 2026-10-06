@@ -13,6 +13,7 @@ use atlas_rt::render::region::queue::RendererInput;
 use atlas_rt::sim::{Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState};
 use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit};
 use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
+use atlas_rt::world::micro::MicroChunk;
 use glam::{IVec3, Vec2, Vec3};
 
 use common::*;
@@ -1070,8 +1071,7 @@ fn walkthrough_the_renderer_trails_and_drops_a_failing_batch() {
 
     failing.push(MicroChunkSnapshot {
         global_coords: IVec3::new(2048, 0, 0),
-        mask: [0u8; 64],
-        materials: Vec::new(),
+        chunk: MicroChunk::empty(),
     });
 
     let queue_before = input.packed_regions().unwrap();

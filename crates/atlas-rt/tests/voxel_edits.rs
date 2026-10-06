@@ -11,6 +11,7 @@ use atlas_rt::{
             snapshot::{MicroChunkSnapshot, emit_snapshots},
         },
         grid::{MICRO_CHUNK_LENGTH, grid_origin, region_index_of},
+        micro::MicroChunk,
         vox::open_bytes,
     },
 };
@@ -516,8 +517,13 @@ fn a_shifted_material_fails_the_oracle_and_the_revert_passes() {
     let mut shifted = batch.snapshots.clone();
 
     for snapshot in &mut shifted {
-        if let Some(material) = snapshot.materials.first_mut() {
+        let mut materials = snapshot.chunk.materials().to_vec();
+
+        if let Some(material) = materials.first_mut() {
             *material = material.wrapping_add(1);
+
+            snapshot.chunk = MicroChunk::new(*snapshot.chunk.mask(), materials).unwrap();
+
             break;
         }
     }

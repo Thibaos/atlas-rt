@@ -32,6 +32,7 @@ use crate::world::generation::{GenerationParams, generate};
 use crate::world::grid::MICRO_CHUNK_LENGTH;
 use crate::world::load::progress::Progress;
 use crate::world::material::PhysicalMaterialTable;
+use crate::world::micro::MicroChunk;
 
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::drain;
@@ -69,8 +70,7 @@ fn snapshot(chunk: usize, material: u8) -> MicroChunkSnapshot {
 
     MicroChunkSnapshot {
         global_coords: origin,
-        mask,
-        materials: vec![material],
+        chunk: MicroChunk::new(mask, vec![material]).expect("one material, one cell"),
     }
 }
 

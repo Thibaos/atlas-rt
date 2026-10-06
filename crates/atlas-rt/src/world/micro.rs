@@ -1,5 +1,7 @@
 //! The Micro-chunk payload's width and the rules that read and write it.
 
+use std::{error::Error, fmt, fmt::Display};
+
 use glam::IVec3;
 
 use crate::world::grid::MICRO_CHUNK_LENGTH;
@@ -8,6 +10,99 @@ pub const MICRO_EDGE: usize = MICRO_CHUNK_LENGTH as usize;
 pub const MICRO_AREA: usize = MICRO_EDGE * MICRO_EDGE;
 pub const MICRO_CELLS: usize = MICRO_EDGE * MICRO_AREA;
 pub const MICRO_BYTES: usize = MICRO_CELLS / MICRO_EDGE;
+
+/// A Micro-chunk's payload where it is owned rather than borrowed: the
+/// Occupancy mask and the materials of the occupied cells in ascending cell
+/// order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MicroChunk {
+    mask: [u8; MICRO_BYTES],
+    materials: Vec<u8>,
+}
+
+/// Why a mask and a material list do not make a payload.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MicroChunkError {
+    MaterialCount { occupied: usize, given: usize },
+}
+
+impl MicroChunk {
+    /// # Errors
+    ///
+    /// Rejects a material count that disagrees with the mask's occupancy.
+    pub fn new(mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> Result<Self, MicroChunkError> {
+        check_materials(&mask, &materials)?;
+
+        Ok(Self { mask, materials })
+    }
+
+    /// The payload that occupies nothing.
+    #[must_use]
+    pub const fn empty() -> Self {
+        Self {
+            mask: [0u8; MICRO_BYTES],
+            materials: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn mask(&self) -> &[u8; MICRO_BYTES] {
+        &self.mask
+    }
+
+    #[must_use]
+    pub fn materials(&self) -> &[u8] {
+        &self.materials
+    }
+
+    #[must_use]
+    pub fn occupied_count(&self) -> usize {
+        occupied_count(&self.mask)
+    }
+
+    /// The payload as the borrowed view the rules are written on.
+    #[must_use]
+    pub fn as_ref(&self) -> MicroChunkRef<'_> {
+        MicroChunkRef::new(&self.mask, &self.materials)
+    }
+}
+
+impl Display for MicroChunkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::MaterialCount { occupied, given } => {
+                write!(
+                    f,
+                    "the mask marks {occupied} cells but carries {given} materials"
+                )
+            }
+        }
+    }
+}
+
+impl Error for MicroChunkError {}
+
+/// Whether a mask and a material list agree: the materials count is the mask's
+/// occupancy.
+///
+/// The rule the constructor enforces, for callers that hold the two parts
+/// without owning them.
+///
+/// # Errors
+///
+/// Returns [`MicroChunkError::MaterialCount`] naming both counts.
+pub fn check_materials(mask: &[u8], materials: &[u8]) -> Result<(), MicroChunkError> {
+    let occupied = occupied_count(mask);
+
+    if occupied == materials.len() {
+        return Ok(());
+    }
+
+    Err(MicroChunkError::MaterialCount {
+        occupied,
+        given: materials.len(),
+    })
+}
 
 /// A Micro-chunk's payload borrowed out of wherever it is stored: the
 /// Occupancy mask and the materials of the occupied cells in ascending cell
@@ -193,7 +288,7 @@ pub fn bounds(mask: &[u8]) -> Option<(IVec3, IVec3)> {
 mod tests {
     use glam::IVec3;
 
-    use super::{MICRO_BYTES, MICRO_CELLS, bounds, rank};
+    use super::{MICRO_BYTES, MICRO_CELLS, MicroChunk, bounds, rank};
 
     fn mask_from_cells(cells: &[usize]) -> [u8; MICRO_BYTES] {
         let mut mask = [0u8; MICRO_BYTES];
@@ -305,5 +400,32 @@ mod tests {
     #[test]
     fn bounds_is_none_for_a_zero_mask() {
         assert_eq!(bounds(&[0u8; MICRO_BYTES]), None);
+    }
+
+    #[test]
+    fn the_constructor_rejects_a_material_count_the_mask_disagrees_with() {
+        let mask = mask_from_cells(&[0, 7, 8, 64]);
+        let occupied = 4usize;
+
+        for given in [occupied - 1, occupied + 1] {
+            let error = MicroChunk::new(mask, vec![0u8; given])
+                .expect_err("a count the mask disagrees with must be rejected");
+
+            assert_eq!(
+                error.to_string(),
+                format!("the mask marks {occupied} cells but carries {given} materials"),
+                "the rejection carries the wording the edit path displays"
+            );
+        }
+    }
+
+    #[test]
+    fn the_constructor_accepts_one_material_per_occupied_cell() {
+        let mask = mask_from_cells(&[0, 7, 8, 64]);
+        let chunk = MicroChunk::new(mask, vec![9, 8, 7, 6]).expect("the count matches");
+
+        assert_eq!(chunk.mask(), &mask);
+        assert_eq!(chunk.materials(), [9, 8, 7, 6]);
+        assert_eq!(chunk.occupied_count(), 4);
     }
 }
