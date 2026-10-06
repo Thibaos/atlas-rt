@@ -1,6 +1,5 @@
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
-    path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU8, Ordering},
@@ -9,22 +8,18 @@ use std::{
     thread::{JoinHandle, spawn},
 };
 
-use glam::{IVec3, Vec4};
 use tracing::error;
 
 use crate::{
     host::display_gate::DisplayGate,
     world::{
-        BoundsPolicy, World,
         budget::cell_budget,
-        diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
         generation::{GeneratedWorld, GenerationParams, generate},
         load::progress::{Path, Progress, Stage},
-        material::{PhysicalMaterialTable, load_table},
-        palette::get_effective_palette,
-        vox::open_bytes,
     },
 };
+
+use super::supply::{self, SuppliedWorld, WorldSource};
 
 const STATUS_EMPTY: u8 = 0;
 const STATUS_LOADING: u8 = 1;
@@ -78,41 +73,12 @@ impl Status {
     }
 }
 
-/// A finished load's world, its snapshots, its palette, and its Physical
-/// material table, ready for the main thread. A Generation delivers this same
-/// shape, so the host cannot tell the two supplies apart.
-#[derive(Debug)]
-pub struct LoadedWorld {
-    pub world: World,
-    pub snapshots: Vec<MicroChunkSnapshot>,
-    pub palette: [Vec4; 256],
-    pub materials: PhysicalMaterialTable,
-    pub granular_cells: Option<Vec<IVec3>>,
-}
-
 /// The result of a completed background job.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Finished {
     Loaded,
     Cleared,
     Failed,
-}
-
-/// A world's bytes, read on the thread that runs the load pipeline.
-pub trait WorldSource: Send {
-    fn name(&self) -> String;
-
-    /// # Errors
-    ///
-    /// Returns a reason the world could not be read.
-    fn read(&self) -> Result<Vec<u8>, String>;
-
-    /// The world file's real path, whose sibling `<path>_mat` holds its
-    /// Physical material override. `None` for a source with no path, which
-    /// reads as an absent override.
-    fn filesystem_path(&self) -> Option<PathBuf> {
-        None
-    }
 }
 
 /// The renderer generation a frame must reach to include a submitted batch.
@@ -137,7 +103,7 @@ impl Residency {
 
 enum JobState {
     Idle,
-    Loading { loaded: Option<Box<LoadedWorld>> },
+    Loading { loaded: Option<Box<SuppliedWorld>> },
     Clearing,
     Submitted,
     Done,
@@ -152,7 +118,7 @@ enum Outcome {
 }
 
 enum RunResult {
-    Loaded(Box<LoadedWorld>),
+    Loaded(Box<SuppliedWorld>),
     Cleared,
 }
 
@@ -429,7 +395,7 @@ impl WorldUpdateJob {
     }
 
     /// The pending load's work, handed over once.
-    pub fn take_loaded(&self) -> Option<LoadedWorld> {
+    pub fn take_loaded(&self) -> Option<SuppliedWorld> {
         let loaded = {
             let mut job = lock(&self.job);
 
@@ -497,55 +463,23 @@ impl Drop for WorldUpdateJob {
     }
 }
 
-/// The load pipeline, from a world's bytes to the snapshots the renderer takes.
-/// Its only output is plain data, so it runs on a thread with no renderer
-/// access.
+/// The load pipeline, a thin wrapper around the supply: it runs the supply on
+/// this thread and formats its error once, so the job keeps storing a string.
 fn run_pipeline(
     progress: &Progress,
     source: &dyn WorldSource,
     budget: usize,
 ) -> Result<RunResult, String> {
-    let name = source.name();
-    let bytes = source
-        .read()
-        .map_err(|reason| format!("could not open {name}: {reason}"))?;
+    let supplied = supply::load(source, budget, progress).map_err(|error| format!("{error:#}"))?;
 
-    progress.end_stage(Stage::Read);
-
-    let voxel_data =
-        open_bytes(&bytes).map_err(|error| format!("could not parse {name}: {error:#}"))?;
-
-    progress.end_stage(Stage::Parse);
-
-    let palette = get_effective_palette(&voxel_data)
-        .map_err(|error| format!("could not build palette for {name}: {error:#}"))?;
-
-    let materials = load_table(source.filesystem_path().as_deref());
-
-    let (world, clipped) = match super::build::load(&voxel_data, BoundsPolicy::Clip, budget) {
-        Ok((world, clipped)) => (world, clipped),
-        Err(refused) => {
-            return Err(format!(
-                "the world needs {refused} cells, above the cell budget of {budget}"
-            ));
-        }
-    };
-
-    progress.end_stage(Stage::Build);
-
-    if clipped > 0 {
-        error!("atlas_rt: clipped {clipped} voxels outside the lattice");
+    if supplied.clipped > 0 {
+        error!(
+            "atlas_rt: clipped {} voxels outside the lattice",
+            supplied.clipped
+        );
     }
 
-    let snapshots = emit(progress, &world, &name)?;
-
-    Ok(RunResult::Loaded(Box::new(LoadedWorld {
-        world,
-        snapshots,
-        palette,
-        materials,
-        granular_cells: None,
-    })))
+    Ok(RunResult::Loaded(Box::new(supplied)))
 }
 
 /// The Generation pipeline, from params to the snapshots the renderer takes. It
@@ -561,22 +495,17 @@ fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunRe
 
     progress.end_stage(Stage::Build);
 
-    let snapshots = emit(progress, &world, "the generated world")?;
+    let snapshots = supply::emit(progress, &world, "the generated world")
+        .map_err(|error| format!("{error:#}"))?;
 
-    Ok(RunResult::Loaded(Box::new(LoadedWorld {
+    Ok(RunResult::Loaded(Box::new(SuppliedWorld {
         world,
         snapshots,
         palette,
         materials,
         granular_cells: Some(granular_cells),
+        clipped: 0,
     })))
-}
-
-/// The step both pipelines share: emit the World's Snapshots through the entry
-/// read, naming the source in the failure.
-fn emit(progress: &Progress, world: &World, name: &str) -> Result<Vec<MicroChunkSnapshot>, String> {
-    emit_snapshots_reporting(world, Some(progress))
-        .map_err(|error| format!("could not emit {name}: {error:#}"))
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -589,11 +518,14 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use glam::IVec3;
+    use glam::{IVec3, Vec4};
 
     use super::*;
     use crate::world::{
-        diff::snapshot::emit_snapshots, palette::get_palette, vocabulary::Vocabulary,
+        diff::snapshot::{MicroChunkSnapshot, emit_snapshots},
+        palette::get_palette,
+        vocabulary::Vocabulary,
+        vox::open_bytes,
     };
 
     fn matl_paletted_world() -> Vec<u8> {
@@ -1181,7 +1113,7 @@ mod tests {
 
     #[test]
     fn two_generations_from_one_seed_are_equal() {
-        let run = |job: &mut WorldUpdateJob| -> LoadedWorld {
+        let run = |job: &mut WorldUpdateJob| -> SuppliedWorld {
             job.arrive();
             job.generate(small(), 0).unwrap();
 
