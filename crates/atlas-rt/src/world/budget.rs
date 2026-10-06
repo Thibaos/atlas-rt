@@ -1,5 +1,6 @@
-//! The cell budget a load or an edit reads before it allocates. The shipped
-//! threshold is unbounded; a crate-visible, test-only setter drives a small one.
+//! The cell budget a load or an edit reads before it allocates.
+//!
+//! The shipped threshold is unbounded; a test-only setter drives a small one.
 //! It is per-thread, so the refusal tests cannot race the others beside them.
 
 #[cfg(test)]

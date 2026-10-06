@@ -14,7 +14,6 @@ fn main() -> anyhow::Result<()> {
     let mut app = App::new(
         &event_loop,
         launch.request,
-        true,
         launch.free_camera,
         launch.no_sim,
     )?;

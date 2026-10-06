@@ -1,33 +1,11 @@
 pub mod api;
 pub mod internal;
 
-use atlas_rt::world::load::supply::WorldSource;
 use godot::prelude::*;
-use std::path::PathBuf;
 
 const REJECT: &str = "atlas_rt: rejected input: ";
 const ATLAS_MODE_UNIFORM: &str = "mode";
 const ATLAS_FRAME_UNIFORM: &str = "atlas_frame";
-
-/// A world file on the real filesystem, read by the loader thread.
-struct VoxFile {
-    path: String,
-    name: String,
-}
-
-impl WorldSource for VoxFile {
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    fn read(&self) -> Result<Vec<u8>, String> {
-        std::fs::read(&self.path).map_err(|error| error.to_string())
-    }
-
-    fn filesystem_path(&self) -> Option<PathBuf> {
-        Some(PathBuf::from(&self.path))
-    }
-}
 
 /// Godot's camera pose as the view matrix the renderer's Vulkan projection
 /// expects.

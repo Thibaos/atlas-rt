@@ -11,7 +11,7 @@ use atlas_rt::world::{
     generation::GenerationParams,
     load::{
         progress::Progress,
-        supply::{SuppliedWorld, WorldSource, generate, load},
+        supply::{FileWorldSource, SuppliedWorld, WorldSource, generate, load},
     },
     material::PhysicalMaterialTable,
     vocabulary::Vocabulary,
@@ -28,23 +28,56 @@ const WORLD: &str = "assets/test/matl-alpha.vox";
 const MALFORMED: &str = "in-memory malformed world";
 const UNREADABLE: &str = "in-memory unreadable world";
 
-/// A world file on the real filesystem, read with its sibling override path.
-struct WorldFile {
-    path: PathBuf,
+/// The tracked fixture as the shared file source, read with its sibling
+/// override path.
+fn fixture() -> FileWorldSource {
+    FileWorldSource::new(WORLD, WORLD)
 }
 
-impl WorldSource for WorldFile {
-    fn name(&self) -> String {
-        self.path.display().to_string()
-    }
+#[test]
+fn the_file_source_reads_its_path_and_reports_its_display_name() {
+    let source = FileWorldSource::new(WORLD, "a displayed world");
 
-    fn read(&self) -> Result<Vec<u8>, String> {
-        std::fs::read(&self.path).map_err(|error| error.to_string())
-    }
+    assert_eq!(source.name(), "a displayed world");
 
-    fn filesystem_path(&self) -> Option<PathBuf> {
-        Some(self.path.clone())
-    }
+    let path = PathBuf::from(WORLD);
+
+    assert_eq!(source.filesystem_path(), Some(path.clone()));
+    assert_eq!(
+        source
+            .read()
+            .unwrap_or_else(|error| panic!("{WORLD} must read: {error}")),
+        std::fs::read(&path).unwrap_or_else(|error| panic!("{WORLD} must read: {error}"))
+    );
+}
+
+#[test]
+fn a_file_source_that_cannot_read_fails_with_an_error_that_names_the_source() {
+    let source = FileWorldSource::new("assets/test/no-such-fixture.vox", "a missing world");
+
+    let reason = std::fs::read("assets/test/no-such-fixture.vox")
+        .err()
+        .unwrap_or_else(|| panic!("the fixture must not exist"))
+        .to_string();
+
+    assert_eq!(
+        source
+            .read()
+            .err()
+            .unwrap_or_else(|| panic!("a missing file must fail")),
+        reason,
+        "the read reason is the filesystem's own text"
+    );
+
+    let text = format!(
+        "{:#}",
+        load(&source, usize::MAX, &Progress::load_path())
+            .err()
+            .unwrap_or_else(|| panic!("a missing file must fail"))
+    );
+
+    assert!(text.contains("could not open a missing world"), "{text}");
+    assert!(text.contains(&reason), "the reason survives: {text}");
 }
 
 /// Bytes held in memory, standing in for a file on disk.
@@ -73,12 +106,6 @@ impl WorldSource for Unreadable {
 
     fn read(&self) -> Result<Vec<u8>, String> {
         Err(String::from("no such file"))
-    }
-}
-
-fn fixture() -> WorldFile {
-    WorldFile {
-        path: PathBuf::from(WORLD),
     }
 }
 

@@ -5,7 +5,6 @@ mod sim_host;
 mod timers;
 
 use std::{
-    path::Path,
     sync::{Arc, PoisonError, RwLock},
     time::{Duration, Instant},
 };
@@ -32,18 +31,17 @@ use atlas_rt::{
     sim::{Command, PlayerProfile},
     world::{
         World,
+        budget::cell_budget,
         diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
-            snapshot::emit_snapshots,
         },
-        generation,
         grid::LATTICE_HALF_EXTENT,
-        load::progress::Progress,
-        material::{PhysicalMaterialTable, load_table},
-        palette::get_effective_palette,
+        load::{
+            progress::Progress,
+            supply::{self, FileWorldSource, SuppliedWorld},
+        },
         raycast::{VoxelHit, screen_center_ray},
-        vox::open_file,
     },
 };
 
@@ -90,55 +88,50 @@ pub struct App {
 impl App {
     /// # Errors
     ///
-    /// Returns an error if the GPU could not be initialized, the loaded
-    /// World's palette cannot be built, the generated World cannot be built,
-    /// or its snapshots cannot be emitted.
+    /// Returns an error if the GPU could not be initialized or the World
+    /// cannot be supplied.
     pub fn new(
         event_loop: &EventLoop<()>,
         request: WorldRequest,
-        clip_oob: bool,
         free_camera: bool,
         no_sim: bool,
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let (world, palette, materials, granular_cells) = match request {
+        let SuppliedWorld {
+            world,
+            snapshots,
+            palette,
+            materials,
+            granular_cells,
+            clipped,
+        } = match request {
             WorldRequest::Load(world_path) => {
-                let (world, palette, materials) = Self::load(&world_path, clip_oob)?;
+                let source = FileWorldSource::new(
+                    format!("crates/atlas-rt/assets/{world_path}"),
+                    world_path,
+                );
 
-                (world, palette, materials, None)
+                supply::load(&source, cell_budget(), &Progress::load_path())?
             }
             WorldRequest::Generate(params) => {
                 info!("generating a World from seed {}", params.seed);
 
-                let generated = generation::generate(&Progress::generate_path(), params)
-                    .map_err(|reason| anyhow::anyhow!("the generation failed: {reason}"))?;
-
-                (
-                    generated.world,
-                    generated.palette,
-                    generated.materials,
-                    Some(generated.granular_cells),
-                )
+                supply::generate(params, &Progress::generate_path())?
             }
         };
 
+        if clipped > 0 {
+            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
+        }
+
         let world = Arc::new(RwLock::new(world));
 
-        let (snapshots, tracked) = {
-            let guard = world.read().unwrap_or_else(PoisonError::into_inner);
-
-            let snapshots = emit_snapshots(&guard)?;
-            drop(guard);
-
-            let tracked: TrackedCoords = snapshots
-                .iter()
-                .filter(|snapshot| snapshot.occupied_count() > 0)
-                .map(|snapshot| snapshot.global_coords)
-                .collect();
-
-            (snapshots, tracked)
-        };
+        let tracked: TrackedCoords = snapshots
+            .iter()
+            .filter(|snapshot| snapshot.occupied_count() > 0)
+            .map(|snapshot| snapshot.global_coords)
+            .collect();
 
         let profile = PlayerProfile::default();
 
@@ -192,31 +185,6 @@ impl App {
             #[cfg(debug_assertions)]
             mode_toggle_pending: false,
         })
-    }
-
-    /// Loads a `.vox` file into a World with its Palette and Physical material
-    /// table.
-    fn load(
-        world_path: &str,
-        clip_oob: bool,
-    ) -> anyhow::Result<(World, [Vec4; 256], PhysicalMaterialTable)> {
-        let asset_path = format!("crates/atlas-rt/assets/{world_path}");
-        let voxel_data = open_file(&asset_path);
-        let palette = get_effective_palette(&voxel_data)
-            .with_context(|| format!("could not build the palette for {world_path}"))?;
-        let (world, clipped) = if clip_oob {
-            World::new_clipped(&voxel_data)
-        } else {
-            (World::new(&voxel_data), 0)
-        };
-
-        if clipped > 0 {
-            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
-        }
-
-        let materials = load_table(Some(Path::new(&asset_path)));
-
-        Ok((world, palette, materials))
     }
 
     /// # Errors

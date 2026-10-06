@@ -11,7 +11,7 @@ use atlas_rt::{
             snapshot::{MicroChunkSnapshot, emit_snapshots},
         },
         grid::{MICRO_CHUNK_LENGTH, grid_origin, region_index_of},
-        vox::open_file,
+        vox::open_bytes,
     },
 };
 use glam::IVec3;
@@ -239,7 +239,9 @@ fn randomized_edits_match_a_fresh_emission() {
 #[test]
 fn a_loaded_world_edited_matches_a_fresh_emission() {
     let input = RendererInput::new().unwrap();
-    let data = open_file(LOADED_ASSET);
+    let bytes = std::fs::read(LOADED_ASSET)
+        .unwrap_or_else(|error| panic!("could not read {LOADED_ASSET}: {error}"));
+    let data = open_bytes(&bytes).unwrap_or_else(|error| panic!("{error:#}"));
     let (mut world, _) = World::new_clipped(&data);
 
     let mut tracked = submit_load(
