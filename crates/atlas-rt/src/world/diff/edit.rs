@@ -435,10 +435,7 @@ pub(in crate::world) mod projection_candidates {
     /// restores every touched position from its captured original. The bench
     /// rolls back unconditionally so the World it measures against is
     /// unchanged; production would roll back only on a refusal.
-    pub(in crate::world) fn apply_then_rollback(
-        world: &mut World,
-        edits: &[VoxelEdit],
-    ) -> usize {
+    pub(in crate::world) fn apply_then_rollback(world: &mut World, edits: &[VoxelEdit]) -> usize {
         let mut originals: Vec<Option<u8>> = Vec::with_capacity(edits.len());
 
         for edit in edits {
@@ -1187,8 +1184,15 @@ mod tests {
                 error.to_string().contains(&projected.to_string()),
                 "{context}: the message does not name the projected count {projected}"
             );
-            assert_eq!(world.voxel_count(), before_count, "{context}: the world changed");
-            assert_eq!(tracked, tracked_before, "{context}: the tracked set changed");
+            assert_eq!(
+                world.voxel_count(),
+                before_count,
+                "{context}: the world changed"
+            );
+            assert_eq!(
+                tracked, tracked_before,
+                "{context}: the tracked set changed"
+            );
             assert_eq!(
                 emit_snapshots(&world).unwrap(),
                 before_emission,

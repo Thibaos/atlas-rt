@@ -122,10 +122,7 @@ pub(crate) mod tests {
                     .strict_add(local.z.strict_mul(64)),
             )?;
 
-            per_microchunk
-                .entry(origin)
-                .or_default()
-                .push((idx, voxel));
+            per_microchunk.entry(origin).or_default().push((idx, voxel));
         }
 
         let mut snapshots: Vec<MicroChunkSnapshot> = per_microchunk

@@ -67,12 +67,7 @@ impl Material {
 }
 
 const fn color(r: u8, g: u8, b: u8) -> Vec4 {
-    Vec4::new(
-        r as f32 / 255.0,
-        g as f32 / 255.0,
-        b as f32 / 255.0,
-        1.0,
-    )
+    Vec4::new(r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0)
 }
 
 /// A feature a Seed fixes, separated from its siblings by a fixed tag.

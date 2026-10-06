@@ -146,7 +146,11 @@ pub trait VoxelStore: Debug + Send + Sync {
 
         let entries: Vec<MicroChunkEntry> = order
             .into_iter()
-            .filter_map(|origin| buckets.remove(&origin).map(|bucket| bucket.into_entry(origin)))
+            .filter_map(|origin| {
+                buckets
+                    .remove(&origin)
+                    .map(|bucket| bucket.into_entry(origin))
+            })
             .collect();
 
         Box::new(entries.into_iter())

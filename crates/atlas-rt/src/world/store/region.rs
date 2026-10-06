@@ -476,9 +476,9 @@ fn cell_position(slot: usize, ordinal: usize, cell: usize) -> IVec3 {
         .saturating_mul(IVec3::splat(
             i32::try_from(grid::REGION_LENGTH).unwrap_or(0),
         ))
-        .saturating_add(micro_chunk.saturating_mul(IVec3::splat(
-            i32::try_from(MICRO_CHUNK).unwrap_or(0),
-        )))
+        .saturating_add(
+            micro_chunk.saturating_mul(IVec3::splat(i32::try_from(MICRO_CHUNK).unwrap_or(0))),
+        )
         .saturating_add(local)
 }
 
@@ -531,11 +531,7 @@ impl Iterator for Voxels<'_> {
                 continue;
             }
 
-            let entry = region
-                .index
-                .get(self.ordinal)
-                .copied()
-                .unwrap_or(EMPTY);
+            let entry = region.index.get(self.ordinal).copied().unwrap_or(EMPTY);
 
             let Some(offset) = entry_offset(entry) else {
                 self.advance_micro_chunk();
@@ -708,7 +704,14 @@ impl VoxelStore for RegionStore {
         let offset = entry_offset(entry)?;
         let (byte, bit) = mask_bit(position);
 
-        if region.blob.get(offset.strict_add(byte)).copied().unwrap_or(0) & bit == 0 {
+        if region
+            .blob
+            .get(offset.strict_add(byte))
+            .copied()
+            .unwrap_or(0)
+            & bit
+            == 0
+        {
             return None;
         }
 
@@ -739,7 +742,14 @@ impl VoxelStore for RegionStore {
 
         let (byte, bit) = mask_bit(position);
 
-        if region.blob.get(offset.strict_add(byte)).copied().unwrap_or(0) & bit == 0 {
+        if region
+            .blob
+            .get(offset.strict_add(byte))
+            .copied()
+            .unwrap_or(0)
+            & bit
+            == 0
+        {
             return;
         }
 
@@ -1440,8 +1450,8 @@ mod tests {
                     .get(offset..offset.strict_add(MASK_BYTES))
                     .unwrap_or(&[]);
 
-                bits = bits
-                    .saturating_add(mask.iter().map(|value| value.count_ones() as usize).sum());
+                bits =
+                    bits.saturating_add(mask.iter().map(|value| value.count_ones() as usize).sum());
             }
         }
 
@@ -2003,12 +2013,7 @@ mod tests {
 
         let keys: Vec<(usize, usize)> = entries
             .iter()
-            .map(|entry| {
-                (
-                    region_slot(entry.origin),
-                    micro_chunk_ordinal(entry.origin),
-                )
-            })
+            .map(|entry| (region_slot(entry.origin), micro_chunk_ordinal(entry.origin)))
             .collect();
 
         assert!(

@@ -559,7 +559,9 @@ mod tests {
 
         for level in BEDROCK..=surface {
             assert!(
-                world.get_voxel(&IVec3::new(column.x, level, column.z)).is_some(),
+                world
+                    .get_voxel(&IVec3::new(column.x, level, column.z))
+                    .is_some(),
                 "level {level} is filled"
             );
         }
@@ -619,11 +621,7 @@ mod tests {
             .unwrap_or_else(|| panic!("the surface is filled"));
 
         assert_eq!(
-            world.get_voxel(&IVec3::new(
-                column.x,
-                surface - SOIL_DEPTH - 1,
-                column.z,
-            )),
+            world.get_voxel(&IVec3::new(column.x, surface - SOIL_DEPTH - 1, column.z)),
             Some(Material::Stone.index()),
             "below the soil is stone"
         );
@@ -765,7 +763,10 @@ mod tests {
 
         let columns = f64::from(edge) * f64::from(edge);
         let mean = sum as f64 / columns;
-        let deviation = mean.mul_add(-mean, squares as f64 / columns).max(0.0).sqrt();
+        let deviation = mean
+            .mul_add(-mean, squares as f64 / columns)
+            .max(0.0)
+            .sqrt();
         let share = |count: usize| 100.0 * count as f64 / columns;
 
         println!("height scale    {HEIGHT_SCALE}");

@@ -189,7 +189,10 @@ mod tests {
         let launch = launch(&["--fly"]);
 
         assert!(launch.free_camera);
-        assert!(!launch.no_sim, "--fly is about the camera, not the simulation");
+        assert!(
+            !launch.no_sim,
+            "--fly is about the camera, not the simulation"
+        );
     }
 
     #[test]

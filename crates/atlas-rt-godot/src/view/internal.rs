@@ -678,9 +678,8 @@ mod tests {
     fn materials_are_walked_in_mask_bit_order() {
         let indices = [0, 7, 64, 511];
 
-        let edits = must(
-            chunk(ORIGIN, mask_for(&indices), vec![1, 2, 3, 4]).diff(&World::default()),
-        );
+        let edits =
+            must(chunk(ORIGIN, mask_for(&indices), vec![1, 2, 3, 4]).diff(&World::default()));
 
         assert_eq!(
             edits,
@@ -755,9 +754,7 @@ mod tests {
         let input = must(RendererInput::new());
         let origin = ORIGIN;
 
-        let edits = must(
-            chunk(origin, mask_for(&[0, 7, 64, 100]), vec![1, 2, 3, 9]).diff(&world),
-        );
+        let edits = must(chunk(origin, mask_for(&[0, 7, 64, 100]), vec![1, 2, 3, 9]).diff(&world));
 
         let batch = must(edit_world(&mut world, &edits, &TrackedCoords::default()));
         must(input.submit_batch(batch.snapshots));

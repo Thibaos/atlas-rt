@@ -17,6 +17,7 @@ a line here when the unslop pass removes a tell that keeps coming back.
 - Documentation should be as semantically dense and clear as possible, use the unslop skill preferably
 - Separate blocks with a new line, before and after a "for", "if", "match", etc.
 - You may separate some lines with a new line, to group related code together
+- Run `cargo fmt --all` before finishing, so the tree stays rustfmt-clean
 
 ## When running the Godot example
 

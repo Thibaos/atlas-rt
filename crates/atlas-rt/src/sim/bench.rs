@@ -222,14 +222,7 @@ fn print_surface_run(run: &SurfaceRun) {
 
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>6.1}% {:>12} {:>11.3?} {:>12}",
-        run.extent,
-        run.voxels,
-        run.grains,
-        run.first_moves,
-        share,
-        ticks,
-        run.settle,
-        run.moves
+        run.extent, run.voxels, run.grains, run.first_moves, share, ticks, run.settle, run.moves
     );
 }
 

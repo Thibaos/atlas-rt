@@ -548,7 +548,8 @@ fn the_generated_world_paints_every_material_index_it_uses() {
         "Bedrock paints the fill's floor"
     );
     assert!(
-        used.iter().any(|material| *material != Material::Bedrock.index()),
+        used.iter()
+            .any(|material| *material != Material::Bedrock.index()),
         "the surface and subsurface differ from Bedrock"
     );
 }
