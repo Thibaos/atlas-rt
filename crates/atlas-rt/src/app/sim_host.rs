@@ -42,7 +42,7 @@ pub struct SimHost {
     view: ViewInterpolation,
     ready: bool,
     waited: bool,
-    queued: usize,
+    queued: Option<usize>,
 }
 
 impl SimHost {
@@ -75,7 +75,7 @@ impl SimHost {
             view: ViewInterpolation::new(period),
             ready: false,
             waited: false,
-            queued: 0,
+            queued: None,
         })
     }
 
@@ -100,6 +100,8 @@ impl SimHost {
                 .write()
                 .unwrap_or_else(PoisonError::into_inner),
         );
+
+        self.queued = None;
 
         self.handle.activate(Activation {
             world,
@@ -217,9 +219,10 @@ impl SimHost {
     }
 
     /// The grains the queue held after the last tick the sim reported, which
-    /// is stale by at most one tick period and zero before the first tick.
+    /// is stale by at most one tick period, or nothing before the first tick
+    /// of the active World reports one.
     #[must_use]
-    pub const fn queued(&self) -> usize {
+    pub const fn queued(&self) -> Option<usize> {
         self.queued
     }
 
@@ -254,7 +257,7 @@ impl SimHost {
                     );
                 }
 
-                self.queued = tick.report.queued;
+                self.queued = Some(tick.report.queued);
 
                 self.view
                     .advance(Instant::now(), tick.player, tick.remainder);
@@ -561,7 +564,11 @@ mod tests {
     fn the_host_reads_the_queue_depth_the_tick_reported() {
         let (mut host, _world) = ready_host();
 
-        assert_eq!(host.queued(), 0, "nothing is queued before a tick reports");
+        assert_eq!(
+            host.queued(),
+            None,
+            "nothing is queued before a tick reports"
+        );
 
         host.command(Command::Cell(VoxelEdit {
             position: IVec3::new(0, 400, 500),
@@ -582,7 +589,7 @@ mod tests {
 
         assert_eq!(
             host.queued(),
-            woken,
+            Some(woken),
             "the depth the tick reported reaches the log's reader"
         );
 
@@ -594,6 +601,10 @@ mod tests {
 
         host.apply(Push::Tick(tick), &mut |_batch| Ok(()));
 
-        assert_eq!(host.queued(), 0, "an empty queue reaches the log's reader");
+        assert_eq!(
+            host.queued(),
+            Some(0),
+            "an empty queue reaches the log's reader"
+        );
     }
 }

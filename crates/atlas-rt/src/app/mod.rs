@@ -75,6 +75,7 @@ pub struct App {
 
     log_frames: u16,
     log_since: Instant,
+    log_queued: Option<usize>,
 
     render_mode: RenderMode,
 
@@ -171,6 +172,7 @@ impl App {
 
             log_frames: 0u16,
             log_since: Instant::now(),
+            log_queued: None,
 
             render_mode: RenderMode::default(),
 
@@ -264,16 +266,32 @@ impl App {
             return;
         }
 
-        let fps = f32::from(self.log_frames) / self.log_since.elapsed().as_secs_f32();
+        let window = self.log_since.elapsed();
+        let fps = f32::from(self.log_frames) / window.as_secs_f32();
 
-        if let Some(sim) = self.sim.as_ref() {
-            info!("{fps:.0} fps, {} grains queued", sim.queued());
-        } else {
-            info!("{fps:.0} fps");
-        }
+        self.log_queue(fps, window);
 
         self.log_frames = 0;
         self.log_since = Instant::now();
+    }
+
+    /// Logs the queue's depth and the rate it drains at beside the frame rate.
+    /// The rate needs two depth samples, so the lines before the first tick
+    /// reports one carry the frame rate alone.
+    fn log_queue(&mut self, fps: f32, window: Duration) {
+        let queued = self.sim.as_ref().and_then(SimHost::queued);
+
+        match (queued, self.log_queued) {
+            (Some(now), Some(before)) => {
+                let rate = drain_rate(before, now, window);
+
+                info!("{fps:.0} fps, {now} grains queued, {rate:.0} grains/s");
+            }
+            (Some(now), None) => info!("{fps:.0} fps, {now} grains queued"),
+            (None, _) => info!("{fps:.0} fps"),
+        }
+
+        self.log_queued = queued;
     }
 
     /// Sends one frame of elapsed time and sampled input to the simulation
@@ -555,5 +573,27 @@ impl ApplicationHandler for App {
             self.player_input.mouse_motion.0 += delta.0;
             self.player_input.mouse_motion.1 += delta.1;
         }
+    }
+}
+
+/// The net grains the queue lost between two depth samples over `window`,
+/// negative while the queue grows.
+fn drain_rate(before: usize, now: usize, window: Duration) -> f64 {
+    (before as f64 - now as f64) / window.as_secs_f64()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_drain_rate_is_the_net_grains_lost_per_second() {
+        assert!((drain_rate(10_000, 4_000, Duration::from_secs(1)) - 6_000.0).abs() < 0.0001);
+        assert!(drain_rate(4_000, 4_000, Duration::from_secs(1)).abs() < 0.0001);
+        assert!((drain_rate(9_000, 4_000, Duration::from_secs(2)) - 2_500.0).abs() < 0.0001);
+        assert!(
+            (drain_rate(1_000, 3_000, Duration::from_secs(2)) + 1_000.0).abs() < 0.0001,
+            "a growing queue drains at a negative rate"
+        );
     }
 }
