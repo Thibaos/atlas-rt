@@ -983,7 +983,7 @@ mod tests {
         let path =
             std::env::var("ATLAS_BENCH_VOX").unwrap_or_else(|_| "assets/bistro.vox".to_string());
         let data = dot_vox::load(&path).unwrap();
-        let (world, _) = World::new_clipped(&data);
+        let world = World::new(&data);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let micro_chunks = snapshots.len();

@@ -141,11 +141,7 @@ impl Source {
 
     fn build(&self) -> World {
         match self {
-            Self::Asset(data) => {
-                let (world, _clipped) = World::new_clipped(data);
-
-                world
-            }
+            Self::Asset(data) => World::new(data),
             Self::Synth => synth_world(),
         }
     }

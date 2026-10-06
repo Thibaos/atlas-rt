@@ -131,7 +131,7 @@ mod rebuild_bench {
         );
 
         let data = dot_vox::load(PATH).unwrap();
-        let (world, _) = World::new_clipped(&data);
+        let world = World::new(&data);
         let snapshots = emit_snapshots(&world).unwrap();
         let mut regions = by_region(&snapshots);
         let mut region_list: Vec<IVec3> = regions.keys().copied().collect();

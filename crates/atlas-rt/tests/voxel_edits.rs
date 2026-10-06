@@ -242,7 +242,7 @@ fn a_loaded_world_edited_matches_a_fresh_emission() {
     let bytes = std::fs::read(LOADED_ASSET)
         .unwrap_or_else(|error| panic!("could not read {LOADED_ASSET}: {error}"));
     let data = open_bytes(&bytes).unwrap_or_else(|error| panic!("{error:#}"));
-    let (mut world, _) = World::new_clipped(&data);
+    let mut world = World::new(&data);
 
     let mut tracked = submit_load(
         &input,

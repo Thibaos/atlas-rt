@@ -20,17 +20,10 @@ use glam::IVec3;
 
 use store::{RegionStore, VoxelStore};
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BoundsPolicy {
-    Panic,
-    Clip,
-}
-
 #[derive(Debug, PartialEq, Eq)]
 pub enum InsertResult {
     Ok,
     Clipped,
-    Existing,
 }
 
 #[derive(Debug)]
@@ -53,34 +46,16 @@ impl World {
         Self { store }
     }
 
-    pub(crate) fn insert(
-        &mut self,
-        position: IVec3,
-        voxel: u32,
-        policy: BoundsPolicy,
-    ) -> InsertResult {
-        self.store.insert(position, voxel, policy)
+    pub(crate) fn insert(&mut self, position: IVec3, voxel: u32) -> InsertResult {
+        self.store.insert(position, voxel)
     }
 
+    /// Builds a World from `.vox` data, clipping voxels outside the Lattice.
     #[must_use]
     pub fn new(voxel_data: &DotVoxData) -> Self {
-        let (world, clipped) = Self::build(voxel_data, BoundsPolicy::Panic);
-        debug_assert_eq!(clipped, 0);
+        let (world, _) = load::build::load_unbudgeted(voxel_data);
+
         world
-    }
-
-    #[must_use]
-    pub fn new_clipped(voxel_data: &DotVoxData) -> (Self, usize) {
-        Self::build(voxel_data, BoundsPolicy::Clip)
-    }
-
-    /// Builds a store with no cell budget: a direct constructor has no way to
-    /// report a refusal, so it never refuses. The load job reads the budget.
-    fn build(voxel_data: &DotVoxData, policy: BoundsPolicy) -> (Self, usize) {
-        match load::build::load(voxel_data, policy, usize::MAX) {
-            Ok((world, clipped)) => (world, clipped),
-            Err(refused) => panic!("the loader refused {refused} cells with no cell budget set"),
-        }
     }
 
     #[must_use]
@@ -270,16 +245,13 @@ mod tests {
     #[test]
     fn clip_drops_out_of_lattice_voxels() {
         let mut world = World::default();
+        assert_eq!(world.insert(IVec3::new(0, 0, 0), 1), InsertResult::Ok);
         assert_eq!(
-            world.insert(IVec3::new(0, 0, 0), 1, BoundsPolicy::Clip),
-            InsertResult::Ok
-        );
-        assert_eq!(
-            world.insert(IVec3::new(3000, 0, 0), 2, BoundsPolicy::Clip),
+            world.insert(IVec3::new(3000, 0, 0), 2),
             InsertResult::Clipped
         );
         assert_eq!(
-            world.insert(IVec3::new(0, -3000, 0), 3, BoundsPolicy::Clip),
+            world.insert(IVec3::new(0, -3000, 0), 3),
             InsertResult::Clipped
         );
         assert_eq!(world.voxel_count(), 1);

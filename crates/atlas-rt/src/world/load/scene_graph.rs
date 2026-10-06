@@ -6,11 +6,10 @@ use glam::{IVec3, UVec3};
 #[cfg(test)]
 use glam::{Mat4, Vec3A, Vec3Swizzles};
 
-use crate::world::{BoundsPolicy, InsertResult, World, grid};
+use crate::world::{InsertResult, World, grid};
 
 pub struct SceneGraphTraverser<'world, 'scene> {
     pub world: &'world mut World,
-    pub policy: BoundsPolicy,
     pub scene: &'scene DotVoxData,
     pub models: Vec<(IVec3, Rotation, UVec3, &'scene [Voxel])>,
 }
@@ -23,7 +22,6 @@ impl SceneGraphTraverser<'_, '_> {
                 if self.world.insert(
                     IVec3::new(i32::from(voxel.x), i32::from(voxel.z), i32::from(voxel.y)),
                     u32::from(voxel.i),
-                    self.policy,
                 ) == InsertResult::Clipped
                 {
                     clipped = clipped.saturating_add(1);

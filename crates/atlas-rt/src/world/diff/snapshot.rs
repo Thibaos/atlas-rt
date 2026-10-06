@@ -297,7 +297,7 @@ pub(crate) mod tests {
     #[ignore = "asset: cargo test --release church_matches_two_pass_oracle -- --ignored --nocapture"]
     fn church_matches_two_pass_oracle() {
         let data = dot_vox::load("assets/church.vox").unwrap();
-        let (world, _) = World::new_clipped(&data);
+        let world = World::new(&data);
 
         assert_eq!(
             emit_snapshots(&world).unwrap(),
@@ -309,7 +309,7 @@ pub(crate) mod tests {
     #[ignore = "asset: cargo test --release bistro_matches_two_pass_oracle -- --ignored --nocapture"]
     fn bistro_matches_two_pass_oracle() {
         let data = dot_vox::load("assets/bistro.vox").unwrap();
-        let (world, _) = World::new_clipped(&data);
+        let world = World::new(&data);
 
         assert_eq!(
             emit_snapshots(&world).unwrap(),

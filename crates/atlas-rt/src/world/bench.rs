@@ -186,9 +186,11 @@ mod load_bench {
     use crate::{
         render::region::pack::pack_regions,
         world::{
-            World,
             diff::snapshot::{emit_snapshots, emit_snapshots_reporting},
-            load::progress::{Progress, Stage},
+            load::{
+                build::load_unbudgeted,
+                progress::{Progress, Stage},
+            },
         },
     };
 
@@ -311,7 +313,7 @@ mod load_bench {
         let parse = start.elapsed();
 
         let start = Instant::now();
-        let (world, clipped) = World::new_clipped(&data);
+        let (world, clipped) = load_unbudgeted(&data);
         let build = start.elapsed();
 
         let progress = Progress::new();
@@ -353,7 +355,7 @@ mod load_bench {
         let parse = start.elapsed();
 
         let start = Instant::now();
-        let (world, clipped) = World::new_clipped(&data);
+        let (world, clipped) = load_unbudgeted(&data);
         let world_new = start.elapsed();
         let size = world.storage_size();
 
@@ -1258,7 +1260,7 @@ mod read_bench {
                 continue;
             };
 
-            let (world, _) = World::new_clipped(&data);
+            let world = World::new(&data);
             let voxels = world.voxel_count();
 
             let (scan, scanned) = best(ASSET_REPEATS, || {
