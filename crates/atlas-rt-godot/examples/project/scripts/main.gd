@@ -59,6 +59,16 @@ func load_world(world_name: String) -> bool:
 
 	return true
 
+func generate_world() ->bool:
+	if !view: return false
+	if !view.generate_world(0, Vector3i(4096, 4096, 4096)): return false
+
+	set_pause(false)
+
+	overlay.watch()
+
+	return true
+
 func clear_world() -> bool:
 	if !view: return false
 	if !view.clear_world(): return false

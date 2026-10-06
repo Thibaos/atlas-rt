@@ -45,9 +45,8 @@ const SOIL_DEPTH: i32 = 4;
 /// How many octaves the height noise sums.
 const OCTAVES: u32 = 4;
 
-/// The first octave's lattice spacing in voxels. Each later octave halves it, so
-/// the octaves run 128, 64, 32 and 16 voxels.
-const BASE_SPACING: i32 = 128;
+/// The first octave's lattice spacing in voxels.
+const BASE_SPACING: i32 = 512;
 
 /// The bit count of the fixed-point fraction. Every noise value is an integer
 /// count of `1 << FADE_BITS` per unit, and every shift of one is exact.
@@ -88,9 +87,6 @@ const GRADIENT_MASK: u64 = GRADIENTS.len() as u64 - 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GenerationParams {
     pub seed: u64,
-    /// The ground area's extent, x by z, from the lattice's negative corner. The
-    /// fill spans the full lattice depth, so a y extent does not bound it. Any
-    /// negative component is refused.
     pub extent: IVec3,
 }
 

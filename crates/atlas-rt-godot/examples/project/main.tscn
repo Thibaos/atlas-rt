@@ -5,6 +5,22 @@
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
 
+[sub_resource type="GDScript" id="GDScript_0xm2m"]
+script/source = "extends Button
+
+@export var UI: Control
+
+func _ready() -> void:
+	pressed.connect(load_world)
+
+func _process(_delta: float) -> void:
+	disabled = !Main.is_idle()
+
+func load_world() -> void:
+	if !Main.is_idle(): return
+	return Main.generate_world()
+"
+
 [node name="main" type="Node" unique_id=1982182210]
 
 [node name="player" type="CharacterBody3D" parent="." unique_id=276233651]
@@ -67,6 +83,12 @@ offset_right = 89.5
 offset_bottom = -272.0
 grow_horizontal = 2
 grow_vertical = 0
+
+[node name="generate" type="Button" parent="UI/HBoxContainer" unique_id=1832247230 node_paths=PackedStringArray("UI")]
+layout_mode = 2
+text = "generate"
+script = SubResource("GDScript_0xm2m")
+UI = NodePath("../..")
 
 [node name="castle" type="Button" parent="UI/HBoxContainer" unique_id=457740108 node_paths=PackedStringArray("UI")]
 layout_mode = 2
