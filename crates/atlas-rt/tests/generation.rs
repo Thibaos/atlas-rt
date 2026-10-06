@@ -98,8 +98,9 @@ const PINNED_EXTENT: i32 = 16;
 /// survives a rebuild": the Snapshots are the delivery contract the renderer
 /// consumes, and their emitted order is defined, so this constant fixes the
 /// World a Seed builds. Rewrite it only when the terrain function changes on
-/// purpose, never to make a red test green.
-const PINNED_SNAPSHOT_FINGERPRINT: u64 = 0xfa15_592e_2a94_3fbd;
+/// purpose, never to make a red test green. It was re-pinned when the first
+/// octave's spacing moved from 128 to 512 voxels.
+const PINNED_SNAPSHOT_FINGERPRINT: u64 = 0xa032_fc5e_aa35_1005;
 
 /// The two column offsets that make an adjacent pair of columns on the xz plane.
 const ADJACENT_COLUMNS: [(i32, i32); 2] = [(1, 0), (0, 1)];
