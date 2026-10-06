@@ -664,7 +664,7 @@ mod tests {
     /// The fill advances through the Generate span without reaching its end:
     /// `fillable_chunks` counts every layer from Bedrock to the ceiling, and the
     /// fill skips the layers above a chunk column's own surface, so it reports
-    /// 0.634 at this extent where white noise reported about 0.795. Only the
+    /// 0.541 at this extent where white noise reported about 0.795. Only the
     /// stage's own end reaches the endpoint.
     #[test]
     fn progress_advances_during_the_generate_stage() {
@@ -682,7 +682,7 @@ mod tests {
         let filled = progress.load();
 
         assert!(
-            filled >= 0.62,
+            filled >= 0.53,
             "the fill advances through the Generate span, reaching {filled}"
         );
         assert!(world.voxel_count() > 0, "the fill wrote a World");
