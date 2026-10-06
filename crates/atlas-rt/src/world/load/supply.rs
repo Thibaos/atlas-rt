@@ -7,6 +7,7 @@ use super::progress::{Progress, Stage};
 use crate::world::{
     BoundsPolicy, World,
     diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
+    generation::{self, GeneratedWorld, GenerationParams},
     material::{PhysicalMaterialTable, load_table},
     palette::get_effective_palette,
     vox::open_bytes,
@@ -96,13 +97,41 @@ pub fn load(
     })
 }
 
+/// Generates the World `params` asks for and emits its Snapshots.
+///
+/// A Generation places nothing outside the Lattice, so it clips nothing, and it
+/// delivers its precomputed granular cells, so activation does not scan for
+/// them. It never consults the cell budget.
+///
+/// # Errors
+///
+/// Returns the generator's own reason when the params are rejected, and an error
+/// naming the source when its Snapshots cannot be emitted.
+pub fn generate(params: GenerationParams, progress: &Progress) -> anyhow::Result<SuppliedWorld> {
+    let GeneratedWorld {
+        world,
+        palette,
+        materials,
+        granular_cells,
+    } = generation::generate(progress, params).map_err(anyhow::Error::msg)?;
+
+    progress.end_stage(Stage::Build);
+
+    let snapshots = emit(progress, &world, "the generated world")?;
+
+    Ok(SuppliedWorld {
+        world,
+        snapshots,
+        palette,
+        materials,
+        granular_cells: Some(granular_cells),
+        clipped: 0,
+    })
+}
+
 /// Emits the World's Snapshots through the entry read, naming the source in the
 /// failure.
-pub(super) fn emit(
-    progress: &Progress,
-    world: &World,
-    name: &str,
-) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
+fn emit(progress: &Progress, world: &World, name: &str) -> anyhow::Result<Vec<MicroChunkSnapshot>> {
     emit_snapshots_reporting(world, Some(progress))
         .with_context(|| format!("could not emit {name}"))
 }

@@ -1,19 +1,22 @@
 //! A World supply, driven through its public interface from outside the crate.
 //!
 //! A supply is synchronous and returns plain data, so a test reaches it with no
-//! window, no GPU and no thread of its own. The load entry point is covered
-//! here; a Generation is supplied through the World job and keeps its own test.
+//! window, no GPU and no thread of its own. Both entry points are covered here:
+//! a `.vox` load and a Generation.
 
 use std::path::PathBuf;
 
 use atlas_rt::world::{
     diff::snapshot::{MicroChunkSnapshot, emit_snapshots},
+    generation::GenerationParams,
     load::{
         progress::Progress,
-        supply::{SuppliedWorld, WorldSource, load},
+        supply::{SuppliedWorld, WorldSource, generate, load},
     },
     material::PhysicalMaterialTable,
+    vocabulary::Vocabulary,
 };
+use glam::{IVec3, Vec4};
 
 /// A tracked fixture inside the lattice. Its `MATL` chunks put `_alpha` 1.0 on
 /// material 2 and 0.5 on materials 3, 4 and 6, so the effective Palette it
@@ -191,4 +194,124 @@ fn a_source_that_cannot_be_read_fails_with_an_error_that_names_the_source() {
     );
     assert!(text.contains("could not open"), "{text}");
     assert!(text.contains("no such file"), "the cause survives: {text}");
+}
+
+/// The Seed and extent the Generation tests run at: small enough to finish
+/// quickly, wide enough to fill more than one Micro-chunk.
+const SEED: u64 = 0x5EED;
+const EXTENT: IVec3 = IVec3::splat(64);
+
+const fn small() -> GenerationParams {
+    GenerationParams::new(SEED, EXTENT)
+}
+
+fn generated(params: GenerationParams) -> SuppliedWorld {
+    generate(params, &Progress::generate_path())
+        .unwrap_or_else(|error| panic!("the generation must supply: {error:#}"))
+}
+
+/// The result shape a supply delivers, whether it is a `.vox` load or a
+/// Generation. The one documented difference between the two is
+/// `granular_cells`, which each supply's own test covers.
+fn assert_result_shape(supplied: &SuppliedWorld) {
+    assert!(supplied.world.voxel_count() > 0, "the supply holds voxels");
+    assert!(!supplied.snapshots.is_empty(), "the supply emits snapshots");
+
+    let occupied: usize = supplied
+        .snapshots
+        .iter()
+        .map(MicroChunkSnapshot::occupied_count)
+        .sum();
+
+    assert_eq!(
+        supplied.world.voxel_count(),
+        occupied,
+        "every voxel reaches the renderer"
+    );
+
+    assert_ne!(
+        supplied.palette,
+        [Vec4::ZERO; 256],
+        "the Palette carries content"
+    );
+
+    let fresh = emit_snapshots(&supplied.world)
+        .unwrap_or_else(|error| panic!("the world emits a second time: {error:#}"));
+
+    assert_eq!(
+        supplied.snapshots, fresh,
+        "the Snapshots are emission of the World they arrive with"
+    );
+    assert_eq!(
+        supplied.clipped, 0,
+        "both fixtures sit inside the Lattice, and a Generation places nothing outside it"
+    );
+}
+
+#[test]
+fn a_generation_and_a_vox_load_deliver_the_same_result_shape() {
+    assert_result_shape(&supplied(&fixture()));
+    assert_result_shape(&generated(small()));
+}
+
+#[test]
+fn a_generation_delivers_the_world_its_palette_its_material_table_and_its_snapshots() {
+    let supplied = generated(small());
+
+    assert_result_shape(&supplied);
+
+    assert_eq!(
+        supplied.palette,
+        Vocabulary::new().palette(),
+        "the Palette comes from the Vocabulary"
+    );
+    assert_eq!(
+        supplied.materials,
+        Vocabulary::new().materials(),
+        "the Physical material table comes from the Vocabulary"
+    );
+}
+
+#[test]
+fn a_generation_carries_granular_cells_where_a_vox_load_carries_none() {
+    assert!(
+        generated(small()).granular_cells.is_some(),
+        "a Generation hands its precomputed Falling granular cells on, so activation does not scan"
+    );
+    assert!(
+        supplied(&fixture()).granular_cells.is_none(),
+        "a .vox load seeds the queue by scanning, not from a list"
+    );
+}
+
+#[test]
+fn a_generation_with_a_negative_extent_fails_with_an_error_that_names_the_reason() {
+    let error = generate(
+        GenerationParams::new(SEED, IVec3::new(0, -1, 0)),
+        &Progress::generate_path(),
+    )
+    .err()
+    .unwrap_or_else(|| panic!("a negative extent must fail"));
+
+    assert_eq!(
+        format!("{error:#}"),
+        "the extent [0, -1, 0] has a negative component",
+        "the generator's reason reaches the caller intact"
+    );
+}
+
+#[test]
+fn one_seed_fixes_one_generated_world_voxel_for_voxel_and_snapshot_for_snapshot() {
+    let first = generated(small());
+    let second = generated(small());
+
+    assert_eq!(
+        first.world.iter_voxels().collect::<Vec<_>>(),
+        second.world.iter_voxels().collect::<Vec<_>>(),
+        "one Seed fixes the world voxel for voxel"
+    );
+    assert_eq!(
+        first.snapshots, second.snapshots,
+        "one Seed fixes the snapshots"
+    );
 }
