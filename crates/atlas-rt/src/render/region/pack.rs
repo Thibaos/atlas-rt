@@ -295,6 +295,72 @@ mod tests {
         assert_eq!(MICRO_CHUNK_LENGTH, 8);
     }
 
+    fn mask_from_bytes(bytes: &[(usize, u8)]) -> [u8; 64] {
+        let mut mask = [0u8; 64];
+
+        for (index, value) in bytes {
+            if let Some(slot) = mask.get_mut(*index) {
+                *slot = *value;
+            }
+        }
+
+        mask
+    }
+
+    /// Cell order `x + 8y + 64z` puts byte `b` at `y = b % 8`, `z = b / 8`, and
+    /// bit `k` at `x = k`. The store's own scan is handed the same literal
+    /// cases, so the two are pinned against one table.
+    #[test]
+    fn occupied_cell_bounds_pins_the_first_and_the_last_mask_byte() {
+        let cases: [(&[(usize, u8)], (IVec3, IVec3)); 7] = [
+            (
+                &[(0, 0b0000_0001)],
+                (IVec3::new(0, 0, 0), IVec3::new(0, 0, 0)),
+            ),
+            (
+                &[(1, 0b0000_0001)],
+                (IVec3::new(0, 1, 0), IVec3::new(0, 1, 0)),
+            ),
+            (
+                &[(8, 0b0000_0001)],
+                (IVec3::new(0, 0, 1), IVec3::new(0, 0, 1)),
+            ),
+            (
+                &[(0, 0b1000_0001)],
+                (IVec3::new(0, 0, 0), IVec3::new(7, 0, 0)),
+            ),
+            (
+                &[(0, 0b0001_0010)],
+                (IVec3::new(1, 0, 0), IVec3::new(4, 0, 0)),
+            ),
+            (
+                &[(63, 0b1000_0000)],
+                (IVec3::new(7, 7, 7), IVec3::new(7, 7, 7)),
+            ),
+            (
+                &[(0, 0b0000_0010), (63, 0b0000_0001)],
+                (IVec3::new(0, 0, 0), IVec3::new(1, 7, 7)),
+            ),
+        ];
+
+        for (bytes, expected) in cases {
+            let mask = mask_from_bytes(bytes);
+            let bounds = occupied_cell_bounds(&mask)
+                .unwrap_or_else(|error| panic!("{bytes:?} should bound: {error}"));
+
+            assert_eq!(bounds, expected, "{bytes:?}");
+        }
+    }
+
+    #[test]
+    fn occupied_cell_bounds_rejects_a_zero_mask_as_a_hull() {
+        let Err(error) = occupied_cell_bounds(&[0u8; 64]) else {
+            panic!("a zero mask has no hull");
+        };
+
+        assert_eq!(error.to_string(), "packed an empty snapshot as a hull");
+    }
+
     struct Xorshift(u64);
 
     impl Xorshift {

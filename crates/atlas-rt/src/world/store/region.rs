@@ -1459,6 +1459,127 @@ mod tests {
         assert_eq!(store.count(), content(&store).len());
     }
 
+    fn mask_from_cells(cells: &[usize]) -> [u8; MICRO_BYTES] {
+        // The cell order is `x + 8y + 64z`, so cell `c` is byte `c / 8`, bit `c % 8`.
+        let mut mask = [0u8; MICRO_BYTES];
+
+        for cell in cells {
+            let byte = cell.strict_div(8);
+            let bit = u32::try_from(cell.strict_rem(8)).unwrap_or(0);
+
+            if let Some(slot) = mask.get_mut(byte) {
+                *slot |= 1u8.wrapping_shl(bit);
+            }
+        }
+
+        mask
+    }
+
+    fn mask_from_bytes(bytes: &[(usize, u8)]) -> [u8; MICRO_BYTES] {
+        let mut mask = [0u8; MICRO_BYTES];
+
+        for (index, value) in bytes {
+            if let Some(slot) = mask.get_mut(*index) {
+                *slot = *value;
+            }
+        }
+
+        mask
+    }
+
+    /// `rank` scans 64-bit words. Its GLSL twin `material_rank` in
+    /// crates/atlas-rt/shaders/voxel/intersect.rint is the same scan over
+    /// 32-bit words, and no test compares the two, so this table is the only
+    /// pin on them agreeing.
+    #[test]
+    fn rank_counts_the_set_bits_below_every_cell() {
+        let cases: [&[usize]; 3] = [&[0, 7, 8, 63, 64, 300, 511], &[1, 62, 65, 510], &[255, 256]];
+
+        for cells in cases {
+            let mask = mask_from_cells(cells);
+
+            for cell in 0..MICRO_CHUNK_CELLS {
+                let below = cells.iter().filter(|&&set| set < cell).count();
+
+                assert_eq!(rank(&mask, cell), below, "cells {cells:?} at cell {cell}");
+            }
+        }
+    }
+
+    #[test]
+    fn rank_of_the_named_boundary_cells() {
+        let mask = mask_from_cells(&[0, 7, 8, 63, 64, 300, 511]);
+
+        let cases = [
+            (0usize, 0usize),
+            (7, 1),
+            (8, 2),
+            (63, 3),
+            (64, 4),
+            (300, 5),
+            (511, 6),
+        ];
+
+        for (cell, below) in cases {
+            assert_eq!(rank(&mask, cell), below, "cell {cell}");
+        }
+    }
+
+    /// Cell order `x + 8y + 64z` puts byte `b` at `y = b % 8`, `z = b / 8`, and
+    /// bit `k` at `x = k`.
+    #[test]
+    fn entry_cell_bounds_pins_the_first_and_the_last_mask_byte() {
+        let origin = IVec3::new(10, 20, 30);
+        let cases: [(&[(usize, u8)], (IVec3, IVec3)); 7] = [
+            (
+                &[(0, 0b0000_0001)],
+                (IVec3::new(10, 20, 30), IVec3::new(10, 20, 30)),
+            ),
+            (
+                &[(1, 0b0000_0001)],
+                (IVec3::new(10, 21, 30), IVec3::new(10, 21, 30)),
+            ),
+            (
+                &[(8, 0b0000_0001)],
+                (IVec3::new(10, 20, 31), IVec3::new(10, 20, 31)),
+            ),
+            (
+                &[(0, 0b1000_0001)],
+                (IVec3::new(10, 20, 30), IVec3::new(17, 20, 30)),
+            ),
+            (
+                &[(0, 0b0001_0010)],
+                (IVec3::new(11, 20, 30), IVec3::new(14, 20, 30)),
+            ),
+            (
+                &[(63, 0b1000_0000)],
+                (IVec3::new(17, 27, 37), IVec3::new(17, 27, 37)),
+            ),
+            (
+                &[(0, 0b0000_0010), (63, 0b0000_0001)],
+                (IVec3::new(10, 20, 30), IVec3::new(11, 27, 37)),
+            ),
+        ];
+
+        for (bytes, expected) in cases {
+            let mask = mask_from_bytes(bytes);
+
+            assert_eq!(
+                entry_cell_bounds(origin, &mask),
+                Some(expected),
+                "{bytes:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn entry_cell_bounds_is_none_for_a_zero_mask() {
+        assert_eq!(
+            entry_cell_bounds(IVec3::new(10, 20, 30), &[0u8; MICRO_BYTES]),
+            None
+        );
+    }
+
     fn reference_bounds(reference: &HashMap<IVec3, u8>) -> Option<(IVec3, IVec3)> {
         reference.keys().copied().fold(None, |bounds, position| {
             Some(match bounds {
