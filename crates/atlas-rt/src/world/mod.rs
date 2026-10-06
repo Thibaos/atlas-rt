@@ -1,4 +1,4 @@
-pub(crate) mod budget;
+pub mod budget;
 pub mod diff;
 pub mod generation;
 pub mod grid;

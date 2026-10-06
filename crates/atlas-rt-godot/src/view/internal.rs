@@ -4,7 +4,7 @@ use atlas_rt::world::diff::batch::{self};
 use atlas_rt::world::diff::edit::{MICRO_BYTES, MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::generation::GenerationParams;
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldUpdateJob};
-use atlas_rt::world::load::supply::WorldSource;
+use atlas_rt::world::load::supply::{FileWorldSource, WorldSource};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -17,7 +17,7 @@ use atlas_rt::render::{
 use atlas_rt::world::grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH};
 
 use crate::view::api::AtlasRtView;
-use crate::view::{ATLAS_FRAME_UNIFORM, REJECT, VoxFile, camera_view};
+use crate::view::{ATLAS_FRAME_UNIFORM, REJECT, camera_view};
 use crate::worker::lock;
 
 impl AtlasRtView {
@@ -83,12 +83,12 @@ impl AtlasRtView {
     /// cannot reach Godot, so `res://` and `user://` are resolved to a real
     /// filesystem path here, on the main thread, before the job starts.
     pub(super) fn source(path: &GString) -> Box<dyn WorldSource> {
-        Box::new(VoxFile {
-            path: ProjectSettings::singleton()
+        Box::new(FileWorldSource::new(
+            ProjectSettings::singleton()
                 .globalize_path(path)
                 .to_string(),
-            name: path.to_string(),
-        })
+            path.to_string(),
+        ))
     }
 
     /// The version assigned to new frames, recorded when the host requests a

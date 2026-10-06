@@ -1,6 +1,6 @@
 use atlas_rt::world::{
     palette::{get_effective_palette, get_palette},
-    vox::{open_bytes, open_file},
+    vox::open_bytes,
 };
 use dot_vox::DotVoxData;
 use glam::Vec4;
@@ -16,7 +16,7 @@ fn path(name: &str) -> String {
 }
 
 fn load(name: &str) -> DotVoxData {
-    open_file(&path(name))
+    open_bytes(&bytes(name)).unwrap_or_else(|error| panic!("{error:#}"))
 }
 
 fn bytes(name: &str) -> Vec<u8> {

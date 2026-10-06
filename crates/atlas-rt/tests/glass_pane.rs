@@ -6,7 +6,7 @@
 //! palette position still loads, still draws, and silently renders every pane
 //! opaque, which is what the old `glass-shadow.vox` did.
 
-use atlas_rt::world::{World, palette::get_palette, vox::open_file};
+use atlas_rt::world::{World, palette::get_palette, vox::open_bytes};
 use glam::{IVec3, Vec4};
 
 const GLASS_PANE: &str = "assets/test/glass-pane.vox";
@@ -15,8 +15,15 @@ const WALL: u8 = 1;
 const PANE: u8 = 2;
 const OPENING: u8 = 3;
 
+fn open(name: &str) -> dot_vox::DotVoxData {
+    let bytes =
+        std::fs::read(name).unwrap_or_else(|error| panic!("could not read {name}: {error}"));
+
+    open_bytes(&bytes).unwrap_or_else(|error| panic!("could not load {name}: {error:#}"))
+}
+
 fn load() -> (World, [Vec4; 256]) {
-    let data = open_file(GLASS_PANE);
+    let data = open(GLASS_PANE);
     (World::new(&data), get_palette(&data))
 }
 
@@ -56,7 +63,7 @@ fn every_slot_outside_the_three_stays_opaque() {
 
 #[test]
 fn every_voxel_falls_inside_its_models_declared_size() {
-    let data = open_file(GLASS_PANE);
+    let data = open(GLASS_PANE);
 
     for model in &data.models {
         for voxel in &model.voxels {

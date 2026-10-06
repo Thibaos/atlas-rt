@@ -19,7 +19,7 @@ use atlas_rt::world::{
         override_path,
     },
     palette::get_effective_palette,
-    vox::open_file,
+    vox::open_bytes,
 };
 
 const WORLD: &str = "assets/test/matl-alpha.vox";
@@ -132,7 +132,9 @@ fn load(path: &Path) -> (SuppliedWorld, Status) {
 
 /// The world and palette an override must leave untouched.
 fn reference() -> (World, [glam::Vec4; 256]) {
-    let data = open_file(WORLD);
+    let bytes =
+        std::fs::read(WORLD).unwrap_or_else(|error| panic!("could not read {WORLD}: {error}"));
+    let data = open_bytes(&bytes).unwrap_or_else(|error| panic!("{error:#}"));
     let palette = get_effective_palette(&data).unwrap_or_else(|error| panic!("{error:#}"));
 
     (World::new(&data), palette)

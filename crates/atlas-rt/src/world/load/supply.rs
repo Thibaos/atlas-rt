@@ -30,6 +30,36 @@ pub trait WorldSource: Send {
     }
 }
 
+/// A world file on the filesystem, read on the thread that supplies the World.
+pub struct FileWorldSource {
+    path: PathBuf,
+    name: String,
+}
+
+impl FileWorldSource {
+    #[must_use]
+    pub fn new(path: impl Into<PathBuf>, name: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            name: name.into(),
+        }
+    }
+}
+
+impl WorldSource for FileWorldSource {
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    fn read(&self) -> Result<Vec<u8>, String> {
+        std::fs::read(&self.path).map_err(|error| error.to_string())
+    }
+
+    fn filesystem_path(&self) -> Option<PathBuf> {
+        Some(self.path.clone())
+    }
+}
+
 /// A supplied World with the data that describes it.
 ///
 /// It carries the Palette, the Physical material table, the Snapshots, the
