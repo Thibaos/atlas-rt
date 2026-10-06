@@ -60,11 +60,8 @@ impl WorldSource for FileWorldSource {
     }
 }
 
-/// A supplied World with the data that describes it.
-///
-/// It carries the Palette, the Physical material table, the Snapshots, the
-/// granular cells and the count of voxels the Lattice clipped. A .vox load and
-/// a Generation both deliver this shape, so a host cannot tell the two supplies
+/// A supplied World with the data that describes it. A .vox load and a
+/// Generation both deliver this shape, so a host cannot tell the two supplies
 /// apart.
 #[derive(Debug)]
 pub struct SuppliedWorld {

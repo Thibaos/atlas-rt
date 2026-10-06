@@ -463,8 +463,7 @@ impl Drop for WorldUpdateJob {
     }
 }
 
-/// The load pipeline, a thin wrapper around the supply: it runs the supply on
-/// this thread and formats its error once, so the job keeps storing a string.
+/// The load, run on the job's thread. The error is formatted once, so the job keeps storing a string.
 fn run_pipeline(
     progress: &Progress,
     source: &dyn WorldSource,
@@ -482,8 +481,7 @@ fn run_pipeline(
     Ok(RunResult::Loaded(Box::new(supplied)))
 }
 
-/// The Generation pipeline, a thin wrapper around the supply: it runs the supply
-/// on this thread and formats its error once, so the job keeps storing a string.
+/// The Generation, run on the job's thread.
 fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunResult, String> {
     let supplied = supply::generate(params, progress).map_err(|error| format!("{error:#}"))?;
 

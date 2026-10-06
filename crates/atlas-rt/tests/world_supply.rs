@@ -122,6 +122,9 @@ fn refused(source: &dyn WorldSource) -> String {
     format!("{error:#}")
 }
 
+/// The fixture's RGBA chunk holds 170, 160, 150, 255 at slot 1, which material 2
+/// leaves at full alpha. Material 3 halves slot 2's alpha of 255 and material 4
+/// halves slot 3's alpha of 128.
 #[test]
 fn a_vox_load_delivers_the_world_its_palette_its_material_table_and_its_snapshots() {
     let supplied = supplied(&fixture());
@@ -141,8 +144,6 @@ fn a_vox_load_delivers_the_world_its_palette_its_material_table_and_its_snapshot
         "every voxel reaches the renderer"
     );
 
-    // The fixture's RGBA chunk holds 170, 160, 150, 255 at slot 1, which
-    // material 2 leaves at full alpha.
     let full = supplied
         .palette
         .get(1)
@@ -151,8 +152,6 @@ fn a_vox_load_delivers_the_world_its_palette_its_material_table_and_its_snapshot
     assert!((full.x - 170.0_f32 / 255.0_f32).abs() < 1.0e-6, "{full:?}");
     assert!((full.w - 1.0).abs() < 1.0e-6, "material 2 keeps its alpha");
 
-    // Material 3 halves slot 2's alpha of 255 and material 4 halves slot 3's
-    // alpha of 128.
     for (slot, raw) in [(2usize, 255.0_f32), (3, 128.0)] {
         let color = supplied
             .palette
