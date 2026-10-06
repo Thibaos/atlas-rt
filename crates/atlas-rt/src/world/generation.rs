@@ -14,11 +14,10 @@ use glam::IVec3;
 
 use super::{
     World,
-    diff::edit::cell_offset,
     grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
     load::progress::{Progress, Stage},
     material::{PhysicalMaterialTable, Rule},
-    micro::MICRO_BYTES,
+    micro::{self, MICRO_BYTES, MicroChunkRef},
     vocabulary::{Feature, Material, Vocabulary},
 };
 
@@ -280,7 +279,7 @@ fn write_micro_chunk(
     let mut materials: Vec<u8> = Vec::with_capacity(512);
 
     for index in 0..512usize {
-        let offset = cell_offset(index);
+        let offset = micro::cell_offset(index);
         let position = origin.saturating_add(offset);
 
         if position.x >= upper.x || position.z >= upper.z {
@@ -293,9 +292,7 @@ fn write_micro_chunk(
             .unwrap_or(SURFACE_FLOOR);
 
         if let Some(material) = fill_cell(position, surface) {
-            if let Some(byte) = mask.get_mut(index / 8) {
-                *byte |= 1u8 << (index % 8);
-            }
+            micro::set_cell(&mut mask, index, true);
 
             materials.push(material.index());
 
@@ -305,7 +302,7 @@ fn write_micro_chunk(
         }
     }
 
-    if let Err(error) = world.write_entry(origin, &mask, &materials) {
+    if let Err(error) = world.write_entry(origin, MicroChunkRef::new(&mask, &materials)) {
         panic!("the generator wrote an invalid entry at {origin}: {error}");
     }
 }

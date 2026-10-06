@@ -7,9 +7,9 @@ use rustc_hash::FxHashMap;
 
 use crate::world::{
     InsertResult,
-    diff::edit::{EditError, cell_offset, mask_index, mask_occupied, validate_entry},
+    diff::edit::{EditError, validate_entry},
     grid,
-    micro::{MICRO_BYTES, MICRO_CELLS, MICRO_EDGE},
+    micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunkRef},
 };
 
 pub use region::RegionStore;
@@ -31,13 +31,6 @@ impl StorageSize {
             .saturating_add(self.index)
             .saturating_add(self.blob)
     }
-}
-
-/// A Micro-chunk as a store holds it: the Occupancy mask and the materials of
-/// the occupied cells in ascending cell order, borrowed from the store.
-pub struct ChunkEntry<'a> {
-    pub mask: &'a [u8],
-    pub materials: &'a [u8],
 }
 
 /// A live Micro-chunk as enumeration yields it: the origin, the Occupancy mask
@@ -66,9 +59,7 @@ impl Bucket {
     }
 
     fn record(&mut self, index: usize, material: u8) {
-        if let Some(byte) = self.mask.get_mut(index / MICRO_EDGE) {
-            *byte |= 1u8 << (index % MICRO_EDGE);
-        }
+        micro::set_cell(&mut self.mask, index, true);
 
         if let Some(slot) = self.materials.get_mut(index) {
             *slot = material;
@@ -79,7 +70,7 @@ impl Bucket {
         let mut materials = Vec::new();
 
         for (index, material) in self.materials.iter().enumerate() {
-            if mask_occupied(&self.mask, index) {
+            if micro::occupied_cell(&self.mask, index) {
                 materials.push(*material);
             }
         }
@@ -118,7 +109,7 @@ pub trait VoxelStore: Debug + Send + Sync {
     /// The Micro-chunk entry `origin` names, or `None` for a Micro-chunk with no
     /// entry.
     #[must_use]
-    fn chunk_entry(&self, origin: IVec3) -> Option<ChunkEntry<'_>>;
+    fn chunk_entry(&self, origin: IVec3) -> Option<MicroChunkRef<'_>>;
 
     /// Enumerates the live Micro-chunk entries in Region then Micro-chunk
     /// ordinal order.
@@ -132,7 +123,7 @@ pub trait VoxelStore: Debug + Send + Sync {
 
         for (position, material) in self.iter() {
             let origin = grid::grid_origin(position, grid::MICRO_CHUNK_LENGTH);
-            let index = mask_index(position.saturating_sub(origin));
+            let index = micro::mask_index(position.saturating_sub(origin));
 
             let bucket = buckets.entry(origin).or_insert_with(|| {
                 order.push(origin);
@@ -166,21 +157,16 @@ pub trait VoxelStore: Debug + Send + Sync {
     ///
     /// Rejects an origin outside the lattice or off the Micro-chunk grid, and
     /// materials whose count does not match the mask's popcount.
-    fn write_entry(
-        &mut self,
-        origin: IVec3,
-        mask: &[u8; MICRO_BYTES],
-        materials: &[u8],
-    ) -> Result<(), EditError> {
-        validate_entry(origin, mask, materials)?;
+    fn write_entry(&mut self, origin: IVec3, chunk: MicroChunkRef<'_>) -> Result<(), EditError> {
+        validate_entry(origin, chunk.mask, chunk.materials)?;
 
         let mut next = 0usize;
 
         for index in 0..MICRO_CELLS {
-            let position = origin.saturating_add(cell_offset(index));
+            let position = origin.saturating_add(micro::cell_offset(index));
 
-            if mask_occupied(mask, index) {
-                if let Some(material) = materials.get(next).copied() {
+            if chunk.occupied_cell(index) {
+                if let Some(material) = chunk.materials.get(next).copied() {
                     self.set(position, material);
                 }
 

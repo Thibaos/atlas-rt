@@ -98,7 +98,7 @@ impl World {
     /// The Micro-chunk entry `origin` names, or `None` for a Micro-chunk with no
     /// entry.
     #[must_use]
-    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<store::ChunkEntry<'_>> {
+    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<micro::MicroChunkRef<'_>> {
         self.store.chunk_entry(origin)
     }
 
@@ -115,10 +115,9 @@ impl World {
     pub(in crate::world) fn write_entry(
         &mut self,
         origin: IVec3,
-        mask: &[u8; micro::MICRO_BYTES],
-        materials: &[u8],
+        chunk: micro::MicroChunkRef<'_>,
     ) -> Result<(), diff::edit::EditError> {
-        self.store.write_entry(origin, mask, materials)
+        self.store.write_entry(origin, chunk)
     }
 
     #[cfg(test)]

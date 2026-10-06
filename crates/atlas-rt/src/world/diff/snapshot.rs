@@ -3,6 +3,7 @@ use glam::IVec3;
 use crate::world::{
     World,
     load::progress::{Progress, VOXEL_STEP},
+    micro,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,10 +26,7 @@ impl MicroChunkSnapshot {
 
     #[must_use]
     pub fn occupied_count(&self) -> usize {
-        self.mask
-            .iter()
-            .map(|byte| byte.count_ones() as usize)
-            .sum()
+        micro::occupied_count(&self.mask)
     }
 }
 

@@ -11,7 +11,7 @@ use crate::world::{
         snapshot::MicroChunkSnapshot,
     },
     grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice, region_index_in_lattice, region_index_of},
-    micro::{MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE},
+    micro::{self, MICRO_BYTES, MICRO_CELLS},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,7 +76,7 @@ impl MicroChunkEdit {
         let mut next_material = 0usize;
 
         for index in 0..MICRO_CELLS {
-            let occupied = mask_occupied(&self.mask, index);
+            let occupied = micro::occupied_cell(&self.mask, index);
 
             let incoming = if occupied {
                 let material = self.materials.get(next_material).copied();
@@ -86,7 +86,7 @@ impl MicroChunkEdit {
                 None
             };
 
-            let position = self.origin.saturating_add(cell_offset(index));
+            let position = self.origin.saturating_add(micro::cell_offset(index));
             let current = world.get_voxel(&position);
 
             match (incoming, current) {
@@ -107,18 +107,12 @@ impl MicroChunkEdit {
     }
 }
 
-/// Whether cell `index` of `mask` is occupied.
-pub(in crate::world) fn mask_occupied(mask: &[u8], index: usize) -> bool {
-    mask.get(index / MICRO_EDGE)
-        .is_some_and(|byte| byte & (1u8 << (index % MICRO_EDGE)) != 0)
-}
-
 /// The checks a whole-entry write shares with the edit path: the origin sits
 /// in the lattice on the Micro-chunk grid, which puts every cell it covers in
 /// the lattice too, and the materials match the mask's occupancy.
 pub(in crate::world) fn validate_entry(
     origin: IVec3,
-    mask: &[u8],
+    mask: &[u8; MICRO_BYTES],
     materials: &[u8],
 ) -> Result<(), EditError> {
     if !in_lattice(origin) {
@@ -129,7 +123,7 @@ pub(in crate::world) fn validate_entry(
         return Err(EditError::rejected(origin, EditReason::NotChunkOrigin));
     }
 
-    let occupied: usize = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+    let occupied = micro::occupied_count(mask);
 
     if occupied != materials.len() {
         return Err(EditError::rejected(
@@ -142,16 +136,6 @@ pub(in crate::world) fn validate_entry(
     }
 
     Ok(())
-}
-
-/// The cell at `index` of the `x + 8y + 64z` walk a Micro-chunk's mask and
-/// materials both follow.
-pub(in crate::world) fn cell_offset(index: usize) -> IVec3 {
-    IVec3::new(
-        i32::try_from(index % MICRO_EDGE).unwrap_or(0),
-        i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
-        i32::try_from(index / MICRO_AREA).unwrap_or(0),
-    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -274,9 +258,11 @@ pub(in crate::world) fn projected_count(world: &World, edits: &[VoxelEdit]) -> u
 
     for edit in edits {
         let origin = grid_origin(edit.position, MICRO_CHUNK_LENGTH);
+        let cell = micro::mask_index(edit.position.saturating_sub(origin));
+        let occupied = matches!(edit.change, VoxelChange::Set(_));
 
         if let Some((mask, _)) = masks.get_mut(&origin) {
-            set_mask_bit(mask, edit.position.saturating_sub(origin), edit.change);
+            micro::set_cell(mask, cell, occupied);
             continue;
         }
 
@@ -285,15 +271,10 @@ pub(in crate::world) fn projected_count(world: &World, edits: &[VoxelEdit]) -> u
             continue;
         }
 
-        let entry = world.chunk_entry(origin);
-        let bytes = entry
-            .as_ref()
-            .and_then(|entry| <&[u8; MICRO_BYTES]>::try_from(entry.mask).ok());
-
-        if let (Some(entry), Some(bytes)) = (entry.as_ref(), bytes) {
-            let mut mask = *bytes;
+        if let Some(entry) = world.chunk_entry(origin) {
+            let mut mask = *entry.mask;
             let before_cells = entry.materials.len();
-            set_mask_bit(&mut mask, edit.position.saturating_sub(origin), edit.change);
+            micro::set_cell(&mut mask, cell, occupied);
             masks.insert(origin, (mask, before_cells));
         } else {
             fallback_chunks.insert(origin);
@@ -302,7 +283,7 @@ pub(in crate::world) fn projected_count(world: &World, edits: &[VoxelEdit]) -> u
     }
 
     for (mask, before_cells) in masks.values() {
-        let after_cells: usize = mask.iter().map(|byte| byte.count_ones() as usize).sum();
+        let after_cells = micro::occupied_count(mask);
         projected = projected
             .saturating_add(after_cells)
             .saturating_sub(*before_cells);
@@ -335,28 +316,6 @@ fn fold(
             }
 
             pending.insert(edit.position, false);
-        }
-    }
-}
-
-pub(in crate::world) fn mask_index(local: IVec3) -> usize {
-    let x = usize::try_from(local.x).unwrap_or(0);
-    let y = usize::try_from(local.y).unwrap_or(0);
-    let z = usize::try_from(local.z).unwrap_or(0);
-
-    x.strict_add(y.strict_mul(MICRO_EDGE))
-        .strict_add(z.strict_mul(MICRO_AREA))
-}
-
-fn set_mask_bit(mask: &mut [u8; MICRO_BYTES], local: IVec3, change: VoxelChange) {
-    let index = mask_index(local);
-
-    if let Some(slot) = mask.get_mut(index / MICRO_EDGE) {
-        let bit = 1u8 << (index % MICRO_EDGE);
-
-        match change {
-            VoxelChange::Set(_) => *slot |= bit,
-            VoxelChange::Clear => *slot &= !bit,
         }
     }
 }
@@ -495,13 +454,9 @@ pub(in crate::world) fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
 /// materials straight out; a store with no entry shape probes every cell.
 pub(in crate::world) fn compile_chunk(world: &World, origin: IVec3) -> MicroChunkSnapshot {
     if let Some(entry) = world.chunk_entry(origin) {
-        let Ok(mask) = <&[u8; MICRO_BYTES]>::try_from(entry.mask) else {
-            return probe_chunk(world, origin);
-        };
-
         return MicroChunkSnapshot {
             global_coords: origin,
-            mask: *mask,
+            mask: *entry.mask,
             materials: entry.materials.to_vec(),
         };
     }
@@ -516,15 +471,12 @@ pub(in crate::world) fn probe_chunk(world: &World, origin: IVec3) -> MicroChunkS
     let mut materials = Vec::new();
 
     for index in 0..MICRO_CELLS {
-        let Some(material) = world.get_voxel(&origin.saturating_add(cell_offset(index))) else {
+        let Some(material) = world.get_voxel(&origin.saturating_add(micro::cell_offset(index)))
+        else {
             continue;
         };
 
-        let byte = index / MICRO_EDGE;
-
-        if let Some(bits) = mask.get_mut(byte) {
-            *bits |= 1u8 << (index % MICRO_EDGE);
-        }
+        micro::set_cell(&mut mask, index, true);
 
         materials.push(material);
     }
@@ -548,12 +500,13 @@ mod tests {
             snapshot::{MicroChunkSnapshot, emit_snapshots, tests::random_world},
         },
         grid::{MICRO_CHUNK_LENGTH, grid_origin},
+        micro::{MICRO_AREA, MICRO_EDGE},
         test_support::{Rng, u8_below},
     };
 
     use super::{
-        EditError, EditReason, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, VoxelChange,
-        VoxelEdit, edit_world, projected_count,
+        EditError, EditReason, MICRO_BYTES, MICRO_CELLS, VoxelChange, VoxelEdit, edit_world,
+        projected_count,
     };
 
     const CHUNK: i32 = MICRO_CHUNK_LENGTH as i32;

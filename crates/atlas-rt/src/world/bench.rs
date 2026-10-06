@@ -1110,7 +1110,7 @@ mod read_bench {
         World,
         diff::snapshot::emit_snapshots,
         grid::{MICRO_CHUNK_LENGTH, REGION_LENGTH, grid_origin},
-        store::region::rank,
+        micro::rank,
     };
 
     const DENSE_EDGE: i32 = 64;

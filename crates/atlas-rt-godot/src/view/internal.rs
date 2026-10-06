@@ -5,7 +5,7 @@ use atlas_rt::world::diff::edit::{MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::generation::GenerationParams;
 use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldUpdateJob};
 use atlas_rt::world::load::supply::{FileWorldSource, WorldSource};
-use atlas_rt::world::micro::MICRO_BYTES;
+use atlas_rt::world::micro::{MICRO_BYTES, occupied_count};
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
@@ -517,25 +517,21 @@ impl AtlasRtView {
             ));
         }
 
-        let occupied = mask
-            .to_vec()
-            .iter()
-            .map(|byte| byte.count_ones())
-            .sum::<u32>();
-
-        if materials.len() != occupied as usize {
-            return Err(format!(
-                "materials length {} does not match mask popcount {occupied}",
-                materials.len()
-            ));
-        }
-
         let mut mask_bytes = [0u8; MICRO_BYTES];
 
         for (index, byte) in mask.to_vec().iter().copied().enumerate() {
             if let Some(entry) = mask_bytes.get_mut(index) {
                 *entry = byte;
             }
+        }
+
+        let occupied = occupied_count(&mask_bytes);
+
+        if materials.len() != occupied {
+            return Err(format!(
+                "materials length {} does not match mask popcount {occupied}",
+                materials.len()
+            ));
         }
 
         Ok(MicroChunkEdit {

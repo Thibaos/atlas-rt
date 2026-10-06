@@ -10,6 +10,7 @@ use vulkano::acceleration_structure::AabbPositions;
 use crate::world::{
     diff::snapshot::MicroChunkSnapshot,
     grid::{MICRO_CHUNK_LENGTH, REGION_HALF_EXTENT, REGION_LENGTH, region_id, region_index_of},
+    micro::{self, MICRO_BYTES},
 };
 
 pub const MC_PER_REGION_SIDE: usize = (REGION_LENGTH / MICRO_CHUNK_LENGTH) as usize;
@@ -183,34 +184,12 @@ pub fn pack_region(
     })
 }
 
-fn occupied_cell_bounds(mask: &[u8; 64]) -> anyhow::Result<(IVec3, IVec3)> {
-    let mut min = IVec3::splat(i32::try_from(MICRO_CHUNK_LENGTH.strict_sub(1))?);
-    let mut max = IVec3::ZERO;
-    let mut any = false;
-
-    for (z, row) in mask.as_chunks::<8>().0.iter().enumerate() {
-        for (y, &byte) in row.iter().enumerate() {
-            if byte == 0 {
-                continue;
-            }
-
-            let x_min = i32::try_from(byte.trailing_zeros())?;
-            let x_max = i32::try_from(7u32.strict_sub(byte.leading_zeros()))?;
-            let y = i32::try_from(y)?;
-            let z = i32::try_from(z)?;
-
-            min = min.min(IVec3::new(x_min, y, z));
-            max = max.max(IVec3::new(x_max, y, z));
-
-            any = true;
-        }
-    }
-
-    if !any {
+fn occupied_cell_bounds(mask: &[u8; MICRO_BYTES]) -> anyhow::Result<(IVec3, IVec3)> {
+    let Some(bounds) = micro::bounds(mask) else {
         bail!("packed an empty snapshot as a hull");
-    }
+    };
 
-    Ok((min, max))
+    Ok(bounds)
 }
 
 #[cfg(test)]
