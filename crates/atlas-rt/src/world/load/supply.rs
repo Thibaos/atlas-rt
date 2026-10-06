@@ -5,7 +5,7 @@ use glam::{IVec3, Vec4};
 
 use super::progress::{Progress, Stage};
 use crate::world::{
-    BoundsPolicy, World,
+    World,
     diff::snapshot::{MicroChunkSnapshot, emit_snapshots_reporting},
     generation::{self, GeneratedWorld, GenerationParams},
     material::{PhysicalMaterialTable, load_table},
@@ -108,10 +108,9 @@ pub fn load(
 
     let materials = load_table(source.filesystem_path().as_deref());
 
-    let (world, clipped) =
-        super::build::load(&voxel_data, BoundsPolicy::Clip, budget).map_err(|refused| {
-            anyhow::anyhow!("the world needs {refused} cells, above the cell budget of {budget}")
-        })?;
+    let (world, clipped) = super::build::load(&voxel_data, budget).map_err(|refused| {
+        anyhow::anyhow!("the world needs {refused} cells, above the cell budget of {budget}")
+    })?;
 
     progress.end_stage(Stage::Build);
 

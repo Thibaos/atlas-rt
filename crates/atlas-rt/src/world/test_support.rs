@@ -10,8 +10,9 @@ use std::hash::{Hash, Hasher};
 use rustc_hash::FxHasher;
 
 use super::grid;
+use super::load::build::load_unbudgeted;
 use super::load::scene_graph::{SceneGraphTraverser, VoxelPlacement};
-use super::{BoundsPolicy, ModelSpec, World, scene_fixture};
+use super::{ModelSpec, World, scene_fixture};
 
 const TRANSLATIONS: &[i32] = &[
     0, 1, -1, 3, -3, 2047, -2047, 2048, -2048, 2049, -2049, 100_000, -100_000, 1_000_000,
@@ -96,7 +97,6 @@ fn collected_models(data: &DotVoxData) -> Vec<(IVec3, Rotation, UVec3, &[Voxel])
     let mut world = World::default();
     let mut loader = SceneGraphTraverser {
         world: &mut world,
-        policy: BoundsPolicy::Clip,
         scene: data,
         models: Vec::new(),
     };
@@ -185,8 +185,7 @@ fn legacy_float_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
 }
 
 fn production_map(data: &DotVoxData) -> HashMap<IVec3, u8> {
-    let (world, _) = World::new_clipped(data);
-    world.iter_voxels().collect()
+    World::new(data).iter_voxels().collect()
 }
 
 pub(crate) fn random_specs(rng: &mut Rng, rotation: u8) -> Vec<ModelSpec> {
@@ -331,7 +330,7 @@ fn serial_bounds(map: &HashMap<IVec3, u8>) -> Option<(IVec3, IVec3)> {
 /// Asserts the live Region build equals the serial placement oracle in content,
 /// count, and bounds.
 fn assert_matches_serial(data: &DotVoxData, case: &str) {
-    let (world, _) = World::new_clipped(data);
+    let world = World::new(data);
     let serial = serial_map(data);
 
     assert_eq!(world.voxel_count(), serial.len(), "voxel count, {case}");
@@ -344,6 +343,78 @@ fn assert_matches_serial(data: &DotVoxData, case: &str) {
         world.iter_voxels().collect::<HashMap<IVec3, u8>>(),
         serial,
         "content, {case}"
+    );
+}
+
+#[test]
+fn a_placement_off_the_lattice_is_clipped() {
+    let specs = [ModelSpec {
+        size: (2, 2, 2),
+        voxels: vec![Voxel {
+            x: 0,
+            y: 0,
+            z: 0,
+            i: 7,
+        }],
+        rotation: 0b0001,
+        translation: [100_000, 0, 0],
+    }];
+    let data = scene_fixture(&specs);
+    let world = World::new(&data);
+
+    assert_eq!(
+        world.voxel_count(),
+        0,
+        "a placement entirely off the lattice lands nowhere"
+    );
+}
+
+/// The voxels the serial placement oracle drops, counted from the same
+/// placements the loader walks.
+fn serial_clipped(data: &DotVoxData) -> usize {
+    collected_models(data)
+        .into_iter()
+        .map(|(translation, rotation, size, voxels)| {
+            let placement = VoxelPlacement::new(translation, rotation, size);
+
+            voxels
+                .iter()
+                .filter(|voxel| !grid::in_lattice(placement.place(**voxel)))
+                .count()
+        })
+        .fold(0usize, usize::saturating_add)
+}
+
+/// The randomised translations reach the lattice edges and values far outside
+/// them, so the scenes the placement tests build have voxels to clip. The
+/// loader's clipped count must equal the voxels the serial oracle drops, and
+/// the total must be non-zero, because the deleted panic policy used to carry
+/// this coverage.
+#[test]
+fn randomized_scenes_clip_what_the_serial_oracle_drops() {
+    let mut rng = Rng::new(0x0C11_9ED0);
+    let valid_rotations = rotation_bytes();
+    let mut total = 0usize;
+
+    for rotation in &valid_rotations {
+        for _ in 0..8 {
+            let specs = random_specs(&mut rng, *rotation);
+            let data = scene_fixture(&specs);
+            let clipped = load_unbudgeted(&data).1;
+
+            assert_eq!(
+                clipped,
+                serial_clipped(&data),
+                "clipped count, rotation {rotation:#010b}, specs {specs:?}"
+            );
+
+            total = total.saturating_add(clipped);
+        }
+    }
+
+    assert!(
+        total > 0,
+        "the randomised translations reach the lattice edges and beyond, so the builds must clip"
     );
 }
 
