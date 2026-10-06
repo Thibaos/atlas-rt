@@ -274,8 +274,8 @@ mod tests {
         assert_eq!(MICRO_CHUNK_LENGTH, 8);
     }
 
-    fn mask_from_bytes(bytes: &[(usize, u8)]) -> [u8; 64] {
-        let mut mask = [0u8; 64];
+    fn mask_from_bytes(bytes: &[(usize, u8)]) -> [u8; MICRO_BYTES] {
+        let mut mask = [0u8; MICRO_BYTES];
 
         for (index, value) in bytes {
             if let Some(slot) = mask.get_mut(*index) {
@@ -287,8 +287,9 @@ mod tests {
     }
 
     /// Cell order `x + 8y + 64z` puts byte `b` at `y = b % 8`, `z = b / 8`, and
-    /// bit `k` at `x = k`. The store's own scan is handed the same literal
-    /// cases, so the two are pinned against one table.
+    /// bit `k` at `x = k`. This pins that the renderer's wrapper returns the
+    /// Micro-chunk-local range unchanged and raises its own error on a zero
+    /// mask.
     #[test]
     fn occupied_cell_bounds_pins_the_first_and_the_last_mask_byte() {
         let cases: [(&[(usize, u8)], (IVec3, IVec3)); 7] = [
@@ -333,7 +334,7 @@ mod tests {
 
     #[test]
     fn occupied_cell_bounds_rejects_a_zero_mask_as_a_hull() {
-        let Err(error) = occupied_cell_bounds(&[0u8; 64]) else {
+        let Err(error) = occupied_cell_bounds(&[0u8; MICRO_BYTES]) else {
             panic!("a zero mask has no hull");
         };
 

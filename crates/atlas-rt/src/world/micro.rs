@@ -31,7 +31,7 @@ impl MicroChunk {
     ///
     /// Rejects a material count that disagrees with the mask's occupancy.
     pub fn new(mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> Result<Self, MicroChunkError> {
-        check_materials(&mask, &materials)?;
+        check_material_count(&mask, &materials)?;
 
         Ok(Self { mask, materials })
     }
@@ -91,7 +91,7 @@ impl Error for MicroChunkError {}
 /// # Errors
 ///
 /// Returns [`MicroChunkError::MaterialCount`] naming both counts.
-pub fn check_materials(mask: &[u8], materials: &[u8]) -> Result<(), MicroChunkError> {
+pub(crate) fn check_material_count(mask: &[u8], materials: &[u8]) -> Result<(), MicroChunkError> {
     let occupied = occupied_count(mask);
 
     if occupied == materials.len() {
@@ -102,6 +102,23 @@ pub fn check_materials(mask: &[u8], materials: &[u8]) -> Result<(), MicroChunkEr
         occupied,
         given: materials.len(),
     })
+}
+
+/// The payload `mask` and `materials` describe, where the caller has already
+/// established that they agree.
+///
+/// # Panics
+///
+/// Panics when the material count disagrees with the mask's occupancy.
+pub(crate) fn owned_chunk(
+    origin: IVec3,
+    mask: [u8; MICRO_BYTES],
+    materials: Vec<u8>,
+) -> MicroChunk {
+    match MicroChunk::new(mask, materials) {
+        Ok(chunk) => chunk,
+        Err(error) => panic!("the payload at {origin} is inconsistent: {error}"),
+    }
 }
 
 /// A Micro-chunk's payload borrowed out of wherever it is stored: the
@@ -119,20 +136,16 @@ impl<'a> MicroChunkRef<'a> {
         Self { mask, materials }
     }
 
-    /// The cell at `index` of the `x + 8y + 64z` walk.
     #[must_use]
     pub fn cell_offset(index: usize) -> IVec3 {
         self::cell_offset(index)
     }
 
-    /// The cell index of a Micro-chunk-local position.
     #[must_use]
     pub fn mask_index(local: IVec3) -> usize {
         self::mask_index(local)
     }
 
-    /// Writes cell `cell` of a bare mask. The view's own mask is a shared
-    /// borrow, so the write rule takes the mask it writes.
     pub fn set_cell(mask: &mut [u8], cell: usize, occupied: bool) {
         self::set_cell(mask, cell, occupied);
     }
@@ -160,13 +173,13 @@ impl<'a> MicroChunkRef<'a> {
 
 /// Whether cell `index` of `mask` is occupied.
 #[must_use]
-pub fn occupied_cell(mask: &[u8], index: usize) -> bool {
+pub(crate) fn occupied_cell(mask: &[u8], index: usize) -> bool {
     mask.get(index.strict_div(MICRO_EDGE))
         .is_some_and(|byte| byte & (1u8 << index.strict_rem(MICRO_EDGE)) != 0)
 }
 
 /// Writes cell `cell` of `mask`.
-pub fn set_cell(mask: &mut [u8], cell: usize, occupied: bool) {
+pub(crate) fn set_cell(mask: &mut [u8], cell: usize, occupied: bool) {
     let Some(slot) = mask.get_mut(cell.strict_div(MICRO_EDGE)) else {
         return;
     };
@@ -182,14 +195,14 @@ pub fn set_cell(mask: &mut [u8], cell: usize, occupied: bool) {
 
 /// The number of occupied cells in `mask`.
 #[must_use]
-pub fn occupied_count(mask: &[u8]) -> usize {
+pub(crate) fn occupied_count(mask: &[u8]) -> usize {
     mask.iter().map(|byte| byte.count_ones() as usize).sum()
 }
 
 /// The cell at `index` of the `x + 8y + 64z` walk a Micro-chunk's mask and
 /// materials both follow.
 #[must_use]
-pub fn cell_offset(index: usize) -> IVec3 {
+pub(crate) fn cell_offset(index: usize) -> IVec3 {
     IVec3::new(
         i32::try_from(index % MICRO_EDGE).unwrap_or(0),
         i32::try_from((index / MICRO_EDGE) % MICRO_EDGE).unwrap_or(0),
@@ -199,7 +212,7 @@ pub fn cell_offset(index: usize) -> IVec3 {
 
 /// The cell index of a Micro-chunk-local position.
 #[must_use]
-pub fn mask_index(local: IVec3) -> usize {
+pub(crate) fn mask_index(local: IVec3) -> usize {
     let x = usize::try_from(local.x).unwrap_or(0);
     let y = usize::try_from(local.y).unwrap_or(0);
     let z = usize::try_from(local.z).unwrap_or(0);
@@ -225,7 +238,7 @@ fn mask_word(mask: &[u8], start: usize) -> u64 {
 /// The 8-byte word holding the cell is read once and masked to the bits below
 /// it, so the scan is popcounts of whole words, not of every byte.
 #[must_use]
-pub fn rank(mask: &[u8], cell: usize) -> usize {
+pub(crate) fn rank(mask: &[u8], cell: usize) -> usize {
     let byte = cell.strict_div(8);
     let word_index = byte.strict_div(8);
 
@@ -256,7 +269,7 @@ pub fn rank(mask: &[u8], cell: usize) -> usize {
 /// Scans the mask's bytes rather than its set bits, so it is bounded by the
 /// entry size, not by the cells it holds.
 #[must_use]
-pub fn bounds(mask: &[u8]) -> Option<(IVec3, IVec3)> {
+pub(crate) fn bounds(mask: &[u8]) -> Option<(IVec3, IVec3)> {
     let mut min = IVec3::splat(i32::MAX);
     let mut max = IVec3::splat(i32::MIN);
     let mut occupied = false;

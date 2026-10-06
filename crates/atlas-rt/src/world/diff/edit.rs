@@ -124,7 +124,7 @@ pub(in crate::world) fn validate_entry(
         return Err(EditError::rejected(origin, EditReason::NotChunkOrigin));
     }
 
-    if let Err(error) = micro::check_materials(mask, materials) {
+    if let Err(error) = micro::check_material_count(mask, materials) {
         let MicroChunkError::MaterialCount { occupied, given } = error;
 
         return Err(EditError::rejected(
@@ -179,10 +179,7 @@ impl Display for EditError {
                     write!(f, "voxel {position} is not a Micro-chunk origin")
                 }
                 EditReason::MaterialCount { occupied, given } => {
-                    write!(
-                        f,
-                        "the mask marks {occupied} cells but carries {given} materials"
-                    )
+                    write!(f, "{}", MicroChunkError::MaterialCount { occupied, given })
                 }
             },
             Refusal::OverBudget { count, limit } => write!(
@@ -446,18 +443,6 @@ pub(in crate::world) fn chunks_touched(edits: &[VoxelEdit]) -> Vec<IVec3> {
     touched
 }
 
-/// The owned payload an entry read yields.
-///
-/// The store maintains the materials count from the mask's occupancy, so a
-/// disagreement means the store is corrupt and the read says so instead of
-/// fabricating a payload.
-fn owned(origin: IVec3, mask: [u8; MICRO_BYTES], materials: Vec<u8>) -> MicroChunk {
-    match MicroChunk::new(mask, materials) {
-        Ok(chunk) => chunk,
-        Err(error) => panic!("the payload read for {origin} is inconsistent: {error}"),
-    }
-}
-
 /// The chunk's content as `world` holds it, cell index `x + 8y + 64z` from the
 /// origin, which is the order the store's entry read emits materials in. A
 /// store that keeps one entry per Micro-chunk copies its mask and compacted
@@ -466,7 +451,7 @@ pub(in crate::world) fn compile_chunk(world: &World, origin: IVec3) -> MicroChun
     if let Some(entry) = world.chunk_entry(origin) {
         return MicroChunkSnapshot {
             global_coords: origin,
-            chunk: owned(origin, *entry.mask, entry.materials.to_vec()),
+            chunk: micro::owned_chunk(origin, *entry.mask, entry.materials.to_vec()),
         };
     }
 
@@ -492,7 +477,7 @@ pub(in crate::world) fn probe_chunk(world: &World, origin: IVec3) -> MicroChunkS
 
     MicroChunkSnapshot {
         global_coords: origin,
-        chunk: owned(origin, mask, materials),
+        chunk: micro::owned_chunk(origin, mask, materials),
     }
 }
 
@@ -1260,8 +1245,6 @@ mod tests {
             "one material shifted by a slot must fail the comparison"
         );
 
-        // a payload cannot carry a material without the cell that holds it, so
-        // the dropped material goes with its cell
         let mut dropped = compiled;
         let mut mask = *dropped.chunk.mask();
         let mut materials = dropped.chunk.materials().to_vec();

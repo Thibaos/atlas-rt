@@ -6,18 +6,15 @@ use glam::IVec3;
 use crate::world::{
     diff::edit::{EditError, validate_entry},
     grid,
-    micro::{self, MICRO_BYTES, MicroChunk, MicroChunkRef},
+    micro::{self, MICRO_BYTES, MicroChunkRef},
     store::{MicroChunkEntry, VoxelStore},
 };
 
 #[cfg(test)]
 use crate::world::store::StorageSize;
 
-const MICRO_CHUNK: usize = grid::MICRO_CHUNK_LENGTH as usize;
 const MICRO_CHUNK_SIDE: usize = (grid::REGION_LENGTH / grid::MICRO_CHUNK_LENGTH) as usize;
 const MICRO_CHUNK_SIDE_AREA: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
-const MICRO_CHUNK_AREA: usize = MICRO_CHUNK * MICRO_CHUNK;
-const MICRO_CHUNK_CELLS: usize = MICRO_CHUNK * MICRO_CHUNK * MICRO_CHUNK;
 const MICRO_CHUNKS_PER_REGION: usize = MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE * MICRO_CHUNK_SIDE;
 
 /// Blocks are 8-byte aligned and sized to an 8-byte class, so each index entry
@@ -349,9 +346,9 @@ fn axis_local(value: i32) -> usize {
 
 fn micro_chunk_ordinal(position: IVec3) -> usize {
     let local = region_local(position);
-    let x = axis_local(local.x).strict_div(MICRO_CHUNK);
-    let y = axis_local(local.y).strict_div(MICRO_CHUNK);
-    let z = axis_local(local.z).strict_div(MICRO_CHUNK);
+    let x = axis_local(local.x).strict_div(micro::MICRO_EDGE);
+    let y = axis_local(local.y).strict_div(micro::MICRO_EDGE);
+    let z = axis_local(local.z).strict_div(micro::MICRO_EDGE);
 
     z.strict_mul(MICRO_CHUNK_SIDE)
         .strict_add(y)
@@ -411,9 +408,13 @@ fn cell_position(slot: usize, ordinal: usize, cell: usize) -> IVec3 {
         i32::try_from(ordinal.strict_div(MICRO_CHUNK_SIDE_AREA)).unwrap_or(0),
     );
     let local = IVec3::new(
-        i32::try_from(cell.strict_rem(MICRO_CHUNK)).unwrap_or(0),
-        i32::try_from(cell.strict_div(MICRO_CHUNK).strict_rem(MICRO_CHUNK)).unwrap_or(0),
-        i32::try_from(cell.strict_div(MICRO_CHUNK_AREA)).unwrap_or(0),
+        i32::try_from(cell.strict_rem(micro::MICRO_EDGE)).unwrap_or(0),
+        i32::try_from(
+            cell.strict_div(micro::MICRO_EDGE)
+                .strict_rem(micro::MICRO_EDGE),
+        )
+        .unwrap_or(0),
+        i32::try_from(cell.strict_div(micro::MICRO_AREA)).unwrap_or(0),
     );
 
     region_index
@@ -421,7 +422,7 @@ fn cell_position(slot: usize, ordinal: usize, cell: usize) -> IVec3 {
             i32::try_from(grid::REGION_LENGTH).unwrap_or(0),
         ))
         .saturating_add(
-            micro_chunk.saturating_mul(IVec3::splat(i32::try_from(MICRO_CHUNK).unwrap_or(0))),
+            micro_chunk.saturating_mul(IVec3::splat(i32::try_from(micro::MICRO_EDGE).unwrap_or(0))),
         )
         .saturating_add(local)
 }
@@ -487,11 +488,11 @@ impl Iterator for Voxels<'_> {
                 continue;
             };
 
-            while self.cell < MICRO_CHUNK_CELLS && !micro::occupied_cell(mask, self.cell) {
+            while self.cell < micro::MICRO_CELLS && !micro::occupied_cell(mask, self.cell) {
                 self.cell = self.cell.strict_add(1);
             }
 
-            if self.cell >= MICRO_CHUNK_CELLS {
+            if self.cell >= micro::MICRO_CELLS {
                 self.advance_micro_chunk();
                 continue;
             }
@@ -572,12 +573,7 @@ impl Iterator for Entries<'_> {
             };
 
             let origin = cell_position(self.slot, ordinal, 0);
-            let chunk = match MicroChunk::new(owned, materials.to_vec()) {
-                Ok(chunk) => chunk,
-                Err(error) => {
-                    panic!("the entry at {origin} holds an impossible payload: {error}")
-                }
-            };
+            let chunk = micro::owned_chunk(origin, owned, materials.to_vec());
 
             return Some(MicroChunkEntry { origin, chunk });
         }
@@ -861,9 +857,9 @@ mod tests {
     }
 
     fn cell_in_chunk(index: usize) -> IVec3 {
-        let x = index % MICRO_CHUNK;
-        let y = (index / MICRO_CHUNK) % MICRO_CHUNK;
-        let z = index / MICRO_CHUNK_AREA;
+        let x = index % micro::MICRO_EDGE;
+        let y = (index / micro::MICRO_EDGE) % micro::MICRO_EDGE;
+        let z = index / micro::MICRO_AREA;
 
         IVec3::new(x as i32, y as i32, z as i32)
     }
@@ -879,9 +875,9 @@ mod tests {
     fn dense_chunk_origins() -> Vec<IVec3> {
         let mut origins = Vec::new();
 
-        for z in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
-            for y in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
-                for x in (0..DENSE_EDGE).step_by(MICRO_CHUNK) {
+        for z in (0..DENSE_EDGE).step_by(micro::MICRO_EDGE) {
+            for y in (0..DENSE_EDGE).step_by(micro::MICRO_EDGE) {
+                for x in (0..DENSE_EDGE).step_by(micro::MICRO_EDGE) {
                     origins.push(IVec3::new(x, y, z));
                 }
             }
@@ -912,9 +908,9 @@ mod tests {
     }
 
     fn fill_micro_chunk(store: &mut RegionStore, origin: IVec3) {
-        for z in 0..MICRO_CHUNK as i32 {
-            for y in 0..MICRO_CHUNK as i32 {
-                for x in 0..MICRO_CHUNK as i32 {
+        for z in 0..micro::MICRO_EDGE as i32 {
+            for y in 0..micro::MICRO_EDGE as i32 {
+                for x in 0..micro::MICRO_EDGE as i32 {
                     store.set(origin.saturating_add(IVec3::new(x, y, z)), 1);
                 }
             }
@@ -923,7 +919,7 @@ mod tests {
 
     /// A full Micro-chunk's 576-byte entry.
     fn full_entry() -> usize {
-        class_size(class_of_size(MICRO_BYTES + MICRO_CHUNK_CELLS))
+        class_size(class_of_size(MICRO_BYTES + micro::MICRO_CELLS))
     }
 
     /// A one-voxel Micro-chunk's entry: 65 bytes padded to 72.
@@ -942,7 +938,7 @@ mod tests {
         let entry = full_entry();
         let blob = MICRO_CHUNKS_PER_REGION * entry;
         let index = MICRO_CHUNKS_PER_REGION * std::mem::size_of::<u32>();
-        let voxels = MICRO_CHUNKS_PER_REGION * MICRO_CHUNK_CELLS;
+        let voxels = MICRO_CHUNKS_PER_REGION * micro::MICRO_CELLS;
 
         assert_eq!(MICRO_CHUNKS_PER_REGION, 32_768);
         assert_eq!(entry, 576, "a full Micro-chunk entry is 576 bytes");
@@ -973,7 +969,7 @@ mod tests {
         let expected_index = regions * MICRO_CHUNKS_PER_REGION * std::mem::size_of::<u32>();
         let table_cap = grid::REGION_COUNT * REGION_SLOT_MAX;
 
-        assert_eq!(voxels, chunks * MICRO_CHUNK_CELLS);
+        assert_eq!(voxels, chunks * micro::MICRO_CELLS);
         assert_eq!(size.index, expected_index, "one index per live Region");
         assert_eq!(
             size.blob, expected_blob,
@@ -1005,9 +1001,9 @@ mod tests {
         let edge = grid::REGION_LENGTH as i32;
         let mut chunks = 0usize;
 
-        for z in (0..edge).step_by(MICRO_CHUNK) {
-            for y in (0..edge).step_by(MICRO_CHUNK) {
-                for x in (0..edge).step_by(MICRO_CHUNK) {
+        for z in (0..edge).step_by(micro::MICRO_EDGE) {
+            for y in (0..edge).step_by(micro::MICRO_EDGE) {
+                for x in (0..edge).step_by(micro::MICRO_EDGE) {
                     store.set(IVec3::new(x, y, z), 1);
                     chunks = chunks.saturating_add(1);
                 }
@@ -1075,7 +1071,7 @@ mod tests {
     fn emptied_micro_chunk_reuses_its_block_without_growing() {
         let mut store = RegionStore::default();
         let anchor = IVec3::new(0, 0, 0);
-        let recycled = IVec3::new(MICRO_CHUNK as i32, 0, 0);
+        let recycled = IVec3::new(micro::MICRO_EDGE as i32, 0, 0);
 
         store.set(anchor, 1);
         store.set(recycled, 2);
@@ -1144,7 +1140,7 @@ mod tests {
         assert_eq!(store.get(origin), Some(1), "the copied mask survives");
         assert_eq!(store.get(origin.saturating_add(cell_in_chunk(8))), Some(2));
 
-        store.set(IVec3::new(MICRO_CHUNK as i32, 0, 0), 9);
+        store.set(IVec3::new(micro::MICRO_EDGE as i32, 0, 0), 9);
 
         assert_eq!(
             store.storage_size().total(),
@@ -1193,7 +1189,7 @@ mod tests {
             "the Region keeps its index while the anchor voxel holds it live"
         );
 
-        for index in 1..MICRO_CHUNK_CELLS {
+        for index in 1..micro::MICRO_CELLS {
             store.set(anchor.saturating_add(cell_in_chunk(index)), 3);
         }
 
@@ -1461,7 +1457,7 @@ mod tests {
                         .write_entry(origin, MicroChunkRef::new(&mask, &materials))
                         .unwrap_or_else(|error| panic!("case {case}: {error}"));
 
-                    for index in 0..MICRO_CHUNK_CELLS {
+                    for index in 0..micro::MICRO_CELLS {
                         let position = origin.saturating_add(cell_in_chunk(index));
 
                         if micro::occupied_cell(&mask, index) {
@@ -1623,7 +1619,7 @@ mod tests {
             i32::try_from(rng.below(span))
                 .unwrap_or(0)
                 .wrapping_sub(i32::try_from(span / 2).unwrap_or(0))
-                .wrapping_mul(MICRO_CHUNK as i32)
+                .wrapping_mul(micro::MICRO_EDGE as i32)
         };
 
         IVec3::new(axis(), axis(), axis())
@@ -1656,7 +1652,7 @@ mod tests {
     }
 
     fn occupied_cells(mask: &[u8; MICRO_BYTES]) -> Vec<usize> {
-        (0..MICRO_CHUNK_CELLS)
+        (0..micro::MICRO_CELLS)
             .filter(|index| micro::occupied_cell(mask, *index))
             .collect()
     }
@@ -1672,7 +1668,7 @@ mod tests {
     ) {
         let mut rank = 0usize;
 
-        for index in 0..MICRO_CHUNK_CELLS {
+        for index in 0..micro::MICRO_CELLS {
             let expected = if micro::occupied_cell(mask, index) {
                 let material = materials.get(rank).copied();
                 rank = rank.saturating_add(1);
@@ -1892,6 +1888,47 @@ mod tests {
     }
 
     #[test]
+    fn entry_write_bounds_offset_the_local_range_by_the_origin() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(16, -8, 24);
+        let mut mask = [0u8; MICRO_BYTES];
+
+        micro::set_cell(&mut mask, 0, true);
+        micro::set_cell(&mut mask, micro::MICRO_CELLS - 1, true);
+
+        store
+            .write_entry(origin, MicroChunkRef::new(&mask, &[3, 4]))
+            .unwrap();
+
+        assert_eq!(
+            store.bounds(),
+            Some((origin, IVec3::new(23, -1, 31))),
+            "cells 0 and 511 bound the local range the origin offsets"
+        );
+    }
+
+    #[test]
+    fn entry_write_of_a_zero_mask_clears_the_bounds() {
+        let mut store = RegionStore::default();
+        let origin = IVec3::new(16, -8, 24);
+        let mut mask = [0u8; MICRO_BYTES];
+
+        micro::set_cell(&mut mask, 0, true);
+
+        store
+            .write_entry(origin, MicroChunkRef::new(&mask, &[3]))
+            .unwrap();
+
+        assert_eq!(store.bounds(), Some((origin, origin)));
+
+        store
+            .write_entry(origin, MicroChunkRef::new(&[0u8; MICRO_BYTES], &[]))
+            .unwrap();
+
+        assert_eq!(store.bounds(), None, "an emptied store has no bounds");
+    }
+
+    #[test]
     fn entry_enumeration_matches_the_per_cell_default() {
         let seed = 0x00DE_FACE;
         let mut rng = Rng::new(seed);
@@ -1965,7 +2002,7 @@ mod tests {
         let mut store = RegionStore::default();
         let origin = IVec3::new(0, 0, 0);
         let full = [0xFFu8; MICRO_BYTES];
-        let full_materials: Vec<u8> = (0..MICRO_CHUNK_CELLS).map(|index| index as u8).collect();
+        let full_materials: Vec<u8> = (0..micro::MICRO_CELLS).map(|index| index as u8).collect();
 
         store
             .write_entry(origin, MicroChunkRef::new(&full, &full_materials))
@@ -1996,6 +2033,6 @@ mod tests {
             after_single,
             "the freed full block is reclaimed instead of appended"
         );
-        assert_eq!(store.count(), MICRO_CHUNK_CELLS);
+        assert_eq!(store.count(), micro::MICRO_CELLS);
     }
 }

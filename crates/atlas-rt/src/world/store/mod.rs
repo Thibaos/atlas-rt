@@ -74,10 +74,7 @@ impl Bucket {
             }
         }
 
-        let chunk = match MicroChunk::new(self.mask, materials) {
-            Ok(chunk) => chunk,
-            Err(error) => panic!("the bucket at {origin} recorded an impossible payload: {error}"),
-        };
+        let chunk = micro::owned_chunk(origin, self.mask, materials);
 
         MicroChunkEntry { origin, chunk }
     }
