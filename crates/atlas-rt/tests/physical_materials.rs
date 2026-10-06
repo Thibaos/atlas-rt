@@ -12,7 +12,8 @@ use std::{
 
 use atlas_rt::world::{
     World,
-    load::job::{Finished, LoadedWorld, Status, WorldSource, WorldUpdateJob},
+    load::job::{Finished, Status, WorldUpdateJob},
+    load::supply::{SuppliedWorld, WorldSource},
     material::{
         Override, PhysicalMaterial, PhysicalMaterialTable, Rule, load_override, load_table,
         override_path,
@@ -93,7 +94,7 @@ impl WorldSource for WorldFile {
 
 /// Loads one world through the real job and hands back the work it produces
 /// with the status it settles at.
-fn load(path: &Path) -> (LoadedWorld, Status) {
+fn load(path: &Path) -> (SuppliedWorld, Status) {
     let mut job = WorldUpdateJob::new();
 
     job.load(

@@ -15,7 +15,8 @@ use atlas_rt::world::{
     diff::snapshot::{MicroChunkSnapshot, emit_snapshots},
     generation::GenerationParams,
     grid::LATTICE_HALF_EXTENT,
-    load::job::{Finished, LoadedWorld, Refusal, Status, WorldUpdateJob},
+    load::job::{Finished, Refusal, Status, WorldUpdateJob},
+    load::supply::SuppliedWorld,
     material::{PhysicalMaterial, Rule},
     vocabulary::{Material, Vocabulary},
 };
@@ -37,7 +38,7 @@ const WALKABLE_SEED: u64 = 0x5EED_1238;
 
 /// Runs one Generation through the real job and hands back the work it produces
 /// with the status it settles at.
-fn generate(params: GenerationParams) -> (LoadedWorld, Status) {
+fn generate(params: GenerationParams) -> (SuppliedWorld, Status) {
     let mut job = WorldUpdateJob::new();
 
     job.generate(params, 0)
@@ -105,7 +106,7 @@ const ADJACENT_COLUMNS: [(i32, i32); 2] = [(1, 0), (0, 1)];
 
 /// Runs one Generation for one Seed and extent through the real job, asserting
 /// it succeeds.
-fn generate_seeded(seed: u64, extent: i32) -> LoadedWorld {
+fn generate_seeded(seed: u64, extent: i32) -> SuppliedWorld {
     let params = GenerationParams::new(seed, IVec3::splat(extent));
     let (loaded, status) = generate(params);
 

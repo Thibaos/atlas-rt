@@ -142,6 +142,15 @@ the batch.
 _Avoid_: occupied chunks, world chunks (those describe the World, which runs
 ahead)
 
+**World supply**:
+The one way a World is obtained: a World load reading a .vox source or a
+Generation making voxels from a Seed. It takes the source, the cell budget and a
+Progress, and returns the World with its Palette, its Physical material table,
+its Snapshots, its granular cells and its clipped count, or an error naming the
+source. It is synchronous and touches no renderer, so the caller chooses the
+thread.
+_Avoid_: loader, world source (the bytes a load reads, not the supply)
+
 **World load**:
 A World supply from one .vox source, clipped to the lattice, its Micro-chunks
 queued as Snapshots and its Palette loaded with them. A clear empties the

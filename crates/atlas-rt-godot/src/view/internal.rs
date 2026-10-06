@@ -3,7 +3,8 @@ use std::sync::{Arc, Mutex};
 use atlas_rt::world::diff::batch::{self};
 use atlas_rt::world::diff::edit::{MICRO_BYTES, MicroChunkEdit, VoxelEdit, edit_world};
 use atlas_rt::world::generation::GenerationParams;
-use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldSource, WorldUpdateJob};
+use atlas_rt::world::load::job::{Finished, Refusal, Residency, WorldUpdateJob};
+use atlas_rt::world::load::supply::WorldSource;
 use godot::classes::{Engine, Material, ProjectSettings, ShaderMaterial, Texture2Drd};
 use godot::prelude::*;
 
