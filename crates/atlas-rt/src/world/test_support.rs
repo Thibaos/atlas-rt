@@ -387,7 +387,7 @@ fn serial_clipped(data: &DotVoxData) -> usize {
 
 /// The randomised translations reach the lattice edges and values far outside
 /// them, so the scenes the placement tests build have voxels to clip. The
-/// loader's clipped count must equal the voxels the serial oracle drops, and
+/// build's clipped count must equal the voxels the serial oracle drops, and
 /// the total must be non-zero, because the deleted panic policy used to carry
 /// this coverage.
 #[test]

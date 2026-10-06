@@ -144,11 +144,11 @@ ahead)
 
 **World supply**:
 The one way a World is obtained: a World load reading a .vox source or a
-Generation making voxels from a Seed. It takes the source, the cell budget and a
-Progress, and returns the World with its Palette, its Physical material table,
-its Snapshots, its granular cells and its clipped count, or an error naming the
-source. It is synchronous and touches no renderer, so the caller chooses the
-thread.
+Generation making voxels from a Seed. A load takes the cell budget and refuses a
+World above it; a Generation reads none. Both are synchronous and touch no
+renderer, so the caller chooses the thread, and both return the World with its
+Palette, its Physical material table, its Snapshots, its granular cells and its
+clipped count. A failure that concerns a source names it.
 _Avoid_: loader, world source (the bytes a load reads, not the supply)
 
 **World load**:
