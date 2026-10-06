@@ -14,13 +14,13 @@ use glam::IVec3;
 
 use super::{
     World,
+    diff::edit::cell_offset,
     grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH},
     load::progress::{Progress, Stage},
     material::{PhysicalMaterialTable, Rule},
+    micro::MICRO_BYTES,
     vocabulary::{Feature, Material, Vocabulary},
 };
-
-use super::diff::edit::{MICRO_BYTES, cell_offset};
 
 /// The surface range's lower edge. A column's surface never dips below this, so
 /// every filled column has solid ground under it.

@@ -7,11 +7,9 @@ use rustc_hash::FxHashMap;
 
 use crate::world::{
     InsertResult,
-    diff::edit::{
-        EditError, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, cell_offset, mask_index, mask_occupied,
-        validate_entry,
-    },
+    diff::edit::{EditError, cell_offset, mask_index, mask_occupied, validate_entry},
     grid,
+    micro::{MICRO_BYTES, MICRO_CELLS, MICRO_EDGE},
 };
 
 pub use region::RegionStore;
