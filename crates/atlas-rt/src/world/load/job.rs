@@ -265,6 +265,31 @@ impl WorldUpdateJob {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns `Refusal::Busy` while another job is in flight.
+    ///
+    /// `version` is the renderer's content version before this job's batch, so
+    /// the frame that carries the batch is the first one past it.
+    pub fn sand_ball(&mut self, version: u64) -> Result<(), Refusal> {
+        self.begin(version, Outcome::World, Path::Generate)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let progress = Arc::clone(&self.progress);
+
+        let thread = spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| run_sand_ball(&progress)))
+                .unwrap_or_else(|_| Err(String::from("the sand ball build panicked")));
+
+            let _ = sender.send(result);
+        });
+
+        self.running = Some(thread);
+        self.finished = Some(receiver);
+
+        Ok(())
+    }
+
     fn begin(&mut self, version: u64, outcome: Outcome, path: Path) -> Result<(), Refusal> {
         if self.holding() {
             return Err(Refusal::Busy);
@@ -484,6 +509,13 @@ fn run_pipeline(
 /// The Generation, run on the job's thread.
 fn run_generation(progress: &Progress, params: GenerationParams) -> Result<RunResult, String> {
     let supplied = supply::generate(params, progress).map_err(|error| format!("{error:#}"))?;
+
+    Ok(RunResult::Loaded(Box::new(supplied)))
+}
+
+/// The sand ball build, run on the job's thread.
+fn run_sand_ball(progress: &Progress) -> Result<RunResult, String> {
+    let supplied = supply::sand_ball(progress).map_err(|error| format!("{error:#}"))?;
 
     Ok(RunResult::Loaded(Box::new(supplied)))
 }

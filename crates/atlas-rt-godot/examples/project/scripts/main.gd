@@ -69,6 +69,16 @@ func generate_world() ->bool:
 
 	return true
 
+func sand_ball() -> bool:
+	if !view: return false
+	if !view.sand_ball_world(): return false
+
+	set_pause(false)
+
+	overlay.watch()
+
+	return true
+
 func clear_world() -> bool:
 	if !view: return false
 	if !view.clear_world(): return false

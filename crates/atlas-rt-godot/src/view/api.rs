@@ -373,6 +373,34 @@ impl AtlasRtView {
         true
     }
 
+    /// Returns at once. The build runs on a thread with no renderer access, and
+    /// the finished snapshots reach the renderer a few frames later. The old
+    /// world stops being displayed on this call. The ball is a fixed shape, so
+    /// it takes no Seed and no extent.
+    #[func]
+    pub fn sand_ball_world(&mut self) -> bool {
+        if self.job.is_none() {
+            return false;
+        }
+
+        let Some(job) = self.job.as_mut() else {
+            return false;
+        };
+
+        let version = Self::batch_version(&self.pipeline);
+
+        if let Err(refusal) = job.sand_ball(version) {
+            Self::report_refusal("sand_ball_world", refusal);
+
+            return false;
+        }
+
+        self.display.suppress(version);
+        self.suppress_display();
+
+        true
+    }
+
     #[func]
     pub fn clear_world(&mut self) -> bool {
         if self.job.is_none() {
