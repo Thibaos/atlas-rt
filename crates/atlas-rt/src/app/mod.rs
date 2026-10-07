@@ -119,6 +119,11 @@ impl App {
 
                 supply::generate(params, &Progress::generate_path())?
             }
+            WorldRequest::SandBall => {
+                info!("building the sand ball");
+
+                supply::sand_ball(&Progress::generate_path())?
+            }
         };
 
         if clipped > 0 {
