@@ -9,14 +9,14 @@
 //! fall 2,112 cells to the Lattice floor at y = -2048 and its highest 2,368. The
 //! first grain reaches the floor after about 70 seconds, and the whole ball
 //! drains in about 4.8 million ticks, about 45 hours at the default 30 Hz. The
-//! grains that land settle at the floor, far below the ball.
+//! grains that land settle at the floor.
 
 use glam::IVec3;
 
 use super::{
     World,
     generation::GeneratedWorld,
-    grid::MICRO_CHUNK_LENGTH,
+    grid::{MICRO_CHUNK_LENGTH, grid_origin},
     load::progress::{Progress, Stage},
     micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunkRef},
     vocabulary::{Material, Vocabulary},
@@ -25,7 +25,7 @@ use super::{
 /// The ball's radius, in cells.
 pub const RADIUS: i32 = 128;
 
-/// The ball's centre level, high enough that the fall is the whole scene.
+/// The ball's centre level, in cells.
 pub const CENTRE_HEIGHT: i32 = 192;
 
 /// Builds the ball, filling Micro-chunk by Micro-chunk and reporting the
@@ -59,12 +59,11 @@ const fn centre() -> IVec3 {
 /// at a time, and a chunk the sphere misses is skipped, so the World holds no
 /// empty entry.
 fn fill(world: &mut World, progress: &Progress, granular_cells: &mut Vec<IVec3>) {
-    let lower = centre().saturating_sub(IVec3::splat(RADIUS));
-    let upper = centre()
-        .saturating_add(IVec3::splat(RADIUS))
-        .saturating_add(IVec3::ONE);
-    let total = fillable_chunks(lower, upper);
     let edge = MICRO_CHUNK_LENGTH.cast_signed();
+    let lower = chunk_origin(centre().saturating_sub(IVec3::splat(RADIUS)));
+    let upper = chunk_origin(centre().saturating_add(IVec3::splat(RADIUS)))
+        .saturating_add(IVec3::splat(edge));
+    let total = fillable_chunks(lower, upper);
     let mut filled = 0usize;
     let mut origin = lower;
 
@@ -95,6 +94,11 @@ fn fillable_chunks(lower: IVec3, upper: IVec3) -> usize {
     chunks_across(upper.x.saturating_sub(lower.x))
         .saturating_mul(chunks_across(upper.z.saturating_sub(lower.z)))
         .saturating_mul(chunks_across(upper.y.saturating_sub(lower.y)))
+}
+
+/// The Micro-chunk origin at or below `position`.
+fn chunk_origin(position: IVec3) -> IVec3 {
+    grid_origin(position, MICRO_CHUNK_LENGTH)
 }
 
 /// How many Micro-chunk origins the fill steps through over `span` cells.

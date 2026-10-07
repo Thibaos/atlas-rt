@@ -199,25 +199,15 @@ impl WorldUpdateJob {
     /// `version` is the renderer's content version before this job's batch, so
     /// the frame that carries the batch is the first one past it.
     pub fn load(&mut self, source: Box<dyn WorldSource>, version: u64) -> Result<(), Refusal> {
-        self.begin(version, Outcome::World, Path::Load)?;
-
-        let (sender, receiver) = mpsc::channel();
-        let progress = Arc::clone(&self.progress);
         let budget = cell_budget();
 
-        let thread = spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| {
-                run_pipeline(&progress, &*source, budget)
-            }))
-            .unwrap_or_else(|_| Err(String::from("the loader panicked")));
-
-            let _ = sender.send(result);
-        });
-
-        self.running = Some(thread);
-        self.finished = Some(receiver);
-
-        Ok(())
+        self.start(
+            version,
+            Outcome::World,
+            Path::Load,
+            "the loader panicked",
+            move |progress| run_pipeline(progress, &*source, budget),
+        )
     }
 
     /// # Errors
@@ -247,22 +237,13 @@ impl WorldUpdateJob {
     /// `version` is the renderer's content version before this job's batch, so
     /// the frame that carries the batch is the first one past it.
     pub fn generate(&mut self, params: GenerationParams, version: u64) -> Result<(), Refusal> {
-        self.begin(version, Outcome::World, Path::Generate)?;
-
-        let (sender, receiver) = mpsc::channel();
-        let progress = Arc::clone(&self.progress);
-
-        let thread = spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run_generation(&progress, params)))
-                .unwrap_or_else(|_| Err(String::from("the generator panicked")));
-
-            let _ = sender.send(result);
-        });
-
-        self.running = Some(thread);
-        self.finished = Some(receiver);
-
-        Ok(())
+        self.start(
+            version,
+            Outcome::World,
+            Path::Generate,
+            "the generator panicked",
+            move |progress| run_generation(progress, params),
+        )
     }
 
     /// # Errors
@@ -272,22 +253,13 @@ impl WorldUpdateJob {
     /// `version` is the renderer's content version before this job's batch, so
     /// the frame that carries the batch is the first one past it.
     pub fn sand_ball(&mut self, version: u64) -> Result<(), Refusal> {
-        self.begin(version, Outcome::World, Path::Generate)?;
-
-        let (sender, receiver) = mpsc::channel();
-        let progress = Arc::clone(&self.progress);
-
-        let thread = spawn(move || {
-            let result = catch_unwind(AssertUnwindSafe(|| run_sand_ball(&progress)))
-                .unwrap_or_else(|_| Err(String::from("the sand ball build panicked")));
-
-            let _ = sender.send(result);
-        });
-
-        self.running = Some(thread);
-        self.finished = Some(receiver);
-
-        Ok(())
+        self.start(
+            version,
+            Outcome::World,
+            Path::Generate,
+            "the sand ball build panicked",
+            run_sand_ball,
+        )
     }
 
     fn begin(&mut self, version: u64, outcome: Outcome, path: Path) -> Result<(), Refusal> {
@@ -314,6 +286,37 @@ impl WorldUpdateJob {
         });
         *lock(&self.error) = None;
         self.status.store(STATUS_LOADING, Ordering::Release);
+
+        Ok(())
+    }
+
+    /// Begins the job and runs `work` on its own thread, turning a panic into
+    /// the failure the panic reason names.
+    fn start<F>(
+        &mut self,
+        version: u64,
+        outcome: Outcome,
+        path: Path,
+        panic: &'static str,
+        work: F,
+    ) -> Result<(), Refusal>
+    where
+        F: FnOnce(&Progress) -> Result<RunResult, String> + Send + 'static,
+    {
+        self.begin(version, outcome, path)?;
+
+        let (sender, receiver) = mpsc::channel();
+        let progress = Arc::clone(&self.progress);
+
+        let thread = spawn(move || {
+            let result = catch_unwind(AssertUnwindSafe(|| work(&progress)))
+                .unwrap_or_else(|_| Err(String::from(panic)));
+
+            let _ = sender.send(result);
+        });
+
+        self.running = Some(thread);
+        self.finished = Some(receiver);
 
         Ok(())
     }
