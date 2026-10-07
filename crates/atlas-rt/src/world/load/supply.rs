@@ -10,6 +10,7 @@ use crate::world::{
     generation::{self, GeneratedWorld, GenerationParams},
     material::{PhysicalMaterialTable, load_table},
     palette::get_effective_palette,
+    sand_ball,
     vox::open_bytes,
 };
 
@@ -134,16 +135,51 @@ pub fn load(
 /// Returns the generator's own reason when the params are rejected, and an error
 /// naming the source when its Snapshots cannot be emitted.
 pub fn generate(params: GenerationParams, progress: &Progress) -> anyhow::Result<SuppliedWorld> {
+    let built = generation::generate(progress, params).map_err(anyhow::Error::msg)?;
+
+    assemble(progress, "the generated world", built)
+}
+
+/// Writes the sand ball and emits its Snapshots.
+///
+/// The ball is a fixed shape: it takes no Seed and no extent, it places nothing
+/// outside the Lattice, so it clips nothing, and it delivers its precomputed
+/// granular cells, so activation does not scan for them. It never consults the
+/// cell budget.
+///
+/// # Errors
+///
+/// Returns an error when its Snapshots cannot be emitted.
+pub fn sand_ball(progress: &Progress) -> anyhow::Result<SuppliedWorld> {
+    let built = sand_ball::build(progress);
+
+    assemble(progress, "the sand ball", built)
+}
+
+/// Assembles a supplied World from a built one: ends the Build stage, emits the
+/// Snapshots, and pairs the World with its Palette, materials and precomputed
+/// granular cells.
+///
+/// A built World places nothing outside the Lattice, so it clips nothing.
+///
+/// # Errors
+///
+/// Returns an error naming the World when its Snapshots cannot be emitted.
+fn assemble(
+    progress: &Progress,
+    name: &str,
+    built: GeneratedWorld,
+) -> anyhow::Result<SuppliedWorld> {
     let GeneratedWorld {
         world,
         palette,
         materials,
         granular_cells,
-    } = generation::generate(progress, params).map_err(anyhow::Error::msg)?;
+    } = built;
 
     progress.end_stage(Stage::Build);
 
-    let snapshots = emit(progress, &world, "the generated world")?;
+    let snapshots = emit(progress, &world, name)?;
 
     Ok(SuppliedWorld {
         world,
