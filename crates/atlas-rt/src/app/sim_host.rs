@@ -43,6 +43,7 @@ pub struct SimHost {
     ready: bool,
     waited: bool,
     queued: Option<usize>,
+    processed: usize,
 }
 
 impl SimHost {
@@ -76,6 +77,7 @@ impl SimHost {
             ready: false,
             waited: false,
             queued: None,
+            processed: 0,
         })
     }
 
@@ -102,6 +104,7 @@ impl SimHost {
         );
 
         self.queued = None;
+        self.processed = 0;
 
         self.handle.activate(Activation {
             world,
@@ -226,6 +229,14 @@ impl SimHost {
         self.queued
     }
 
+    /// The queued cells the ticks applied since the last call evaluated, taken
+    /// and cleared, so a caller that divides by its own window gets the rate
+    /// over that window.
+    #[must_use]
+    pub fn take_processed(&mut self) -> usize {
+        mem::take(&mut self.processed)
+    }
+
     /// The pose one frame draws from the pushes applied so far: feet
     /// interpolated between the previous and current tick as of `now`,
     /// discrete state from the current tick, valid from readiness on.
@@ -258,6 +269,7 @@ impl SimHost {
                 }
 
                 self.queued = Some(tick.report.queued);
+                self.processed = self.processed.saturating_add(tick.report.processed);
 
                 self.view
                     .advance(Instant::now(), tick.player, tick.remainder);
@@ -606,5 +618,42 @@ mod tests {
             Some(0),
             "an empty queue reaches the log's reader"
         );
+    }
+
+    #[test]
+    fn the_host_accumulates_the_grains_the_ticks_processed() {
+        let (mut host, _world) = ready_host();
+        let mut total = 0usize;
+
+        assert_eq!(host.take_processed(), 0, "no tick has reported yet");
+
+        for x in 0..2 {
+            host.command(Command::Cell(VoxelEdit {
+                position: IVec3::new(x, 400, 500),
+                change: VoxelChange::Set(1),
+            }));
+
+            // The command's wakes land at commit, after that tick's drain, so
+            // the four cells it queues are evaluated by the following tick.
+            for _ in 0..2 {
+                host.frame(period(), InputSample::default());
+
+                let tick = take_tick(&host);
+
+                total = total.saturating_add(tick.report.processed);
+                host.apply(Push::Tick(tick), &mut |_batch| Ok(()));
+            }
+        }
+
+        assert_eq!(
+            total, 8,
+            "each command's four woken cells are evaluated by the tick after its commit"
+        );
+        assert_eq!(
+            host.take_processed(),
+            total,
+            "the grains a window's ticks evaluated reach the log's reader"
+        );
+        assert_eq!(host.take_processed(), 0, "taking the count clears it");
     }
 }

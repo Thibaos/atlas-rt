@@ -17,6 +17,13 @@ pub enum ParityPolicy {
     AlwaysNegative,
 }
 
+/// One drain's outcome: the edits it would commit and the queued cells it
+/// evaluated, whether they moved, lost a claim, settled, or were never grains.
+pub(in crate::sim) struct Drained {
+    pub(in crate::sim) edits: Vec<VoxelEdit>,
+    pub(in crate::sim) processed: usize,
+}
+
 /// Drains at most `cap` of the queued cells in ascending y, then x, then z
 /// against `world`, records one claim per destination in emission order, folds
 /// the moves and their wakes back into `queue`, and leaves the cells it did not
@@ -27,14 +34,17 @@ pub(in crate::sim) fn drain(
     queue: &mut UpdateQueue,
     parity: ParityPolicy,
     cap: usize,
-) -> Vec<VoxelEdit> {
+) -> Drained {
     let field = Field::new(world, table, queue);
     let boundary = field.queued_cells().nth(cap).copied();
+    let mut processed = 0usize;
     let mut claims = FxHashSet::default();
     let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
     let mut requeued: Vec<IVec3> = Vec::new();
 
     for src in field.queued_cells().take(cap).copied() {
+        processed = processed.saturating_add(1);
+
         let Some(material) = field.grain(src) else {
             continue;
         };
@@ -78,7 +88,7 @@ pub(in crate::sim) fn drain(
 
     *queue = next;
 
-    edits
+    Drained { edits, processed }
 }
 
 /// Where the grain goes this tick: straight down while the cell below is
@@ -241,7 +251,7 @@ mod tests {
     }
 
     fn step(world: &mut World, queue: &mut UpdateQueue, cap: usize) -> Vec<VoxelEdit> {
-        let edits = drain(world, &table(), queue, ParityPolicy::Alternate, cap);
+        let edits = drain(world, &table(), queue, ParityPolicy::Alternate, cap).edits;
 
         edit_world(world, &edits, &TrackedCoords::default())
             .unwrap_or_else(|error| panic!("the edits must apply: {error}"));
@@ -253,7 +263,7 @@ mod tests {
     fn a_tick_drains_at_most_the_cap_and_leaves_the_rest_queued() {
         let world = row();
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 2);
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 2).edits;
 
         assert_eq!(
             edits,
@@ -281,31 +291,43 @@ mod tests {
     #[test]
     fn the_processed_cells_match_the_uncapped_drain() {
         let world = row();
-        let mut capped = queued(&world);
-        let mut uncapped = queued(&world);
+        let mut capped_queue = queued(&world);
+        let mut uncapped_queue = queued(&world);
 
-        let capped_edits = drain(&world, &table(), &mut capped, ParityPolicy::Alternate, 2);
-        let uncapped_edits = drain(
+        let capped = drain(
             &world,
             &table(),
-            &mut uncapped,
+            &mut capped_queue,
+            ParityPolicy::Alternate,
+            2,
+        );
+        let uncapped = drain(
+            &world,
+            &table(),
+            &mut uncapped_queue,
             ParityPolicy::Alternate,
             usize::MAX,
         );
-        let prefix: Vec<VoxelEdit> = uncapped_edits
+        let prefix: Vec<VoxelEdit> = uncapped
+            .edits
             .iter()
-            .take(capped_edits.len())
+            .take(capped.edits.len())
             .copied()
             .collect();
 
         assert_eq!(
-            capped_edits, prefix,
+            capped.edits, prefix,
             "the cap cuts the uncapped drain short and changes nothing it keeps"
         );
         assert_eq!(
-            uncapped_edits.len(),
+            uncapped.edits.len(),
             10,
             "the uncapped drain moves every grain"
+        );
+        assert_eq!(capped.processed, 2, "the cap bounds the cells it evaluates");
+        assert_eq!(
+            uncapped.processed, 5,
+            "an uncapped drain evaluates every queued cell"
         );
     }
 
@@ -319,7 +341,7 @@ mod tests {
             (IVec3::new(6, 2, 6), GRAIN),
         ]);
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 3);
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 3).edits;
 
         assert_eq!(
             edits,
