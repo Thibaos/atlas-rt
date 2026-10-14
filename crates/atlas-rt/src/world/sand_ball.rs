@@ -1,14 +1,14 @@
 //! One fixed ball of Sand, written instead of a height field.
 //!
 //! A solid sphere of radius [`RADIUS`], centred on the Lattice centre in x and z
-//! with its y at [`CENTRE_HEIGHT`]: about 8.8 million grains in about 19,000
+//! with its y at [`CENTRE_HEIGHT`]: about 1.1 million grains in about 2,700
 //! Micro-chunks. Every cell of it is inside the Lattice, so the fill writes no
 //! clipped cell and refuses no grain.
 //!
 //! The ball hangs in an empty World with no floor under it, so its lowest grains
-//! fall 2,112 cells to the Lattice floor at y = -2048 and its highest 2,368. The
-//! first grain reaches the floor after about 70 seconds, and the whole ball
-//! drains in about 4.8 million ticks, about 45 hours at the default 30 Hz. The
+//! fall 2,176 cells to the Lattice floor at y = -2048 and its highest 2,304. The
+//! first grain reaches the floor after about 72 seconds, and the whole ball
+//! drains in about 0.6 million ticks, about 5.5 hours at the default 30 Hz. The
 //! grains that land settle at the floor.
 
 use glam::IVec3;
@@ -23,7 +23,7 @@ use super::{
 };
 
 /// The ball's radius, in cells.
-pub const RADIUS: i32 = 128;
+pub const RADIUS: i32 = 64;
 
 /// The ball's centre level, in cells.
 pub const CENTRE_HEIGHT: i32 = 192;
