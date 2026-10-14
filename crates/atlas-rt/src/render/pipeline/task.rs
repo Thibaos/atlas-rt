@@ -369,13 +369,27 @@ impl Task for RegionRenderTask {
         unsafe { cbf.update_buffer(self.bindings.camera_buffer, 0, &rcx.camera) };
         unsafe { cbf.update_buffer(self.bindings.scene_buffer, 0, &rcx.scene) };
 
+        // The ray pass reads more than the two buffers updated above. A tick's
+        // rebuild writes each updated region's pool, its AABB list, the region
+        // table, the AABB table and that region's BLAS, and the shaders reach
+        // all of them: the pool and the AABB list through device addresses, the
+        // two tables through bindings, and the BLAS through the TLAS. The
+        // instance buffer makes the frame wait for the rebuild submission, but
+        // the rebuild declares none of these other buffers as the frame's, so
+        // one barrier over every stage the rebuild wrote is what makes them
+        // visible to the trace.
         unsafe {
             cbf.pipeline_barrier(&DependencyInfo {
                 memory_barriers: &[MemoryBarrier {
-                    src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE,
+                    src_access: vulkano::sync::AccessFlags::TRANSFER_WRITE
+                        | vulkano::sync::AccessFlags::HOST_WRITE
+                        | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_WRITE,
                     dst_access: vulkano::sync::AccessFlags::SHADER_READ
-                        | vulkano::sync::AccessFlags::SHADER_STORAGE_READ,
-                    src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER,
+                        | vulkano::sync::AccessFlags::SHADER_STORAGE_READ
+                        | vulkano::sync::AccessFlags::ACCELERATION_STRUCTURE_READ,
+                    src_stages: vulkano::sync::PipelineStages::ALL_TRANSFER
+                        | vulkano::sync::PipelineStages::HOST
+                        | vulkano::sync::PipelineStages::ACCELERATION_STRUCTURE_BUILD,
                     dst_stages: vulkano::sync::PipelineStages::RAY_TRACING_SHADER,
                     ..MemoryBarrier::default()
                 }],

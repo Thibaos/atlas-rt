@@ -104,8 +104,16 @@ pub fn decide(
 
                 if blas_grows {
                     decision.blas_replaced.push(region_index);
-                    decision.tlas_dirty = true;
                 }
+
+                // Every update rebuilds the region's bottom-level structure,
+                // and a bottom-level build invalidates every top-level
+                // structure that references it: the region's new geometry is
+                // reachable only once the top level is built again. Leaving the
+                // top level alone makes the region's rays miss, including the
+                // static floor voxels sharing its bottom-level structure, until
+                // some other update grows a region and rebuilds the top level.
+                decision.tlas_dirty = true;
 
                 decision.dirty.push(region_index);
 
@@ -244,7 +252,10 @@ mod tests {
         ));
         assert_eq!(decision.dirty, [index]);
         assert!(decision.blas_replaced.is_empty());
-        assert!(!decision.tlas_dirty);
+        assert!(
+            decision.tlas_dirty,
+            "the region's bottom level is built again, so the top level must be too"
+        );
         assert!(decision.table_changed);
     }
 
@@ -273,7 +284,7 @@ mod tests {
     }
 
     #[test]
-    fn update_without_growth_rebuilds_in_place() {
+    fn update_without_growth_reuses_both_buffers() {
         let index = IVec3::ZERO;
         let id = region_id(index);
         let mut slots = empty_slots();
@@ -292,7 +303,10 @@ mod tests {
             }
         ));
         assert_eq!(decision.dirty, [index]);
-        assert!(!decision.tlas_dirty);
+        assert!(
+            decision.tlas_dirty,
+            "the region's bottom level is built again, so the top level must be too"
+        );
         assert!(!decision.table_changed);
     }
 
