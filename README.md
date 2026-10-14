@@ -75,15 +75,17 @@ Each refusal names its reason, and prints before any window opens:
 
 ### The sand ball
 
-`--world-type sand-ball` builds one fixed ball of Sand in an empty World: about
-1.1 million grains, 128 voxels across, centred at y = 192, with no floor under
-it. Watch it with `--fly`. Every grain is queued at activation, and a queued
+`--world-type sand-ball` builds one fixed ball of Sand just above a one-cell
+Bedrock floor: about 1.1 million grains, 128 voxels across, its lowest layer 128
+voxels above the floor's surface at y = -2047. The floor is the Lattice's bottom
+layer at y = -2048, one cell under every one of the 4,096 by 4,096 columns.
+Watch the ball with `--fly`. Every grain is queued at activation, and a queued
 Falling granular cell does not support the player, so the player free-falls from
 the top of the ball.
 
 The scene exists to watch the Falling granular rules at scale. The first grain
-reaches the Lattice floor at y = -2048 after about 72 seconds, and the whole ball
-drains in about 5.5 hours at the default 30 Hz, so a queue that keeps running is
-not a fault. The sand lands about 2,200 voxels below the ball, which puts the
-ball and the pile out of one view. The binary logs the frame rate, the queued
-grain count and the drain rate once a second.
+reaches the floor after about 4 seconds, and the whole ball drains in about half
+an hour at the default 30 Hz, less as the pile grows, so a queue that keeps
+running is not a fault. The sand settles on the floor under the ball, so the ball
+and the pile stay in one view. The binary logs the frame rate, the queued grain
+count and the rate the rules process grains once a second.

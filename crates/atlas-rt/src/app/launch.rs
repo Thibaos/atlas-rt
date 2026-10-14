@@ -7,9 +7,10 @@
 //! The Seed's bits are reinterpreted from the host's signed integer.
 //!
 //! `--world-type` names the generated World type: `terrain`, the default, or
-//! `sand-ball`, which writes a ball of Sand in an empty World. The ball is a
-//! fixed shape, so `--seed` and `--extent` are ignored beside it. A World type
-//! and a `--world` file are two World sources, so naming both is refused.
+//! `sand-ball`, which writes a ball of Sand above a one-cell floor at the
+//! Lattice's bottom. The ball is a fixed shape, so `--seed` and `--extent` are
+//! ignored beside it. A World type and a `--world` file are two World sources,
+//! so naming both is refused.
 //!
 //! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
 //! character controller and leaves the simulation running, so the free camera
