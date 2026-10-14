@@ -1,6 +1,7 @@
 [gd_scene format=3 uid="uid://b1idham0c2n4d"]
 
 [ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
+[ext_resource type="Script" uid="uid://dkosbip0rdymb" path="res://scripts/sand_ball_button.gd" id="3_sndbl"]
 [ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
@@ -88,6 +89,12 @@ grow_vertical = 0
 layout_mode = 2
 text = "generate"
 script = SubResource("GDScript_0xm2m")
+UI = NodePath("../..")
+
+[node name="sand_ball" type="Button" parent="UI/HBoxContainer" unique_id=1743285833 node_paths=PackedStringArray("UI")]
+layout_mode = 2
+text = "sand ball"
+script = ExtResource("3_sndbl")
 UI = NodePath("../..")
 
 [node name="castle" type="Button" parent="UI/HBoxContainer" unique_id=457740108 node_paths=PackedStringArray("UI")]

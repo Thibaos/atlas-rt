@@ -192,9 +192,11 @@ impl RegionStore {
             }
         }
 
+        // On the graphics queue like the rebuild and the frame, so the frame's
+        // barrier can order this write before the intersection shader reads it.
         unsafe {
             vulkano_taskgraph::execute(
-                &gpu.transfer_queue,
+                &gpu.graphics_queue,
                 &gpu.resources,
                 gpu.graphics_flight_id,
                 |_cbf, tcx| {

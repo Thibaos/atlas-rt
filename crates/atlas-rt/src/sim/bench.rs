@@ -143,7 +143,8 @@ fn commit_tick(
         queue,
         ParityPolicy::Alternate,
         MAX_CELLS_PER_TICK,
-    );
+    )
+    .edits;
     let moves = edits.len() / 2;
 
     if edits.is_empty() {

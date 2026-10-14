@@ -178,7 +178,15 @@ impl RegionStore {
 
         self.rebuild_with_plan(gpu, plan)?;
 
-        if report.tlas_rebuilt {
+        // The AABB table maps a region to the buffer holding its hulls, so it
+        // is stale exactly when one of those buffers is replaced: a region
+        // entering or leaving, or a region whose hulls outgrew theirs. An
+        // update that rebuilds a hull list in place leaves every address alone.
+        let aabb_buffers_changed = !report.became_resident.is_empty()
+            || !report.left_resident.is_empty()
+            || !report.blas_replaced.is_empty();
+
+        if aabb_buffers_changed {
             self.write_aabb_table(gpu, self.aabb_table_buffer_id)?;
         }
 
@@ -503,7 +511,7 @@ impl RegionStore {
         let tlas_rebuilds = plan.tlas.is_some();
         let graph = RebuildGraph::new(gpu, self, plan)?;
 
-        graph.execute(gpu)?;
+        graph.execute()?;
 
         if tlas_rebuilds {
             self.tlas_initialized = true;

@@ -316,6 +316,15 @@ impl RebuildGraph {
     /// # Errors
     ///
     /// Returns an error if taskgraph compilation failed
+    ///
+    /// The rebuild runs on the graphics queue, the queue the frame's ray pass
+    /// runs on, so the frame follows it in submission order. Two things order
+    /// the rebuild's writes before the trace: the barrier the frame opens with,
+    /// and the instance buffer, which the rebuild declares a write of and the
+    /// frame declares a read of, so the task graph makes the frame wait for the
+    /// whole rebuild submission. Another queue had neither, only the host
+    /// waiting the rebuild's fence, and a host wait does not make device writes
+    /// visible to another queue.
     pub fn new(
         gpu: &RenderContext,
         store: &RegionStore,
@@ -343,7 +352,7 @@ impl RebuildGraph {
         let upload_node = task_graph
             .create_task_node(
                 "Rebuild upload",
-                QueueFamilyType::Compute,
+                QueueFamilyType::Graphics,
                 UploadRegionsTask {
                     uploads: plan.uploads,
                     table: plan.table,
@@ -359,7 +368,7 @@ impl RebuildGraph {
         } else {
             let mut builder = task_graph.create_task_node(
                 "Rebuild BLAS",
-                QueueFamilyType::Compute,
+                QueueFamilyType::Graphics,
                 BuildBlasTask {
                     builds: plan.blas_builds,
                 },
@@ -380,7 +389,7 @@ impl RebuildGraph {
                 task_graph
                     .create_task_node(
                         "Rebuild TLAS",
-                        QueueFamilyType::Compute,
+                        QueueFamilyType::Graphics,
                         BuildTlasTask {
                             instance_count: tlas.instance_count,
                             instance_buffer_id: store.bindings.instance_buffer,
@@ -410,9 +419,9 @@ impl RebuildGraph {
 
         let executable = unsafe {
             task_graph.compile(&CompileInfo {
-                queues: &[&gpu.compute_queue],
+                queues: &[&gpu.graphics_queue],
                 present_queue: None,
-                flight_id: gpu.compute_flight_id,
+                flight_id: gpu.graphics_flight_id,
                 ..CompileInfo::default()
             })
         }?;
@@ -422,13 +431,11 @@ impl RebuildGraph {
 
     /// # Errors
     ///
-    /// Returns an error if `resource_map` creation, taskgraph execution, or flight waiting failed
-    pub fn execute(self, gpu: &RenderContext) -> anyhow::Result<()> {
+    /// Returns an error if `resource_map` creation or taskgraph execution failed
+    pub fn execute(self) -> anyhow::Result<()> {
         let resource_map = resource_map!(&self.executable)?;
 
         unsafe { self.executable.execute(resource_map, &(), || {}) }?;
-
-        gpu.resources.flight(gpu.compute_flight_id).wait_idle()?;
 
         Ok(())
     }

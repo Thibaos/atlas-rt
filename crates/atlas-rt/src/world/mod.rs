@@ -7,6 +7,7 @@ pub mod material;
 pub mod micro;
 pub mod palette;
 pub mod raycast;
+pub mod sand_ball;
 pub(crate) mod store;
 pub mod vocabulary;
 pub mod vox;

@@ -87,11 +87,15 @@ pub struct TickEnd {
 /// What one update did: ticks run, batches committed in tick order, ticks
 /// past the catch-up cap, the summed evaluation and commit times, and the
 /// grains the last tick left queued.
+///
+/// `processed` is the queued cells the rules evaluated across those ticks,
+/// moved or not, which is what the host's log rate divides by its window.
 #[derive(Debug)]
 pub struct UpdateReport {
     pub ticks: u32,
     pub batches: Vec<Vec<MicroChunkSnapshot>>,
     pub discarded: u64,
+    pub processed: usize,
     pub queued: usize,
     pub tick_time: Duration,
     pub commit_time: Duration,
@@ -339,6 +343,7 @@ impl Runtime {
             ticks,
             batches: Vec::new(),
             discarded,
+            processed: 0,
             queued: self.queue.len(),
             tick_time: Duration::ZERO,
             commit_time: Duration::ZERO,
@@ -365,11 +370,12 @@ impl Runtime {
     /// One tick: the player moves and the voxel rules drain the queue under
     /// the read lock, then the pending edits commit under the write lock.
     fn tick(&mut self, report: &mut UpdateReport) {
-        let evaluated = self.evaluate();
+        let (evaluated, processed) = self.evaluate();
         let (committed, batch) = self.commit();
 
         report.tick_time = report.tick_time.saturating_add(evaluated);
         report.commit_time = report.commit_time.saturating_add(committed);
+        report.processed = report.processed.saturating_add(processed);
         report.queued = self.queue.len();
 
         if let Some(snapshots) = batch {
@@ -435,9 +441,11 @@ impl Runtime {
     /// queue on the same read lock, so the rules read one immutable view of
     /// the World for the whole tick and hand back a pending edit list. At most
     /// [`MAX_CELLS_PER_TICK`] cells are drained, and the rest of the queue
-    /// carries into the next tick. The window starts before the lock is taken,
-    /// so it carries any wait for a host reader and stamps the jump deadline.
-    fn evaluate(&mut self) -> Duration {
+    /// carries into the next tick. Returns the window's duration and the
+    /// queued cells the drain evaluated. The window starts before the lock is
+    /// taken, so it carries any wait for a host reader and stamps the jump
+    /// deadline.
+    fn evaluate(&mut self) -> (Duration, usize) {
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
 
@@ -456,7 +464,7 @@ impl Runtime {
             );
         }
 
-        let edits = rules::drain(
+        let drained = rules::drain(
             &guard,
             &self.materials,
             &mut queue,
@@ -467,9 +475,9 @@ impl Runtime {
         drop(guard);
 
         self.queue = queue;
-        self.rule_edits = edits;
+        self.rule_edits = drained.edits;
 
-        started.elapsed()
+        (started.elapsed(), drained.processed)
     }
 
     /// Applies the rule edits as one batch and then every queued command as

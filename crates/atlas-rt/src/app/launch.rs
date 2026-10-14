@@ -6,6 +6,12 @@
 //! the Seed so a run repeats, and `--extent` bounds a Generation's ground.
 //! The Seed's bits are reinterpreted from the host's signed integer.
 //!
+//! `--world-type` names the generated World type: `terrain`, the default, or
+//! `sand-ball`, which writes a ball of Sand above a one-cell floor at the
+//! Lattice's bottom. The ball is a fixed shape, so `--seed` and `--extent` are
+//! ignored beside it. A World type and a `--world` file are two World sources,
+//! so naming both is refused.
+//!
 //! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
 //! character controller and leaves the simulation running, so the free camera
 //! can watch a World settle. `--no-sim` spawns no simulation thread, so no
@@ -24,11 +30,21 @@ use glam::IVec3;
 
 use atlas_rt::world::generation::GenerationParams;
 
-/// The World a run builds at startup: a `.vox` load or a Generation.
+/// The World a run builds at startup: a `.vox` load, a Generation or the sand
+/// ball.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldRequest {
     Load(String),
     Generate(GenerationParams),
+    SandBall,
+}
+
+/// The generated World type `--world-type` names. Terrain is the default, so a
+/// run that names no type builds it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorldType {
+    Terrain,
+    SandBall,
 }
 
 /// A parsed command line: the World to build, whether the camera flies free of
@@ -48,9 +64,11 @@ pub struct Launch {
 /// # Errors
 ///
 /// Returns a reason when a value flag has no value, when a Seed or extent is
-/// not an integer, or when `--extent` is given beside `--world`.
+/// not an integer, when a World type is not `terrain` or `sand-ball`, or when
+/// `--extent` or `--world-type` is given beside `--world`.
 pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world = None;
+    let mut world_type = None;
     let mut seed = None;
     let mut extent = None;
     let free_camera = args.iter().any(|arg| arg == "--fly");
@@ -62,6 +80,10 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         match flag.as_str() {
             "--world" => {
                 world = Some(value_after(args, index)?.to_owned());
+                index = index.strict_add(2);
+            }
+            "--world-type" => {
+                world_type = Some(parse_world_type(value_after(args, index)?)?);
                 index = index.strict_add(2);
             }
             "--seed" => {
@@ -76,15 +98,21 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         }
     }
 
-    let request = match (world, seed) {
-        (_, Some(seed)) => WorldRequest::Generate(generation_params(seed, extent)),
-        (Some(_), None) if extent.is_some() => {
+    let request = match (world, world_type, seed) {
+        (Some(_), Some(_), _) => {
+            return Err(String::from(
+                "--world loads a file, so --world-type has nothing to select",
+            ));
+        }
+        (_, Some(WorldType::SandBall), _) => WorldRequest::SandBall,
+        (_, _, Some(seed)) => WorldRequest::Generate(generation_params(seed, extent)),
+        (Some(_), _, None) if extent.is_some() => {
             return Err(String::from(
                 "--world loads a file, so --extent has nothing to bound",
             ));
         }
-        (Some(world), None) => WorldRequest::Load(world),
-        (None, None) => WorldRequest::Generate(generation_params(random_seed(), extent)),
+        (Some(world), _, None) => WorldRequest::Load(world),
+        (None, _, None) => WorldRequest::Generate(generation_params(random_seed(), extent)),
     };
 
     Ok(Launch {
@@ -129,6 +157,17 @@ fn parse_extent(value: &str) -> Result<i32, String> {
     value
         .parse::<i32>()
         .map_err(|_| format!("the extent {value} is not an integer"))
+}
+
+/// The World type a `--world-type` value names.
+fn parse_world_type(value: &str) -> Result<WorldType, String> {
+    match value {
+        "terrain" => Ok(WorldType::Terrain),
+        "sand-ball" => Ok(WorldType::SandBall),
+        _ => Err(format!(
+            "the world type {value} is not terrain or sand-ball"
+        )),
+    }
 }
 
 /// The Generation parameters: a square extent when one is given, the full
