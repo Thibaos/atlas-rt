@@ -402,22 +402,39 @@ Simulation has.
 _Avoid_: world swap, respawn, restart
 
 **Simulation tick**:
-One fixed-rate advance of the voxel rules and player movement. Player movement
-resolves first, then voxel rules. Input is sampled outside the tick and consumed
-by the controller during the tick. A tick drains at most the cell cap of the
-Update queue and leaves the rest queued.
+One advance of the voxel rules and player movement. Player movement resolves
+first, then voxel rules. Input is sampled outside the tick and consumed by the
+controller during the tick. A tick drains the whole Update queue below the Cell
+cap, so its rate falls below the profile's when a tick costs more than a frame
+period, and the World never advances partially to keep up. A tick the Cell cap
+does bind serves the cap's worth of cells out of the sweep and leaves the rest
+unserved.
 _Avoid_: physics frame, render frame
 
 **Update queue**:
 The cells the voxel rules have not evaluated yet, held in the order a tick
 drains them: ascending y, then x, then z. Settled means absent, so a Falling
-granular cell blocks the player only while the queue holds it.
+granular cell blocks the player only while the queue holds it. A sweep serves
+every cell once before serving any cell twice, so a cell is served once within
+`ceil(Q / cap)` ticks rather than waiting behind a run of lower cells.
 _Avoid_: dirty list, work list
 
+**Sweep**:
+One pass of the Update queue that serves every cell in it once. A tick serves as
+many of the sweep's unserved cells as the Cell cap allows, so a queue below the
+cap sweeps in one tick and a queue above it takes `ceil(Q / cap)` ticks. A cell
+a tick served, a mover's destination included, keeps its served mark for the
+rest of the sweep, and a cell woken during the sweep waits for the next one once
+the sweep's front has passed it.
+_Avoid_: pass, cycle, drain (the work a tick does, not the bound on a scene)
+
 **Cell cap**:
-The most queued cells one Simulation tick drains, a fixed count in the
-simulation beside the catch-up cap. The cells a tick does not reach stay queued
-with their wakes.
+The most queued cells one Simulation tick drains, a rail rather than the
+mechanism: a tick drains the whole queue below it and no designed scene reaches
+it. It bounds a pathological one, a World filled with granular cells, and where
+it does bind the sweep serves every cell once before serving any cell twice. A
+fixed count in the simulation beside the catch-up cap. The cells a tick does not
+reach stay queued with their wakes.
 _Avoid_: grain budget, work budget
 
 **Input sample**:
