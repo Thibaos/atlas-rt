@@ -2,16 +2,20 @@
 
 `UpdateQueue` is a deterministic ordered set keyed by `(y, x, z)`, the order the
 drain has always used, and one tick drains the whole queue below the cell cap,
-`MAX_CELLS_PER_TICK`. The set iterates by key, so the cells a tick serves are the
-queue's prefix in that key, and a contested destination is still resolved by the
-order the tick serves in.
+`MAX_CELLS_PER_TICK`. The set iterates by key, so a contested destination is
+still resolved by the order the tick serves in. The cells a tick serves are not
+the queue's prefix in that key, which is what this record first said: once a
+sweep is under way the queue holds a served half and an unserved half, so a tick
+serves the lowest cells of the unserved half in key order, and "the queue's
+prefix" no longer names them. That prefix claim is one of the two statements
+[0020](0020-in-tick-drain.md) supersedes.
 
 This record was written when the cap was the mechanism and stood at 4096, and
-[0020](0020-in-tick-drain.md) supersedes two of its statements: that the cap
-bounds a tick's work, and that the cap is what makes the drain deterministic.
-Read the rest of this record as the queue's order, which 0020 keeps, plus the
-history of why the cap was introduced. Each superseded statement is marked where
-it appears.
+[0020](0020-in-tick-drain.md) supersedes two of its statements: that the
+processed cells are the queue's prefix in `(y, x, z)` order, and that the cap is
+the mechanism. Read the rest of this record as the queue's order, which 0020
+keeps, plus the history of why the cap was introduced. Each superseded statement
+is marked where it appears.
 
 The cap is the second fixed bound on an update's work, beside the scheduler's
 catch-up cap in
@@ -96,8 +100,11 @@ measured rail. See the consequences.
   window was one tick. The alternative was an uncapped tick, which the parent
   issue measured at about five seconds for the first full-lattice tick after its
   snapshot fold was fixed. The wait is now bounded by a sweep: a cell behind the
-  rail is served within `ceil(Q / cap)` ticks, which the full lattice's
-  8,259,231 granular cells make five, so no cell waits indefinitely.
+  rail is served within `ceil(Q / cap)` ticks on the first sweep of a freshly
+  seeded queue, which the full lattice's 8,259,231 granular cells make five, so
+  no cell waits indefinitely. A later sweep can take more ticks, because a wake
+  the front has not passed rejoins it, but every cell is still served once
+  before any cell is served twice.
 - The lowest cells drain first and a moved cell is queued at its destination,
   one level lower. A scene that keeps falling, such as the tripwire's spaced
   sand layers, therefore drains the same lowest cells for as long as they have
@@ -153,13 +160,13 @@ measured rail. See the consequences.
   scales with the cells the tick drains, and its clone of the renderer's tracked
   set, which scales with the loaded world. That second term is now the one the
   rail cannot shrink: at a full-lattice surface the tick drains 8,259,231 cells
-  over a five-tick sweep, so the commit's compile term is spread across five
-  ticks while the tracked-set clone is paid on every tick that commits. Which
-  term dominates the full-lattice surface's 16.1 ms commit is still unmeasured:
-  the bench does not separate them. The clone alone is about 3.2 ms at bistro's
-  1,748,065 tracked Micro-chunks, which is most of that occupancy's commit.
-  Separating the two, and deciding whether the renderer's tracked set should be
-  cloned per tick at all, is open work.
+  over the first sweep's five ticks, so the commit's compile term is spread
+  across five ticks while the tracked-set clone is paid on every tick that
+  commits. Which term dominates the full-lattice surface's 16.1 ms commit is
+  still unmeasured: the bench does not separate them. The clone alone is about
+  3.2 ms at bistro's 1,748,065 tracked Micro-chunks, which is most of that
+  occupancy's commit. Separating the two, and deciding whether the renderer's
+  tracked set should be cloned per tick at all, is open work.
 - `generated_surface_tick_timings` in `app/sim_host/bench.rs` drives a
   Generation's own Sand surface, the scene the cap was written for. Its p95 over
   256 ticks is 3.0 ms at the 512 extent, 4.0 ms at 1024, 7.4 ms at 2048, and
@@ -169,21 +176,23 @@ measured rail. See the consequences.
   stays over it, which is the gap recorded above. The surface settles over
   thousands of ticks rather than stalling one, which is the criterion this
   decision took on. At the full lattice the surface's queue is the five-tick
-  sweep [0020](0020-in-tick-drain.md) describes, so the 8,259,231 granular cells
-  are served across five ticks rather than in one 2,000,000-cell tick.
+  first sweep [0020](0020-in-tick-drain.md) describes, so the 8,259,231 granular
+  cells are served across five ticks rather than in one 2,000,000-cell tick.
 - The same surface on the in-tick drain, 2026-10-15: the p95 tick is 531.600µs
   at the 512 extent, 1.618ms at 1024, 3.840ms at 2048 and 9.300µs at the full
   lattice, of which the rule work is 180.900µs, 256.600µs, 772.800µs and
   9.300µs. The 512, 1024 and 2048 extents hold 48,911, 202,221 and 1,800,792
   grains, below the 2,000,000-cell rail, so a tick drains their whole queue and
   the rule work is the scene's own size. The full lattice holds 8,432,216
-  grains, above the rail, so its sweep is five ticks. Its p95 is 9.300µs, which
-  is an idle tick rather than that tick's cost: nothing moves, so the queue can
-  only shrink, and the ticks that drain the rail's 2,000,000 cells fall below
-  the 95th percentile of 256. The full lattice also moves nothing in 256 ticks
-  and fails the bench's churn assertion. The same point failed at `main` with
-  the 4096 cap, with the same zero moves, so the in-tick drain neither
-  introduced nor fixed that failure.
+  grains, above the rail, so its first sweep is five ticks. That count is this
+  run's, where the record's own figure for the same surface is 8,259,231; both
+  stand as measured, and the difference between them is not established here.
+  Its p95 is 9.300µs, which is an idle tick rather than that tick's cost:
+  nothing moves, so the queue can only shrink, and the ticks that drain the
+  rail's 2,000,000 cells fall below the 95th percentile of 256. The full lattice
+  also moves nothing in 256 ticks and fails the bench's churn assertion. The
+  same point failed at `main` with the 4096 cap, with the same zero moves, so
+  the in-tick drain neither introduced nor fixed that failure.
 - A full-lattice surface's first ticks reach the deepest level, where no cell
   can move, so the drain settles them one tick at a time and the first moves
   wait for the queue to reach a level with a lower neighbour. The surface bench
@@ -198,8 +207,9 @@ the world-generation issue 12. Adds **Update queue** and **Cell cap** to
 repeated sequence, and `tests/falling_granular.rs` pinned the cap through the
 sim's tick boundary. Amended (2026-10-15) by
 [0020](0020-in-tick-drain.md): a tick now drains the whole queue and the cap is
-a 2,000,000-cell rail rather than the mechanism, so the prefix claim holds only
-of the cells a tick serves and the cap no longer makes the drain deterministic.
+a 2,000,000-cell rail rather than the mechanism, so the cells a tick serves are
+the unserved half's lowest cells rather than the queue's prefix, and the cap no
+longer makes the drain deterministic.
 The amended statements are marked as they appear, and the record is kept rather
 than rewritten because the queue's order, which is what outlives the cap, is
 this record's decision. `the_processed_cells_match_the_uncapped_drain` still

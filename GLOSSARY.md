@@ -415,18 +415,24 @@ _Avoid_: physics frame, render frame
 The cells the voxel rules have not evaluated yet, held in the order a tick
 drains them: ascending y, then x, then z. Settled means absent, so a Falling
 granular cell blocks the player only while the queue holds it. A sweep serves
-every cell once before serving any cell twice, so a cell is served once within
-`ceil(Q / cap)` ticks rather than waiting behind a run of lower cells.
+every cell once before serving any cell twice, so the first sweep of a freshly
+seeded queue takes `ceil(Q / cap)` ticks and serves every seeded cell once,
+rather than leaving a cell waiting behind a run of lower ones. A later sweep can
+take more ticks, because a wake the front has not passed rejoins it.
 _Avoid_: dirty list, work list
 
 **Sweep**:
 One pass of the Update queue that serves every cell in it once. A tick serves as
 many of the sweep's unserved cells as the Cell cap allows, so a queue below the
-cap sweeps in one tick and a queue above it takes `ceil(Q / cap)` ticks. A cell
-a tick served, a mover's destination included, keeps its served mark for the
-rest of the sweep, and a cell woken during the sweep waits for the next one once
-the sweep's front has passed it.
-_Avoid_: pass, cycle, drain (the work a tick does, not the bound on a scene)
+cap sweeps in one tick and a queue above it takes `ceil(Q / cap)` ticks on the
+first sweep of a freshly seeded queue, where every seeded grain is already in
+the queue and no wake can add one. A later sweep can take more ticks, because a
+wake the front has not passed rejoins it, but every cell is still served once
+before any cell twice. A cell a tick served, a mover's destination included,
+keeps its served mark for the rest of the sweep, and a cell woken during the
+sweep waits for the next one once the sweep's front has passed it.
+_Avoid_: pass, cycle, drain (as the name of one pass, not the verb "a tick
+drains the queue")
 
 **Cell cap**:
 The most queued cells one Simulation tick drains, a rail rather than the

@@ -25,8 +25,12 @@ pub(in crate::sim) struct Drained {
 
 /// Drains at most `cap` of the cells this sweep has not served, in ascending y,
 /// then x, then z, against `world`: each move goes into an overlay a later cell
-/// reads, the cells it did not reach stay unserved, and the moves and wakes join
-/// the half the sweep's front decides. Nothing here writes to the World.
+/// reads, and nothing here writes to the World. The cells the tick did not reach
+/// stay unserved. A destination is at `src.y - 1` and the scan serves ascending
+/// y, so it needs no moved-this-tick guard. The front is set before the wakes, so
+/// a wake behind it waits for the next sweep and a wake ahead keeps its turn in
+/// this one. A mover's destination is marked served, since the mark travels with
+/// the grain.
 pub(in crate::sim) fn drain(
     world: &World,
     table: &PhysicalMaterialTable,
@@ -75,23 +79,18 @@ pub(in crate::sim) fn drain(
                 continue;
             };
 
-            // No moved-this-tick guard: a destination is at src.y - 1 and this
-            // scan serves ascending y, so it is a cell this tick has passed.
             field.apply_move(src, dst, material);
             moves.push((src, dst, material));
             wake_above(&field, &mut woken, src);
         }
     }
 
-    // The front is set before the wakes, so a wake behind it waits for the next
-    // sweep while a wake ahead of it keeps its turn in this one.
     queue.finish(boundary);
 
     for cell in woken {
         queue.wake(cell);
     }
 
-    // The mark travels with the grain, so a destination is served next sweep.
     for (_, dst, _) in &moves {
         queue.mark_moved(*dst);
     }
@@ -218,6 +217,10 @@ mod tests {
     const GRAIN: u8 = 2;
     const PILLAR: u8 = 1;
 
+    /// The solid slab the falling sphere rests on. The sphere's lowest cell
+    /// starts at y = 5, so it falls 12 cells before it lands.
+    const FLOOR_Y: i32 = -8;
+
     fn table() -> PhysicalMaterialTable {
         parse_override(&format!("material {GRAIN} falling_granular solid=true"))
             .unwrap_or_else(|rejections| panic!("{rejections:?}"))
@@ -282,11 +285,17 @@ mod tests {
         world_of(&cells)
     }
 
-    /// A hand-built sphere of `radius`, centered at y = 8. The shipped sand
-    /// ball's radius is fixed at 64, so this is the smallest scene that falls
-    /// as a body.
-    fn sphere(radius: i32) -> World {
+    /// A hand-built sphere of `radius`, centered at y = 8 and standing above a
+    /// solid slab at `floor_y`. The shipped sand ball's radius is fixed at 64,
+    /// so this is the smallest scene that falls as a body.
+    fn sphere(radius: i32, floor_y: i32) -> World {
         let mut cells = Vec::new();
+
+        for x in -radius..=radius {
+            for z in -radius..=radius {
+                cells.push((IVec3::new(x, floor_y, z), PILLAR));
+            }
+        }
 
         for x in -radius..=radius {
             for y in -radius..=radius {
@@ -299,6 +308,22 @@ mod tests {
         }
 
         world_of(&cells)
+    }
+
+    /// The vertical span of the grains: the highest y minus the lowest.
+    fn vertical_span(cells: &[IVec3]) -> i32 {
+        let lowest = cells
+            .iter()
+            .map(|cell| cell.y)
+            .min()
+            .expect("cells hold grains");
+        let highest = cells
+            .iter()
+            .map(|cell| cell.y)
+            .max()
+            .expect("cells hold grains");
+
+        highest - lowest
     }
 
     fn held(world: &World) -> Vec<IVec3> {
@@ -438,13 +463,18 @@ mod tests {
 
     #[test]
     fn a_sphere_falls_with_an_unchanged_span_and_one_cell_per_grain() {
-        let mut world = sphere(3);
+        let mut world = sphere(3, FLOOR_Y);
         let mut queue = queued(&world);
         let resting = held(&world);
-        let span = resting.last().expect("the sphere holds grains").y
-            - resting.first().expect("the sphere holds grains").y;
+        let resting_span = vertical_span(&resting);
+        let lowest = resting
+            .iter()
+            .map(|cell| cell.y)
+            .min()
+            .expect("the sphere holds grains");
+        let landing = lowest - (FLOOR_Y + 1);
 
-        for tick in 1..=4 {
+        for tick in 1..=landing {
             step(&mut world, &mut queue, usize::MAX);
 
             let fallen: Vec<IVec3> = resting
@@ -458,12 +488,21 @@ mod tests {
                 "tick {tick}: every grain descends exactly one cell"
             );
             assert_eq!(
-                fallen.last().expect("the sphere holds grains").y
-                    - fallen.first().expect("the sphere holds grains").y,
-                span,
+                vertical_span(&fallen),
+                resting_span,
                 "tick {tick}: the span is unchanged"
             );
         }
+
+        assert_eq!(
+            held(&world)
+                .iter()
+                .map(|cell| cell.y)
+                .min()
+                .expect("the sphere holds grains"),
+            FLOOR_Y + 1,
+            "the lowest grain rests on the floor after {landing} ticks"
+        );
     }
 
     #[test]
