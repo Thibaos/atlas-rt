@@ -294,11 +294,11 @@ fn walkthrough_empty_solid_and_granular_fall() {
 }
 
 // ---------------------------------------------------------------------------
-// Walkthrough 2: two-phase moves, first claim wins, the loser retries.
+// Walkthrough 2: a contested diagonal resolves inside one tick.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn walkthrough_two_phase_claim_with_retry() {
+fn walkthrough_a_contested_diagonal_resolves_in_one_tick() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor9();
 
@@ -321,25 +321,11 @@ fn walkthrough_two_phase_claim_with_retry() {
         grains(&handle),
         vec![
             IVec3::new(5, 1, 6),
-            IVec3::new(6, 2, 6),
-            IVec3::new(7, 0, 6)
-        ],
-        "the first claim moved in, the loser kept its cell, and the blocker fell away"
-    );
-
-    one_tick(&handle);
-
-    assert_eq!(
-        grains(&handle),
-        vec![
-            IVec3::new(5, 1, 6),
             IVec3::new(7, 0, 6),
             IVec3::new(7, 1, 6)
         ],
-        "the loser retried into the diagonal its blocker vacated"
+        "the blocker fell, the first diagonal into (5, 1, 6) was taken, and the grain sealed by the pillar took the cell the fall vacated"
     );
-
-    one_tick(&handle);
 
     let tick = run_tick(&handle);
 
@@ -849,6 +835,7 @@ fn walkthrough_sand_through_the_player_then_pile_climb() {
     );
 
     let climbed = walk(&handle, keys(Vec2::X), 60);
+
     let settled_at = climbed
         .iter()
         .rposition(|player| near(player.feet.y, 1.0))
@@ -872,7 +859,7 @@ fn walkthrough_sand_through_the_player_then_pile_climb() {
 
     assert_eq!(
         rises,
-        vec![2.0, 3.0, 4.0, 5.0],
+        vec![2.0, 3.0, 4.0],
         "the pile climbs exactly one rise at a time"
     );
 
@@ -883,7 +870,7 @@ fn walkthrough_sand_through_the_player_then_pile_climb() {
         "the walk crosses the whole pile: {}",
         top.feet.x
     );
-    assert_eq!(top.feet.y, 5.0, "the wall stops the walk on the top rise");
+    assert_eq!(top.feet.y, 4.0, "the wall stops the walk on the top rise");
     assert!(top.grounded, "the top of the pile holds");
 }
 
@@ -942,26 +929,26 @@ fn walkthrough_a_dig_wakes_the_edited_cell_and_the_three_above() {
         grains(&handle),
         vec![
             IVec3::new(4, 4, 4),
-            IVec3::new(4, 6, 4),
+            IVec3::new(4, 5, 4),
             IVec3::new(5, 4, 4)
         ],
-        "the dig wakes the column and its neighbour slides off the platform"
+        "the neighbour slides off the platform and the column above it follows the cell it vacated"
     );
 
     let falling = [
         vec![
             IVec3::new(4, 3, 4),
-            IVec3::new(4, 5, 4),
+            IVec3::new(4, 4, 4),
             IVec3::new(6, 3, 4),
         ],
         vec![
             IVec3::new(4, 2, 4),
-            IVec3::new(4, 4, 4),
+            IVec3::new(4, 3, 4),
             IVec3::new(6, 2, 4),
         ],
         vec![
             IVec3::new(4, 1, 4),
-            IVec3::new(4, 3, 4),
+            IVec3::new(4, 2, 4),
             IVec3::new(6, 1, 4),
         ],
     ];

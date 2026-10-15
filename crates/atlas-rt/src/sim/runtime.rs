@@ -293,20 +293,73 @@ impl Runtime {
         self.shutdown.load(Ordering::Acquire)
     }
 
+    /// Takes one message, and a frame takes the run of frames queued behind it
+    /// as one update. A message that is not a frame ends the run and is handled
+    /// next, in the position it held against the frames.
     fn run(mut self, inbox: &mpsc::Receiver<Message>) {
-        while let Ok(message) = inbox.recv() {
+        let mut deferred = None;
+
+        loop {
+            let message = match deferred.take() {
+                Some(message) => message,
+                None => match inbox.recv() {
+                    Ok(message) => message,
+                    Err(_) => break,
+                },
+            };
+
             if self.shutting_down() {
                 break;
             }
 
             match message {
-                Message::Frame { elapsed, sample } => self.on_frame(elapsed, sample),
+                Message::Frame { elapsed, sample } => {
+                    let (elapsed, sample) =
+                        self.coalesce_frames(inbox, elapsed, sample, &mut deferred);
+
+                    self.on_frame(elapsed, sample);
+                }
                 Message::Paused(paused) => self.on_paused(paused),
                 Message::Command(command) => self.on_command(command),
                 Message::Activation(activation) => self.on_activation(*activation),
                 Message::Shutdown => break,
             }
         }
+    }
+
+    /// Merges the run of frame messages already queued behind the first one
+    /// into a single update: the elapsed times sum, the newest movement wins,
+    /// and the newest jump edge of the run survives, so a press released
+    /// inside the run still reaches the controller. The first message that is
+    /// not a frame ends the run and is left in `deferred` for the next turn,
+    /// so only consecutive frames ever merge.
+    fn coalesce_frames(
+        &self,
+        inbox: &mpsc::Receiver<Message>,
+        mut elapsed: Duration,
+        mut sample: InputSample,
+        deferred: &mut Option<Message>,
+    ) -> (Duration, InputSample) {
+        while !self.shutting_down() {
+            match inbox.try_recv() {
+                Ok(Message::Frame {
+                    elapsed: next_elapsed,
+                    sample: next_sample,
+                }) => {
+                    elapsed = elapsed.saturating_add(next_elapsed);
+                    sample.movement = next_sample.movement;
+                    sample.jump_edge = sample.jump_edge.max(next_sample.jump_edge);
+                }
+                Ok(message) => {
+                    *deferred = Some(message);
+
+                    break;
+                }
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+            }
+        }
+
+        (elapsed, sample)
     }
 
     const fn on_paused(&mut self, paused: bool) {
@@ -439,12 +492,13 @@ impl Runtime {
 
     /// Runs one tick's movement on the player and one drain of the rule
     /// queue on the same read lock, so the rules read one immutable view of
-    /// the World for the whole tick and hand back a pending edit list. At most
-    /// [`MAX_CELLS_PER_TICK`] cells are drained, and the rest of the queue
-    /// carries into the next tick. Returns the window's duration and the
-    /// queued cells the drain evaluated. The window starts before the lock is
-    /// taken, so it carries any wait for a host reader and stamps the jump
-    /// deadline.
+    /// the World for the whole tick and hand back a pending edit list. A tick
+    /// drains the whole queue up to [`MAX_CELLS_PER_TICK`], which no designed
+    /// scene binds, and the cells a bound leaves unserved carry into the next
+    /// tick ahead of any cell this tick served. Returns the window's duration
+    /// and the queued cells the drain evaluated. The window starts before the
+    /// lock is taken, so it carries any wait for a host reader and stamps the
+    /// jump deadline.
     fn evaluate(&mut self) -> (Duration, usize) {
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
@@ -583,7 +637,7 @@ impl Runtime {
             let woken = cell.with_y(cell.y.saturating_add(height));
 
             if in_lattice(woken) {
-                self.queue.insert(woken);
+                self.queue.wake(woken);
             }
         }
     }

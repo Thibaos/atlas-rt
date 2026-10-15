@@ -1,14 +1,21 @@
 mod common;
 
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use atlas_rt::render::region::queue::RendererInput;
-use atlas_rt::sim::{Command, InputSample, PlayerProfile, PlayerState};
+use atlas_rt::sim::{Command, Handle, InputSample, PlayerProfile, PlayerState};
+use atlas_rt::world::diff::edit::VoxelEdit;
 use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
-use glam::{IVec3, Vec3};
+use glam::{IVec3, Vec2, Vec3};
 
 use common::*;
+
+const EPSILON: f32 = 1.0e-3;
+
+fn near(actual: f32, expected: f32) -> bool {
+    (actual - expected).abs() < EPSILON
+}
 
 #[test]
 fn frames_before_the_first_activation_run_no_ticks() {
@@ -644,4 +651,180 @@ fn the_profile_survives_activation_and_a_different_profile_needs_a_new_sim() {
         "the swap left the controller's profile in place"
     );
     assert!(tick.remainder.is_zero());
+}
+
+/// A floor wide enough for three ticks of a walk to stay on it.
+fn walk_floor() -> Vec<VoxelEdit> {
+    (0..=7)
+        .flat_map(|x| (0..=4).map(move |z| set(x, 0, z, 1)))
+        .collect()
+}
+
+/// A floor with a pillar under the spawn column, so the player spawns
+/// grounded with clear air above it.
+fn pillar_room() -> Vec<VoxelEdit> {
+    let mut edits: Vec<VoxelEdit> = (0..=4).map(|x| set(x, 0, 2, 1)).collect();
+
+    edits.push(set(2, 3, 2, 1));
+
+    edits
+}
+
+fn pressed() -> InputSample {
+    InputSample {
+        movement: Vec2::ZERO,
+        jump_edge: Some(Instant::now()),
+    }
+}
+
+fn keys(movement: Vec2) -> InputSample {
+    InputSample {
+        movement,
+        jump_edge: None,
+    }
+}
+
+/// Queues `frames` as one burst the sim cannot start on until every frame is
+/// in its inbox. The World write lock is held across the activation and the
+/// frames, so the sim's activation blocks until the whole burst is queued;
+/// the lock is the harness's way of driving a backlog without sleeping.
+/// Returns the handle once readiness arrived, and the pose it spawned on.
+fn burst(scene: &[VoxelEdit], frames: &[(Duration, InputSample)]) -> (Handle, PlayerState) {
+    let (world, handle) = spawn_sim();
+    let locked = world.write().unwrap();
+
+    handle.activate(activation_of(scene));
+
+    for &(elapsed, sample) in frames {
+        handle.frame(elapsed, sample);
+    }
+
+    drop(locked);
+
+    let spawn = wait_ready(&handle);
+
+    (handle, spawn)
+}
+
+#[test]
+fn a_burst_of_queued_frames_coalesces_into_one_update() {
+    let (handle, _) = burst(&[set(0, 0, 0, 1)], &[(period(), InputSample::default()); 3]);
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(
+        tick.report.ticks, 3,
+        "the burst's three periods are one update"
+    );
+    assert_eq!(tick.report.discarded, 0);
+    assert!(
+        tick.remainder.is_zero(),
+        "the burst divided into whole ticks with nothing left over"
+    );
+    assert_silent(&handle);
+}
+
+#[test]
+fn a_burst_past_the_catch_up_cap_reports_the_discarded_ticks() {
+    let (handle, _) = burst(
+        &[set(0, 0, 0, 1)],
+        &[(period(), InputSample::default()); 12],
+    );
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 5, "catch-up is capped at five ticks");
+    assert_eq!(
+        tick.report.discarded, 7,
+        "the rest of the burst is reported, not run"
+    );
+    assert!(tick.remainder.is_zero());
+    assert_silent(&handle);
+}
+
+#[test]
+fn a_burst_applies_the_newest_movement_sample() {
+    const DISTANCE: f32 = 40.0 / 30.0;
+
+    let (handle, spawn) = burst(
+        &walk_floor(),
+        &[
+            (period(), keys(Vec2::X)),
+            (period(), keys(Vec2::X)),
+            (period(), keys(Vec2::NEG_X)),
+        ],
+    );
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 3, "the whole burst is one update");
+    assert!(
+        near(tick.player.feet.x, spawn.feet.x - 3.0 * DISTANCE),
+        "only the newest movement ran, so three ticks walked west from {}: {}",
+        spawn.feet.x,
+        tick.player.feet.x
+    );
+    assert_eq!(
+        tick.player.feet.y, spawn.feet.y,
+        "the walk stayed on the floor instead of leaving it"
+    );
+    assert!(tick.player.grounded);
+}
+
+#[test]
+fn a_jump_edge_inside_a_coalesced_burst_still_launches() {
+    let (handle, spawn) = burst(
+        &pillar_room(),
+        &[
+            (period(), pressed()),
+            (period(), InputSample::default()),
+            (period(), InputSample::default()),
+        ],
+    );
+
+    let tick = expect_tick(recv_push(&handle));
+
+    assert_eq!(tick.report.ticks, 3);
+    assert!(
+        near(tick.player.feet.y, spawn.feet.y + 7.333333),
+        "the press on the first frame of the run launched three ticks of arc from {}: {}",
+        spawn.feet.y,
+        tick.player.feet.y
+    );
+    assert_eq!(tick.player.feet.x, spawn.feet.x);
+    assert_eq!(tick.player.feet.z, spawn.feet.z);
+}
+
+#[test]
+fn a_command_between_frames_ends_the_coalesced_run() {
+    let (world, handle) = spawn_sim();
+    let locked = world.write().unwrap();
+
+    handle.activate(activation_of(&[set(0, 0, 0, 1)]));
+    feed(&handle, period());
+    handle.command(Command::Cell(set(5, 5, 5, 3)));
+    feed(&handle, period());
+
+    drop(locked);
+
+    wait_ready(&handle);
+
+    let before = expect_tick(recv_push(&handle));
+
+    assert_eq!(before.report.ticks, 1, "the command ended the frame run");
+    assert!(
+        before.report.batches.is_empty(),
+        "the command had not arrived when the first run ticked"
+    );
+
+    let after = expect_tick(recv_push(&handle));
+
+    assert_eq!(after.report.ticks, 1, "the second run keeps its own time");
+    assert_eq!(
+        after.report.batches.len(),
+        1,
+        "the command committed in the second update"
+    );
+    assert_eq!(held(&handle, IVec3::new(5, 5, 5)), Some(3));
+    assert_silent(&handle);
 }

@@ -12,14 +12,16 @@ use glam::{IVec3, Vec3};
 
 use common::*;
 
-/// The cells one tick drains, which the sim holds in the private
-/// `MAX_CELLS_PER_TICK`. Pinned here the way the catch-up cap's five ticks are.
-const CAP: usize = 4096;
+/// The length of the row scene below. It used to be the cell cap, which the
+/// simulation held at 4096 and which the sweep replaces with a rail far above
+/// any scene a test builds.
+const ROW_LENGTH: usize = 4096;
 
-/// One row of grains across the lattice x axis plus the single cell that drains
-/// after it, so a tick reaches the cap and stops one cell short of the queue.
-fn a_row_past_the_cap() -> Vec<VoxelEdit> {
-    let mut edits = Vec::with_capacity(CAP.saturating_add(1));
+/// One row of grains across the lattice x axis plus the single cell past it, so
+/// a scene has one more cell than the old cap had slots and can still show that
+/// a tick serves every one of them.
+fn a_row_across_the_lattice() -> Vec<VoxelEdit> {
+    let mut edits = Vec::with_capacity(ROW_LENGTH.saturating_add(1));
 
     for x in -2048..2048 {
         edits.push(set(x, 10, 0, GRAIN));
@@ -199,10 +201,10 @@ fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
         grains(&handle),
         vec![
             IVec3::new(6, 2, 6),
-            IVec3::new(6, 4, 6),
-            IVec3::new(6, 5, 6)
+            IVec3::new(6, 3, 6),
+            IVec3::new(6, 4, 6)
         ],
-        "only the grain with an open column under it moves: a queued grain below holds the rest in place"
+        "every grain falls one cell: a grain reads the vacancy its neighbour left in the same tick"
     );
 
     one_tick(&handle);
@@ -211,8 +213,24 @@ fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
         grains(&handle),
         vec![
             IVec3::new(6, 1, 6),
-            IVec3::new(6, 3, 6),
-            IVec3::new(6, 5, 6)
+            IVec3::new(6, 2, 6),
+            IVec3::new(6, 3, 6)
+        ],
+        "the column lands on the floor with its spacing intact"
+    );
+
+    let batches = one_tick(&handle);
+
+    assert!(
+        batches.is_empty(),
+        "the stack rests while the floor grain is still queued, which holds the grain above it"
+    );
+    assert_eq!(
+        grains(&handle),
+        vec![
+            IVec3::new(6, 1, 6),
+            IVec3::new(6, 2, 6),
+            IVec3::new(6, 3, 6)
         ]
     );
 
@@ -223,25 +241,12 @@ fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
         vec![
             IVec3::new(6, 1, 6),
             IVec3::new(6, 2, 6),
-            IVec3::new(6, 4, 6)
-        ]
-    );
-
-    one_tick(&handle);
-
-    assert_eq!(
-        grains(&handle),
-        vec![
-            IVec3::new(6, 1, 6),
-            IVec3::new(6, 3, 6),
             IVec3::new(7, 1, 6)
         ],
         "the grain that gained a settled support slides off it"
     );
 
-    for _ in 0..4 {
-        one_tick(&handle);
-    }
+    one_tick(&handle);
 
     assert_eq!(
         grains(&handle),
@@ -385,7 +390,7 @@ fn a_diagonal_on_the_z_axis_follows_the_same_parity_ties() {
 }
 
 #[test]
-fn the_first_claim_wins_and_the_loser_retries_the_next_tick() {
+fn a_contested_diagonal_settles_within_one_tick() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
 
@@ -407,25 +412,11 @@ fn the_first_claim_wins_and_the_loser_retries_the_next_tick() {
         grains(&handle),
         vec![
             IVec3::new(5, 1, 6),
-            IVec3::new(6, 2, 6),
-            IVec3::new(7, 0, 6)
-        ],
-        "the first claim moved in, the loser kept its cell, and the blocker fell away"
-    );
-
-    one_tick(&handle);
-
-    assert_eq!(
-        grains(&handle),
-        vec![
-            IVec3::new(5, 1, 6),
             IVec3::new(7, 0, 6),
             IVec3::new(7, 1, 6)
         ],
-        "the loser retried into the diagonal its blocker vacated"
+        "the blocker fell, the first diagonal into (5, 1, 6) was taken, and the grain sealed by the pillar took the cell the fall vacated"
     );
-
-    one_tick(&handle);
 
     let tick = run_tick(&handle);
 
@@ -441,7 +432,7 @@ fn the_first_claim_wins_and_the_loser_retries_the_next_tick() {
 }
 
 #[test]
-fn the_three_cells_above_a_vacated_cell_wake_up() {
+fn a_grain_sealed_by_a_pillar_follows_the_cell_a_fall_vacated() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
 
@@ -460,16 +451,8 @@ fn the_three_cells_above_a_vacated_cell_wake_up() {
 
     assert_eq!(
         grains(&handle),
-        vec![IVec3::new(6, 0, 6), IVec3::new(7, 2, 6)],
-        "the grain over the hole fell and the grain over the pillar sealed every diagonal"
-    );
-
-    one_tick(&handle);
-
-    assert_eq!(
-        grains(&handle),
         vec![IVec3::new(6, 0, 6), IVec3::new(6, 1, 6)],
-        "the sealed grain woke from the diagonal neighbor of the vacated cell and took it"
+        "the grain over the hole fell, and the grain sealed by the pillar took the diagonal the same tick because it is served after the fall"
     );
 
     let tick = run_tick(&handle);
@@ -659,11 +642,11 @@ fn two_identical_90_tick_sequences_hash_the_same_under_both_parity_policies() {
 }
 
 #[test]
-fn a_tick_stops_at_the_cap_and_leaves_the_rest_queued() {
+fn a_row_under_the_rail_is_served_in_full_each_tick() {
     let (_world, handle) = spawn_sim();
-    let edits = a_row_past_the_cap();
+    let edits = a_row_across_the_lattice();
 
-    assert_eq!(edits.len(), CAP.saturating_add(1));
+    assert_eq!(edits.len(), ROW_LENGTH.saturating_add(1));
 
     handle.activate(granular_activation_of(&edits));
     wait_ready(&handle);
@@ -671,14 +654,26 @@ fn a_tick_stops_at_the_cap_and_leaves_the_rest_queued() {
     one_tick(&handle);
 
     let held = grains(&handle);
-    let moved = held.iter().filter(|cell| cell.y == 9).count();
-    let queued: Vec<IVec3> = held.iter().copied().filter(|cell| cell.y == 10).collect();
 
-    assert_eq!(moved, CAP, "a tick drains at most the cap's cells");
     assert_eq!(
-        queued,
-        vec![IVec3::new(2047, 10, 1)],
-        "the cell behind the cap stays queued where it was"
+        held.iter().filter(|cell| cell.y == 10).count(),
+        0,
+        "the rail binds no cell of this row, so the tick serves every one"
+    );
+    assert_eq!(
+        held.iter().filter(|cell| cell.y == 9).count(),
+        ROW_LENGTH.saturating_add(1),
+        "every grain in the row fell one cell in the first tick"
+    );
+
+    one_tick(&handle);
+
+    let held = grains(&handle);
+
+    assert_eq!(
+        held.iter().filter(|cell| cell.y == 8).count(),
+        ROW_LENGTH.saturating_add(1),
+        "the next sweep serves the destinations, so the whole row falls again"
     );
 }
 
@@ -689,7 +684,7 @@ fn a_scene_larger_than_the_cap_replays_identically() {
     for run in &mut runs {
         let (_world, handle) = spawn_sim();
 
-        handle.activate(granular_activation_of(&a_row_past_the_cap()));
+        handle.activate(granular_activation_of(&a_row_across_the_lattice()));
         wait_ready(&handle);
 
         let rested = world_hash(&handle);

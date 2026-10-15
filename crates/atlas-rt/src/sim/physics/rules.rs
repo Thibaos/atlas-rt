@@ -1,5 +1,4 @@
 use glam::IVec3;
-use rustc_hash::FxHashSet;
 
 use crate::world::World;
 use crate::world::diff::edit::{VoxelChange, VoxelEdit};
@@ -18,16 +17,20 @@ pub enum ParityPolicy {
 }
 
 /// One drain's outcome: the edits it would commit and the queued cells it
-/// evaluated, whether they moved, lost a claim, settled, or were never grains.
+/// evaluated, whether they moved, settled, or were never grains.
 pub(in crate::sim) struct Drained {
     pub(in crate::sim) edits: Vec<VoxelEdit>,
     pub(in crate::sim) processed: usize,
 }
 
-/// Drains at most `cap` of the queued cells in ascending y, then x, then z
-/// against `world`, records one claim per destination in emission order, folds
-/// the moves and their wakes back into `queue`, and leaves the cells it did not
-/// reach queued. Nothing here writes to the World.
+/// Drains at most `cap` of the cells this sweep has not served, in ascending y,
+/// then x, then z, against `world`: each move goes into an overlay a later cell
+/// reads, and nothing here writes to the World. The cells the tick did not reach
+/// stay unserved. A destination is at `src.y - 1` and the scan serves ascending
+/// y, so it needs no moved-this-tick guard. The front is set before the wakes, so
+/// a wake behind it waits for the next sweep and a wake ahead keeps its turn in
+/// this one. A mover's destination is marked served, since the mark travels with
+/// the grain.
 pub(in crate::sim) fn drain(
     world: &World,
     table: &PhysicalMaterialTable,
@@ -35,40 +38,61 @@ pub(in crate::sim) fn drain(
     parity: ParityPolicy,
     cap: usize,
 ) -> Drained {
-    let field = Field::new(world, table, queue);
-    let boundary = field.queued_cells().nth(cap).copied();
-    let mut processed = 0usize;
-    let mut claims = FxHashSet::default();
-    let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
-    let mut requeued: Vec<IVec3> = Vec::new();
+    queue.begin_sweep();
 
-    for src in field.queued_cells().take(cap).copied() {
-        processed = processed.saturating_add(1);
+    let mut served: Vec<IVec3> = Vec::new();
+    let mut boundary = None;
 
-        let Some(material) = field.grain(src) else {
-            continue;
-        };
+    {
+        let field = Field::new(world, table, queue);
 
-        let Some(dst) = destination(&field, parity, src) else {
-            wake(&field, &mut requeued, src.with_y(src.y.saturating_add(1)));
+        for cell in field.queued_cells().copied() {
+            if served.len() >= cap {
+                boundary = Some(cell);
 
-            continue;
-        };
+                break;
+            }
 
-        if !claims.insert(dst) {
-            requeued.push(src);
-
-            continue;
+            served.push(cell);
         }
-
-        moves.push((src, dst, material));
-        wake_above(&field, &mut requeued, src);
     }
 
-    let mut next = boundary.map_or_else(UpdateQueue::default, |cell| queue.split_off(cell));
+    let mut processed = 0usize;
+    let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
+    let mut woken: Vec<IVec3> = Vec::new();
 
-    for cell in requeued {
-        next.insert(cell);
+    {
+        let mut field = Field::new(world, table, queue);
+
+        for src in &served {
+            let src = *src;
+
+            processed = processed.saturating_add(1);
+
+            let Some(material) = field.grain(src) else {
+                continue;
+            };
+
+            let Some(dst) = destination(&field, parity, src) else {
+                wake(&field, &mut woken, src.with_y(src.y.saturating_add(1)));
+
+                continue;
+            };
+
+            field.apply_move(src, dst, material);
+            moves.push((src, dst, material));
+            wake_above(&field, &mut woken, src);
+        }
+    }
+
+    queue.finish(boundary);
+
+    for cell in woken {
+        queue.wake(cell);
+    }
+
+    for (_, dst, _) in &moves {
+        queue.mark_moved(*dst);
     }
 
     let mut edits = Vec::with_capacity(moves.len().saturating_mul(2));
@@ -82,11 +106,7 @@ pub(in crate::sim) fn drain(
             position: dst,
             change: VoxelChange::Set(material),
         });
-
-        next.insert(dst);
     }
-
-    *queue = next;
 
     Drained { edits, processed }
 }
@@ -197,6 +217,10 @@ mod tests {
     const GRAIN: u8 = 2;
     const PILLAR: u8 = 1;
 
+    /// The solid slab the falling sphere rests on. The sphere's lowest cell
+    /// starts at y = 5, so it falls 12 cells before it lands.
+    const FLOOR_Y: i32 = -8;
+
     fn table() -> PhysicalMaterialTable {
         parse_override(&format!("material {GRAIN} falling_granular solid=true"))
             .unwrap_or_else(|rejections| panic!("{rejections:?}"))
@@ -250,6 +274,70 @@ mod tests {
         world_of(&cells)
     }
 
+    /// Five grains stacked in one column above nothing.
+    fn column() -> World {
+        let mut cells = Vec::new();
+
+        for y in 1..=5 {
+            cells.push((IVec3::new(0, y, 0), GRAIN));
+        }
+
+        world_of(&cells)
+    }
+
+    /// A hand-built sphere of `radius`, centered at y = 8 and standing above a
+    /// solid slab at `floor_y`. The shipped sand ball's radius is fixed at 64,
+    /// so this is the smallest scene that falls as a body.
+    fn sphere(radius: i32, floor_y: i32) -> World {
+        let mut cells = Vec::new();
+
+        for x in -radius..=radius {
+            for z in -radius..=radius {
+                cells.push((IVec3::new(x, floor_y, z), PILLAR));
+            }
+        }
+
+        for x in -radius..=radius {
+            for y in -radius..=radius {
+                for z in -radius..=radius {
+                    if x * x + y * y + z * z <= radius * radius {
+                        cells.push((IVec3::new(x, y + 8, z), GRAIN));
+                    }
+                }
+            }
+        }
+
+        world_of(&cells)
+    }
+
+    /// The vertical span of the grains: the highest y minus the lowest.
+    fn vertical_span(cells: &[IVec3]) -> i32 {
+        let lowest = cells
+            .iter()
+            .map(|cell| cell.y)
+            .min()
+            .expect("cells hold grains");
+        let highest = cells
+            .iter()
+            .map(|cell| cell.y)
+            .max()
+            .expect("cells hold grains");
+
+        highest - lowest
+    }
+
+    fn held(world: &World) -> Vec<IVec3> {
+        let mut cells: Vec<IVec3> = world
+            .iter_voxels()
+            .filter(|(_, material)| *material == GRAIN)
+            .map(|(position, _)| position)
+            .collect();
+
+        cells.sort_unstable_by_key(|cell| cell.to_array());
+
+        cells
+    }
+
     fn step(world: &mut World, queue: &mut UpdateQueue, cap: usize) -> Vec<VoxelEdit> {
         let edits = drain(world, &table(), queue, ParityPolicy::Alternate, cap).edits;
 
@@ -276,15 +364,17 @@ mod tests {
             "only the first two cells in drain order moved"
         );
         assert_eq!(
-            order(&queue),
+            queue.unserved().copied().collect::<Vec<_>>(),
             vec![
-                IVec3::new(0, 4, 0),
-                IVec3::new(1, 4, 0),
                 IVec3::new(2, 5, 0),
                 IVec3::new(3, 5, 0),
                 IVec3::new(4, 5, 0),
             ],
-            "the destinations are queued and the unreached cells stay queued"
+            "the cells past the cap stay unserved, in drain order"
+        );
+        assert!(
+            queue.contains(IVec3::new(0, 4, 0)) && queue.contains(IVec3::new(1, 4, 0)),
+            "the destinations are queued, and the sweep has served them"
         );
     }
 
@@ -332,7 +422,91 @@ mod tests {
     }
 
     #[test]
-    fn a_capped_tick_keeps_the_first_claim_winner() {
+    fn a_column_advances_every_grain_one_cell_in_one_tick() {
+        let mut world = column();
+        let mut queue = queued(&world);
+        let edits = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            usize::MAX,
+        )
+        .edits;
+
+        assert_eq!(
+            edits,
+            vec![
+                clear(0, 1, 0),
+                set(0, 0, 0, GRAIN),
+                clear(0, 2, 0),
+                set(0, 1, 0, GRAIN),
+                clear(0, 3, 0),
+                set(0, 2, 0, GRAIN),
+                clear(0, 4, 0),
+                set(0, 3, 0, GRAIN),
+                clear(0, 5, 0),
+                set(0, 4, 0, GRAIN),
+            ],
+            "every grain moves one cell: a grain reads the vacancy its neighbour left in the same tick"
+        );
+
+        edit_world(&mut world, &edits, &TrackedCoords::default())
+            .unwrap_or_else(|error| panic!("the edits must apply: {error}"));
+
+        assert_eq!(
+            held(&world),
+            (0..5).map(|y| IVec3::new(0, y, 0)).collect::<Vec<_>>(),
+            "the column keeps its span and its gaps"
+        );
+    }
+
+    #[test]
+    fn a_sphere_falls_with_an_unchanged_span_and_one_cell_per_grain() {
+        let mut world = sphere(3, FLOOR_Y);
+        let mut queue = queued(&world);
+        let resting = held(&world);
+        let resting_span = vertical_span(&resting);
+        let lowest = resting
+            .iter()
+            .map(|cell| cell.y)
+            .min()
+            .expect("the sphere holds grains");
+        let landing = lowest - (FLOOR_Y + 1);
+
+        for tick in 1..=landing {
+            step(&mut world, &mut queue, usize::MAX);
+
+            let fallen: Vec<IVec3> = resting
+                .iter()
+                .map(|cell| cell.with_y(cell.y - tick))
+                .collect();
+
+            assert_eq!(
+                held(&world),
+                fallen,
+                "tick {tick}: every grain descends exactly one cell"
+            );
+            assert_eq!(
+                vertical_span(&fallen),
+                resting_span,
+                "tick {tick}: the span is unchanged"
+            );
+        }
+
+        assert_eq!(
+            held(&world)
+                .iter()
+                .map(|cell| cell.y)
+                .min()
+                .expect("the sphere holds grains"),
+            FLOOR_Y + 1,
+            "the lowest grain rests on the floor after {landing} ticks"
+        );
+    }
+
+    #[test]
+    fn a_grain_takes_the_diagonal_an_earlier_move_vacated_in_the_same_tick() {
         let world = world_of(&[
             (IVec3::new(4, 1, 6), PILLAR),
             (IVec3::new(6, 1, 6), PILLAR),
@@ -350,12 +524,94 @@ mod tests {
                 set(7, 0, 6, GRAIN),
                 clear(4, 2, 6),
                 set(5, 1, 6, GRAIN),
+                clear(6, 2, 6),
+                set(7, 1, 6, GRAIN),
             ],
-            "the cell with the open column under it falls, then the first grain to reach (5, 1, 6) takes it"
+            "the grain over the open column falls, the next takes the open diagonal, and the sealed grain takes the cell the fall vacated"
+        );
+        assert_eq!(
+            order(&queue),
+            vec![
+                IVec3::new(7, 0, 6),
+                IVec3::new(5, 1, 6),
+                IVec3::new(7, 1, 6),
+                IVec3::new(6, 2, 6),
+            ],
+            "every destination is queued, and the first move's wake queued (6, 2, 6), which the third grain then left"
+        );
+    }
+
+    #[test]
+    fn a_move_wakes_the_settled_grain_above_it() {
+        let world = world_of(&[(IVec3::new(0, 2, 0), GRAIN), (IVec3::new(0, 1, 0), GRAIN)]);
+        let mut queue = UpdateQueue::default();
+
+        queue.wake(IVec3::new(0, 1, 0));
+
+        let edits = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            usize::MAX,
+        )
+        .edits;
+
+        assert_eq!(
+            edits,
+            vec![clear(0, 1, 0), set(0, 0, 0, GRAIN)],
+            "the queued grain falls into the open cell below it"
         );
         assert!(
-            queue.contains(IVec3::new(6, 2, 6)),
-            "the grain that lost the claim stays queued"
+            queue.contains(IVec3::new(0, 2, 0)),
+            "the move queues the settled grain above the cell it vacated"
+        );
+    }
+
+    /// Six grains apart at y = 5 with nothing under them, so each falls one cell
+    /// per service and no wake reaches another grain.
+    fn scattered() -> World {
+        let mut cells = Vec::new();
+
+        for x in [0, 4, 8, 12, 16, 20] {
+            cells.push((IVec3::new(x, 5, 0), GRAIN));
+        }
+
+        world_of(&cells)
+    }
+
+    #[test]
+    fn a_sweep_serves_every_cell_once_before_serving_any_cell_twice() {
+        let mut world = scattered();
+        let mut queue = queued(&world);
+        let total = queue.len();
+        let cap = 3;
+        let sweep = total.div_ceil(cap);
+
+        assert_eq!(total, 6, "the scene is six grains");
+
+        for _ in 0..sweep {
+            step(&mut world, &mut queue, cap);
+        }
+
+        assert_eq!(
+            held(&world),
+            (0..6)
+                .map(|index| IVec3::new(index * 4, 4, 0))
+                .collect::<Vec<_>>(),
+            "one sweep served every grain once, so every grain fell exactly one cell"
+        );
+        assert!(
+            queue.unserved().next().is_none(),
+            "the sweep has served every cell it started with, and none of them twice"
+        );
+
+        step(&mut world, &mut queue, cap);
+
+        assert_eq!(
+            held(&world).iter().filter(|cell| cell.y == 3).count(),
+            cap,
+            "the next sweep begins with the cap's worth of destinations"
         );
     }
 

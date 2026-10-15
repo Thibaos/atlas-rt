@@ -16,7 +16,7 @@
 //! hundreds of milliseconds rather than the minutes.
 //!
 //! `generation_first_tick_timings` drives a generated surface's own granular
-//! queue under the cap and reports the grains, the moves and the settle. It
+//! queue and reports the grains, the moves and the settle. It
 //! sits here because counting moves needs the drain, and the World job's push
 //! carries tick timings and Snapshots rather than the edits a tick produced.
 
@@ -127,7 +127,7 @@ struct SurfaceRun {
     settle: Duration,
 }
 
-/// One capped tick of the runtime's own commit path: `drain` produces the
+/// One tick of the runtime's own commit path: `drain` produces the
 /// edits, `edit_world` compiles them against the renderer's tracked set, and
 /// the batch's tracked set carries on. An empty batch commits nothing, as
 /// `Runtime::commit` does. Returns how many cells moved.
@@ -160,7 +160,7 @@ fn commit_tick(
 }
 
 /// Generates one extent, seeds the queue and the tracked set the way an
-/// activation does, and drives the runtime's capped commit until the queue is
+/// activation does, and drives the runtime's own commit until the queue is
 /// empty.
 fn measure_surface(extent: i32) -> SurfaceRun {
     let generated = generate(
@@ -190,7 +190,7 @@ fn measure_surface(extent: i32) -> SurfaceRun {
     let mut moves = 0usize;
     let mut first_moves = 0usize;
 
-    while queue.iter().next().is_some() && ticks < SETTLE_TICKS {
+    while queue.len() > 0 && ticks < SETTLE_TICKS {
         let this_tick = commit_tick(&mut world, &table, &mut queue, &mut tracked);
 
         if ticks == 0 {
@@ -202,7 +202,7 @@ fn measure_surface(extent: i32) -> SurfaceRun {
     }
 
     let settle = started.elapsed();
-    let settle_ticks = queue.iter().next().is_none().then_some(ticks);
+    let settle_ticks = (queue.len() == 0).then_some(ticks);
 
     SurfaceRun {
         extent,
@@ -228,11 +228,11 @@ fn print_surface_run(run: &SurfaceRun) {
 }
 
 /// The generated surface's first tick and its settle: the Falling granular
-/// cells a Generation writes, the cells the first capped tick moves, and the
-/// ticks and wall time a capped drain takes to empty the queue. The queue is
-/// seeded from the generator's own list and the tracked set from the emitted
-/// Snapshots, and the drain is the simulation's own under `MAX_CELLS_PER_TICK`,
-/// so the figures are the cap's. The grain count and the moves are
+/// cells a Generation writes, the cells the first tick moves, and the ticks and
+/// wall time a drain takes to empty the queue. The queue is seeded from the
+/// generator's own list and the tracked set from the emitted Snapshots, and the
+/// drain is the simulation's own under `MAX_CELLS_PER_TICK`, so the figures
+/// follow the scene until the rail binds. The grain count and the moves are
 /// world-generation issue 08's figures, re-taken on the coherent field.
 #[test]
 #[ignore = "bench: cargo test --release generation_first_tick_timings -- --ignored --nocapture (ATLAS_BENCH_SURFACE_EXTENT pins one extent edge)"]
@@ -249,7 +249,7 @@ fn generation_first_tick_timings() {
     );
 
     println!(
-        "cap           {MAX_CELLS_PER_TICK} cells per tick, {SETTLE_TICKS} ticks at most before the queue is reported undrained"
+        "rail          {MAX_CELLS_PER_TICK} cells a tick at most, {SETTLE_TICKS} ticks at most before the queue is reported undrained"
     );
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>7} {:>12} {:>11} {:>12}",
