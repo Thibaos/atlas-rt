@@ -190,7 +190,7 @@ fn measure_surface(extent: i32) -> SurfaceRun {
     let mut moves = 0usize;
     let mut first_moves = 0usize;
 
-    while queue.iter().next().is_some() && ticks < SETTLE_TICKS {
+    while queue.len() > 0 && ticks < SETTLE_TICKS {
         let this_tick = commit_tick(&mut world, &table, &mut queue, &mut tracked);
 
         if ticks == 0 {
@@ -202,7 +202,7 @@ fn measure_surface(extent: i32) -> SurfaceRun {
     }
 
     let settle = started.elapsed();
-    let settle_ticks = queue.iter().next().is_none().then_some(ticks);
+    let settle_ticks = (queue.len() == 0).then_some(ticks);
 
     SurfaceRun {
         extent,
