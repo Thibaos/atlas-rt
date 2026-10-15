@@ -10,10 +10,11 @@
 //!
 //! The ball's lowest layer hangs [`FLOOR_CLEARANCE`] cells above the floor's
 //! surface, so its lowest grains fall 128 cells to land at y = -2047 and its
-//! highest 256. The first grain reaches the floor in about 4 seconds, and the
-//! whole ball drains in about 51,000 ticks, about half an hour at the default
-//! 30 Hz. The grains that land settle in a pile on the floor, and the pile
-//! shortens the later falls.
+//! highest 256. The body descends one cell a tick and its span stays at 128, so
+//! the first grains reach the floor around tick 128. A tick on the full ball
+//! costs about 578 ms, so that fall is roughly 75 seconds of wall time and the
+//! pile that follows settles more slowly still. The grains that land settle in a
+//! pile on the floor, and the pile shortens the later falls.
 
 use glam::IVec3;
 

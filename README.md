@@ -83,9 +83,14 @@ Watch the ball with `--fly`. Every grain is queued at activation, and a queued
 Falling granular cell does not support the player, so the player free-falls from
 the top of the ball.
 
-The scene exists to watch the Falling granular rules at scale. The first grain
-reaches the floor after about 4 seconds, and the whole ball drains in about half
-an hour at the default 30 Hz, less as the pile grows, so a queue that keeps
-running is not a fault. The sand settles on the floor under the ball, so the ball
-and the pile stay in one view. The binary logs the frame rate, the queued grain
-count and the rate the rules process grains once a second.
+The scene exists to watch the Falling granular rules at scale. The ball falls as
+a body: every grain moves on every tick, its vertical span stays at 128, and the
+bottom reaches the floor at tick 128. A tick on the full ball costs 555 to 592 ms
+in release, so the simulation runs at about 1.7 ticks a second rather than the
+profile's 30 Hz and that 128-cell fall takes roughly 75 seconds of wall time. The
+frame rate is unaffected, because the renderer and the host's ordinary frame path
+take no World lock. The sand then settles on the floor under the ball, so the ball
+and the pile stay in one view, and the pile's creasing continues at a shrinking
+cost as the queue empties, so a queue that keeps running is not a fault. The
+binary logs the frame rate, the queued grain count and the rate the rules process
+grains once a second.
