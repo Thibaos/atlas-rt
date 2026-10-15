@@ -20,14 +20,27 @@ struct Overlay {
 
 impl Overlay {
     /// What this tick's moves leave at the cell: the filled material, nothing
-    /// for a vacated cell, or `None` when the tick has not touched it.
-    fn held(&self, cell: IVec3) -> Option<Option<u8>> {
+    /// for a vacated cell, or the World's own answer when the tick has not
+    /// touched it.
+    fn held(&self, cell: IVec3) -> Held {
         if let Some(material) = self.filled.get(&cell) {
-            return Some(Some(*material));
+            return Held::Material(*material);
         }
 
-        self.vacated.contains(&cell).then_some(None)
+        if self.vacated.contains(&cell) {
+            return Held::Empty;
+        }
+
+        Held::Unchanged
     }
+}
+
+/// The three answers [`Overlay::held`] can give, which `Option<Option<u8>>`
+/// would spell without naming them.
+enum Held {
+    Unchanged,
+    Empty,
+    Material(u8),
 }
 
 /// The World one evaluation reads through: the World, the material table, the
@@ -68,11 +81,11 @@ impl<'a> Field<'a> {
             return None;
         }
 
-        if let Some(material) = self.overlay.held(cell) {
-            return material;
+        match self.overlay.held(cell) {
+            Held::Unchanged => self.world.get_voxel(&cell),
+            Held::Empty => None,
+            Held::Material(material) => Some(material),
         }
-
-        self.world.get_voxel(&cell)
     }
 
     /// The Falling granular material at the cell.
