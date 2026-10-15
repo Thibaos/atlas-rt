@@ -51,8 +51,9 @@ resolved, because the body advanced in the wrong order rather than all at once.
 ## What a tick serves
 
 A tick drains the whole queue below `MAX_CELLS_PER_TICK`, which is a rail rather
-than the mechanism. A designed scene never reaches it: the ball's queue is
-1,110,768 cells, and the rail is 2,000,000. A pathological scene, a `World`
+than the mechanism. A designed scene never reaches it: the ball's queue holds
+1,110,768 cells, a queued-cell count, while the ball itself holds 1,097,917
+grains, and the rail is 2,000,000. A pathological scene, a `World`
 filled with granular cells, would otherwise stall the simulation for minutes in
 one tick, and the rail bounds it at about 414 ns a drained cell and 106 ns a
 committed move, roughly one second a tick and a rate below 1 Hz. The value is a
@@ -68,11 +69,14 @@ turn for that cell, which means the sweep has not spent its ready half and the
 front has not passed the cell; every other wake waits in the served half. The
 halves swap only at the start of a drain, when the ready half is empty, because a
 swap anywhere else would serve a cell twice in a sweep and its grain would move
-twice in a tick. A scene above the rail therefore serves `cap` cells a tick and
-takes `ceil(Q / cap)` ticks a sweep, with every cell served exactly once a sweep.
-The full lattice's 8,259,231 granular cells against the 2,000,000 rail is a
-five-tick sweep, so its grains advance one cell every five ticks rather than
-starving.
+twice in a tick. A scene above the rail therefore serves `cap` cells a tick. The
+first sweep of a freshly seeded queue takes exactly `ceil(Q / cap)` ticks,
+because every seeded grain is already in the queue and no wake can add one. A
+later sweep can take more ticks, because a wake the front has not passed rejoins
+it, and every cell is still served once before any cell is served twice. The
+full lattice's 8,259,231 granular cells against the 2,000,000 rail is a
+five-tick first sweep, so its grains advance one cell every five ticks rather
+than starving.
 
 The mark following the grain is also what makes a wake's wait meaningful. Giving
 a wake priority over its turn reproduces the earlier starvation exactly, which is
