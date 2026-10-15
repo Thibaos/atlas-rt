@@ -100,28 +100,47 @@ The threshold is static and the sweep is a hand-run `#[ignore]` test in
 `app/sim_host/bench.rs`. The numbers are that benchmark's first output, not
 this document's.
 
-The sweep's budget check used to hold the tick's rule work, because a tick's
-Falling granular work was capped at a fixed cell count
-([0018](0018-cap-the-per-tick-grain-work.md)). [0020](0020-in-tick-drain.md)
-changed that: below the rail a tick drains the whole queue, so the scene sets the
-rule work and the check measures the whole tick again. Above the rail the rail
-serves a fixed count a tick and the check still holds that count's work. For the
-scenes this tripwire was set against, the bistro occupancy and the generated
-extents, the rule work stays inside the budget and the commit window is what
-crosses it. The sand ball is the new case: a full ball tick is 555 to 592 ms, of
-which the drain is 437 to 475 ms, so its rule work is what crosses. A scene that
-is meant to be watched while it settles is not a tripwire target, so the
-threshold still applies to the scenes it was set against.
+The sweep's budget check held the tick's rule work, because a tick's Falling
+granular work was capped at a fixed cell count
+([0018](0018-cap-the-per-tick-grain-work.md)) and that work was what the cap
+bounded. The whole tick was still measured and reported, and a point over budget
+in its commit window alone was named `COMMIT`.
 
-This narrows the check without narrowing the tripwire: the threshold above is
-still the whole tick, and the whole tick still crosses it at the bistro
-occupancy and at the larger generated extents. What
-[0018](0018-cap-the-per-tick-grain-work.md) establishes is that the rule work is
-inside the budget for those scenes and what crosses is the commit window's
-Micro-chunk compile and tracked-set clone. The sand ball is the exception it does
-not cover, since its rule work is the crossing. The dense local window that the
-consequences below name as the replacement was aimed at the evaluation order, so
-it would not address a commit-window crossing.
+That narrowing did not narrow the tripwire: the threshold above is still the
+whole tick, and the whole tick still crossed it at the bistro occupancy and at
+the larger generated extents. What 0018 established is that the rule work was
+inside the budget and what crossed was the commit window's Micro-chunk compile
+and tracked-set clone. The dense local window that the consequences below name
+as the replacement was aimed at the evaluation order, so it would not address a
+commit-window crossing.
+
+[0020](0020-in-tick-drain.md) reverses the split those paragraphs record. A tick
+now drains the whole update queue, so `MAX_CELLS_PER_TICK` is a rail rather
+than the mechanism and a tick's rule work is proportional to the scene. The
+check therefore holds the rail's bound: `MAX_CELLS_PER_TICK` cells of rule work
+at the measured 414 ns a cell, which is 828 ms. The 4 ms threshold above stays
+the whole-tick tripwire, and the whole tick crosses it by design on the larger
+points. On the 2026-10-15 run the rule work crosses 4 ms at 100,000 active
+cells at the synth and bistro occupancies and at 10,000 at church, and the
+whole tick crosses it at 10,000 at synth and church and at 1,000 at bistro.
+Every one of those points is inside the rail by a wide margin. What the check
+catches now is a regression that pushes 2,000,000 cells of rule work past
+828 ms, not a scene whose rule work follows its size as designed.
+
+The break-outs follow the new split. A point whose rule work stays inside the
+4 ms tripwire and whose whole tick does not is `COMMIT`, which covers the 1,000
+and 10,000 active-cell points where the whole tick crosses and the rule work
+does not, and is the commit-window crossing the paragraph above describes. A
+point whose rule work crosses the tripwire but stays inside the rail is
+`DRAIN`, the expected cost of draining a whole large scene. A point whose rule
+work crosses the rail's bound is `OVERRUN`, which is the failure the check
+asserts. No sweep point crosses the rail up to 1,000,000 active cells, so the
+sweep passes at every point rather than failing by design, and the crossings it
+reports are the tripwire's own. The rule work is the larger share of the tick
+now: at 1,000,000 active cells the whole tick's p95 is 579.831 ms at synth,
+578.930 ms at church and 596.400 ms at bistro, of which the rule work is
+435.298 ms, 434.709 ms and 433.336 ms and the commit is 137.021 ms, 138.014 ms
+and 157.752 ms.
 
 ## Consequences
 
