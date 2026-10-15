@@ -118,17 +118,37 @@ measured rail. See the consequences.
   rather than what the 2,000,000 rail does. Before the cap the rule work crossed
   4 ms at 100,000 active cells at two of the three occupancies, and the whole
   tick took 250 ms at 1,000,000.
-- Both benches' budget check holds the rule work, and a tick over budget with
+- The in-tick drain reverses that axis. A tick now drains the whole queue, so
+  the rule work follows the scene and the sweep crosses 4 ms on the active-cell
+  axis again. On the 2026-10-15 run the rule work is 293.800µs, 2.428ms,
+  28.091ms and 435.298ms at 1,000, 10,000, 100,000 and 1,000,000 active cells at
+  the synth occupancy, 461.000µs, 8.331ms, 24.784ms and 434.709ms at church,
+  and 386.000µs, 1.628ms, 26.653ms and 433.336ms at bistro. The whole tick is
+  481.400µs, 4.039ms, 41.207ms and 579.831ms at synth, 3.546ms, 19.580ms,
+  38.438ms and 578.930ms at church, and 10.128ms, 10.151ms, 48.827ms and
+  596.400ms at bistro. The `p95 chunks` column is 16, 108, 468 and 5,096 at
+  those points against the capped run's 16 and 168: it follows the scene all the
+  way to 1,000,000 active cells now, because a tick serves the whole queue at
+  every sweep point below the rail.
+- Both benches' budget check held the rule work, and a tick over budget with
   its rule work inside it is reported as `COMMIT` rather than mixed into it.
-  Moving the check is a deliberate narrowing, and it leaves the tripwire in
+  Moving the check was a deliberate narrowing, and it leaves the tripwire in
   [0012](0012-simulation-thread-and-clock-ownership.md) partly unmet: that
   record's threshold is the whole tick, and the whole tick still crosses 4 ms at
   the bistro occupancy and at the larger generated extents. What this
-  decision establishes is that the rule work is inside the budget. The commit
-  window that crosses it is not. The check itself is unchanged by
-  [0020](0020-in-tick-drain.md), and the sand ball's own tick is a tick the
-  check was never sized for: a full ball tick is 555 to 592 ms, about 140 times
-  the 4 ms threshold.
+  decision established is that the rule work was inside the budget. The commit
+  window that crosses it is not. [0020](0020-in-tick-drain.md) left the check as
+  it stood, and the sand ball's own tick is a tick the check was never sized
+  for: a full ball tick is 555 to 592 ms, about 140 times the 4 ms threshold.
+- The in-tick drain then restates the check against the rail. Both benches'
+  check now holds the rail's bound, `MAX_CELLS_PER_TICK` cells of rule work at
+  the measured 414 ns a cell, which is 828 ms, and the 4 ms threshold is the
+  whole-tick tripwire reported beside it. A point whose rule work crosses the
+  tripwire but stays inside the rail is `DRAIN`, a large scene draining as
+  designed. A point whose rule work crosses the rail's bound is `OVERRUN`, which
+  is the failure the check asserts. No sweep point crosses the rail up to
+  1,000,000 active cells, so the sweep passes at every point instead of failing
+  by design.
 - That window carries `edit_world`'s compile of every touched Micro-chunk, which
   scales with the cells the tick drains, and its clone of the renderer's tracked
   set, which scales with the loaded world. That second term is now the one the
@@ -151,6 +171,19 @@ measured rail. See the consequences.
   decision took on. At the full lattice the surface's queue is the five-tick
   sweep [0020](0020-in-tick-drain.md) describes, so the 8,259,231 granular cells
   are served across five ticks rather than in one 2,000,000-cell tick.
+- The same surface on the in-tick drain, 2026-10-15: the p95 tick is 531.600µs
+  at the 512 extent, 1.618ms at 1024, 3.840ms at 2048 and 9.300µs at the full
+  lattice, of which the rule work is 180.900µs, 256.600µs, 772.800µs and
+  9.300µs. The 512, 1024 and 2048 extents hold 48,911, 202,221 and 1,800,792
+  grains, below the 2,000,000-cell rail, so a tick drains their whole queue and
+  the rule work is the scene's own size. The full lattice holds 8,432,216
+  grains, above the rail, so its sweep is five ticks. Its p95 is 9.300µs, which
+  is an idle tick rather than that tick's cost: nothing moves, so the queue can
+  only shrink, and the ticks that drain the rail's 2,000,000 cells fall below
+  the 95th percentile of 256. The full lattice also moves nothing in 256 ticks
+  and fails the bench's churn assertion. The same point failed at `main` with
+  the 4096 cap, with the same zero moves, so the in-tick drain neither
+  introduced nor fixed that failure.
 - A full-lattice surface's first ticks reach the deepest level, where no cell
   can move, so the drain settles them one tick at a time and the first moves
   wait for the queue to reach a level with a lower neighbour. The surface bench
