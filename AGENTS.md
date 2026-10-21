@@ -49,3 +49,10 @@ Read `docs/agents/triage-labels.md` before changing an issue's `Status:` line. I
 ### Domain docs
 
 One context: `GLOSSARY.md` holds the glossary, `docs/adr/` holds the decisions. See `docs/agents/domain.md`.
+
+### Codebase graph
+
+`graphify-out/graph.json` is derived, untracked output. It is stale when
+`built_at_commit` is behind `HEAD`. Refresh code changes with `graphify update .`
+and doc changes with `/graphify`; the graph itself answers structure questions
+through `graphify query`, `explain`, and `path`.
