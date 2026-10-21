@@ -259,7 +259,7 @@ impl App {
         if let Some(now) = queued {
             let rate = processed_rate(processed, window);
 
-            info!("{fps:.0} fps, {now} grains queued, {rate:.0} grains processed/s");
+            info!("{fps:.0} fps, {now} grains in queue, {rate:.0} grains processed/s");
         } else {
             info!("{fps:.0} fps");
         }
