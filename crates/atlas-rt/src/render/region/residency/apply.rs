@@ -59,22 +59,17 @@ impl RegionStore {
 
     /// # Errors
     ///
-    /// Returns an error if packing regions failed
+    /// Returns an error if taking the applied packs or the rebuild failed
     pub fn apply(
         &mut self,
         gpu: &RenderContext,
         input: &RendererInput,
     ) -> anyhow::Result<ApplyReport> {
-        let dirty = input.take_dirty_regions();
+        let packs = input.take_applied_packs()?;
 
-        if dirty.is_empty() {
+        if packs.is_empty() {
             return Ok(ApplyReport::default());
         }
-
-        let packs: Vec<(IVec3, Option<RegionData>)> = dirty
-            .iter()
-            .map(|&region| Ok((region, input.packed_region(region)?)))
-            .collect::<anyhow::Result<_>>()?;
 
         self.rebuild(gpu, packs)
     }

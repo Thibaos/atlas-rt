@@ -228,6 +228,7 @@ impl RendererInput {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(in crate::render) fn take_dirty_regions(&self) -> Vec<IVec3> {
         let Ok(mut regions) = self.queue.inner.applied_regions.lock() else {
             return vec![];
@@ -237,6 +238,45 @@ impl RendererInput {
         dirty.sort_unstable_by_key(IVec3::to_array);
 
         dirty
+    }
+
+    /// Takes what the worker applied since the last call: each region with the
+    /// pack it was applied as, or `None` when its last Micro-chunk left.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a lock is poisoned or a region has no ready pack
+    pub(in crate::render) fn take_applied_packs(
+        &self,
+    ) -> anyhow::Result<Vec<(IVec3, Option<RegionData>)>> {
+        let Ok(mut applied) = self.queue.inner.applied_regions.lock() else {
+            bail!("applied regions lock poisoned");
+        };
+
+        let Ok(mut packed) = self.queue.inner.packed.lock() else {
+            bail!("packed lock poisoned");
+        };
+
+        let Ok(mirrors) = self.queue.inner.mirrors.lock() else {
+            bail!("mirrors lock poisoned");
+        };
+
+        let mut taken: Vec<(IVec3, Option<RegionData>)> = std::mem::take(&mut *applied)
+            .into_iter()
+            .map(|region| {
+                let pack = packed.remove(&region);
+
+                if pack.is_none() && mirrors.contains_key(&region) {
+                    bail!("region {region} has no ready pack");
+                }
+
+                Ok((region, pack))
+            })
+            .collect::<anyhow::Result<_>>()?;
+
+        taken.sort_unstable_by_key(|(region, _)| region.to_array());
+
+        Ok(taken)
     }
 
     /// How many batches the renderer has taken delivery of. A frame takes the
@@ -273,13 +313,22 @@ impl RendererInput {
         Ok(None)
     }
 
+    /// Takes every packed region. The caller takes delivery of them, so the
+    /// regions they came from stop being dirty.
+    ///
     /// # Errors
     ///
-    /// Returns an error if packed lock poisoned
+    /// Returns an error if the applied regions or packed lock poisoned
     pub fn packed_regions(&self) -> anyhow::Result<Vec<RegionData>> {
+        let Ok(mut applied) = self.queue.inner.applied_regions.lock() else {
+            bail!("applied regions lock poisoned");
+        };
+
         let Ok(mut packed) = self.queue.inner.packed.lock() else {
             bail!("packed lock poisoned");
         };
+
+        applied.clear();
 
         let mut regions: Vec<RegionData> = std::mem::take(&mut *packed).into_values().collect();
 
@@ -357,26 +406,28 @@ fn worker_loop(inner: &Arc<ChangeQueueInner>) -> anyhow::Result<()> {
         let packs = pack_dirty_regions(&inner.mirrors, &dirty)?;
 
         {
-            let Ok(mut packed) = inner.packed.lock() else {
-                bail!("packed lock poisoned");
-            };
-
-            for (region, pack) in packs {
-                match pack {
-                    Some(data) => {
-                        packed.insert(region, data);
-                    }
-                    None => {
-                        packed.remove(&region);
-                    }
-                }
-            }
-        }
-
-        {
             let Ok(mut applied) = inner.applied_regions.lock() else {
                 bail!("applied regions lock poisoned");
             };
+
+            // One critical section, so no consumer sees a region reported dirty
+            // before the pack it is reported with.
+            {
+                let Ok(mut packed) = inner.packed.lock() else {
+                    bail!("packed lock poisoned");
+                };
+
+                for (region, pack) in packs {
+                    match pack {
+                        Some(data) => {
+                            packed.insert(region, data);
+                        }
+                        None => {
+                            packed.remove(&region);
+                        }
+                    }
+                }
+            }
 
             for region in &dirty {
                 if !applied.contains(region) {
@@ -718,6 +769,59 @@ mod tests {
             assert_eq!(a.blocks, b.blocks);
             assert_eq!(a.aabbs, b.aabbs);
         }
+    }
+
+    #[test]
+    fn startup_packs_leave_no_region_for_the_first_frame() {
+        let input = RendererInput::new().unwrap();
+
+        input
+            .submit_batch([snapshot(IVec3::new(-8, -8, -8), &[(0, 1)])])
+            .unwrap();
+        input.wait_until_idle().unwrap();
+
+        assert_eq!(input.packed_regions().unwrap().len(), 1);
+
+        assert!(
+            input.take_dirty_regions().is_empty(),
+            "the store took the startup packs, so no region is still dirty"
+        );
+    }
+
+    #[test]
+    fn each_applied_batch_is_taken_once_with_its_pack() {
+        let input = RendererInput::new().unwrap();
+        let coords = IVec3::new(8, 0, 0);
+        let region = region_index_of(coords);
+
+        input.submit_batch([snapshot(coords, &[(0, 1)])]).unwrap();
+        input.wait_until_idle().unwrap();
+
+        let first = input.take_applied_packs().unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].0, region);
+        assert!(first[0].1.is_some());
+
+        input.submit_batch([snapshot(coords, &[(0, 2)])]).unwrap();
+        input.wait_until_idle().unwrap();
+
+        let second = input.take_applied_packs().unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].0, region);
+        assert!(
+            second[0].1.is_some(),
+            "the second batch repacks the region once"
+        );
+
+        input.submit_batch([zero(coords)]).unwrap();
+        input.wait_until_idle().unwrap();
+
+        let third = input.take_applied_packs().unwrap();
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].0, region);
+        assert!(third[0].1.is_none(), "the emptied region reports no pack");
+
+        assert!(input.take_applied_packs().unwrap().is_empty());
     }
 
     #[test]
