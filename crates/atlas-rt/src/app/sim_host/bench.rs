@@ -5,26 +5,25 @@
 //! in the tick can cross it.
 //!
 //! A tick drains the whole update queue, so its rule work is proportional to
-//! the scene and crosses 4 ms on the larger points here. `MAX_CELLS_PER_TICK`
-//! is a rail rather than the mechanism, so the budget check holds the rail's
-//! bound: `MAX_CELLS_PER_TICK` cells at the measured per-cell cost. The 4 ms
-//! threshold stays the whole-tick tripwire and is reported beside the rule
-//! work. The Micro-chunk column is the tick's actual work, which follows the
-//! scene until the scene reaches the rail.
+//! the scene and crosses 4 ms on the larger points here. The budget check
+//! therefore holds the rule work per drained cell, which scales with the scene
+//! where a fixed bound did not. The 4 ms threshold stays the whole-tick
+//! tripwire and is reported beside the rule work. The Micro-chunk column is the
+//! tick's actual work, which follows the scene.
 //!
-//! The commit window carries costs the rail does not bound: `edit_world`
+//! The commit window carries costs the per-cell budget does not: `edit_world`
 //! compiles every Micro-chunk the tick's moves touch, and it clones the
 //! renderer's tracked Micro-chunk set, which follows the loaded world. A point
 //! whose rule work stays inside the 4 ms tripwire and whose whole tick does not
 //! is `COMMIT`, whose crossing sits in the commit window. A point whose rule
-//! work crosses the tripwire but stays inside the rail is `DRAIN`, the expected
-//! cost of draining a whole large scene. A point whose rule work crosses the
-//! rail's bound is `OVERRUN`, which is the failure the check asserts, and
-//! `print_crossings` reports it apart from the tripwire's own crossings.
-//! ADR 0018 carries the measured figures and what they leave open.
+//! work crosses the tripwire at a per-cell cost inside the budget is `DRAIN`,
+//! the expected cost of draining a whole large scene. A point whose rule work
+//! crosses the per-cell budget is `OVERRUN`, which is the failure the check
+//! asserts, and `print_crossings` reports it apart from the tripwire's own
+//! crossings. ADR 0018 carries the measured figures and what they leave open.
 //!
 //! `generated_surface_tick_timings` measures the same check on the Falling
-//! granular surface a Generation writes, the scene the rail exists for.
+//! granular surface a Generation writes.
 
 use std::{
     collections::HashSet,
@@ -36,7 +35,7 @@ use dot_vox::DotVoxData;
 use glam::IVec3;
 
 use atlas_rt::{
-    sim::{InputSample, MAX_CELLS_PER_TICK, PlayerProfile, Push},
+    sim::{InputSample, PlayerProfile, Push},
     world::{
         World,
         diff::{
@@ -55,14 +54,11 @@ use super::SimHost;
 
 const TICK_BUDGET: Duration = Duration::from_millis(4);
 
-/// The measured cost of draining one cell, from ADR 0018.
-const CELL_COST_NANOS: u64 = 414;
-
-/// The rail's bound on a tick's rule work: [`MAX_CELLS_PER_TICK`] cells at
-/// `CELL_COST_NANOS`, about 830 ms. The budget check holds this and the 4 ms
-/// `TICK_BUDGET` stays the whole-tick tripwire reported beside it.
-const RULE_WORK_RAIL: Duration =
-    Duration::from_nanos((MAX_CELLS_PER_TICK as u64).saturating_mul(CELL_COST_NANOS));
+/// The cost of draining one cell the budget check allows, with headroom over
+/// the 310 ns the sweep measures per drained cell at 1,000,000 active cells.
+/// The check holds it against each scene's own drained-cell count, so the bound
+/// scales with the scene rather than cutting the scene at a fixed count.
+const CELL_COST_NANOS: u64 = 600;
 
 const TICKS: usize = 60;
 const ACTIVE: [usize; 4] = [1_000, 10_000, 100_000, 1_000_000];
@@ -82,11 +78,8 @@ const SYNTH_MATERIAL: u8 = 0;
 const SURFACE_SEED: u64 = 0x5EED_1234;
 const SURFACE_EXTENTS: [i32; 4] = [512, 1024, 2048, 4096];
 
-/// The surface bench's ticks, more than the sweep's because a full-lattice
-/// surface starts on its deepest level, where the tick reaches cells that
-/// cannot move and settles them with no edit at all, and because a scene above
-/// the rail takes `ceil(queued / MAX_CELLS_PER_TICK)` ticks to serve every
-/// grain once.
+/// The surface bench's ticks, more than the sweep's: the first ticks reach the
+/// deepest level, where no cell can move, so a p95 needs more than one tick.
 const SURFACE_TICKS: usize = 256;
 
 struct SweepPoint {
@@ -101,9 +94,7 @@ struct SweepPoint {
 #[test]
 #[ignore = "bench: cargo test --release tick_tripwire_sweep -- --ignored --nocapture"]
 fn tick_tripwire_sweep() {
-    println!(
-        "rail          {RULE_WORK_RAIL:.3?} p95 rule work, the bound of {MAX_CELLS_PER_TICK} cells at {CELL_COST_NANOS} ns each"
-    );
+    println!("per cell      {CELL_COST_NANOS} ns a drained cell, the bound the budget check holds");
     println!("tripwire      {TICK_BUDGET:.3?} p95 whole tick, reported beside the rule work");
     println!(
         "clock         frames at 60 fps, tick fixed at 30 Hz, {TICKS} measured ticks per point"
@@ -406,6 +397,7 @@ struct Samples {
     eval: Vec<Duration>,
     commit: Vec<Duration>,
     chunks: Vec<usize>,
+    processed: Vec<usize>,
     moving: usize,
 }
 
@@ -420,6 +412,7 @@ fn drive(host: &mut SimHost, ticks: usize) -> Samples {
         eval: Vec::with_capacity(ticks),
         commit: Vec::with_capacity(ticks),
         chunks: Vec::with_capacity(ticks),
+        processed: Vec::with_capacity(ticks),
         moving: 0,
     };
 
@@ -449,6 +442,7 @@ fn drive(host: &mut SimHost, ticks: usize) -> Samples {
         }
 
         samples.chunks.push(report.batches.iter().flatten().count());
+        samples.processed.push(report.processed);
         samples
             .wall
             .push(report.tick_time.saturating_add(report.commit_time));
@@ -478,54 +472,63 @@ fn nearest_rank<T: Copy + Ord + Default>(samples: &[T]) -> T {
         .unwrap_or_default()
 }
 
-/// The p95 timings of one measured scene, and the tick's touched Micro-chunk
-/// count. Three named durations travel together into every verdict, because the
-/// rail bounds the rule work and the whole tick's 4 ms tripwire is classified
-/// beside it. Both benches fail a point when its rule work alone crosses the
-/// rail's bound, and report the tripwire's own crossings apart from it.
+/// The p95 timings of one measured scene, the tick's touched Micro-chunk
+/// count, and the rule work one drained cell costs. The per-cell figure is what
+/// the budget check holds, since a tick drains the whole queue; the whole
+/// tick's 4 ms tripwire is classified beside it.
 #[derive(Clone, Copy, Default)]
 struct TickTimings {
     tick_p95: Duration,
     eval_p95: Duration,
     commit_p95: Duration,
     chunks_p95: usize,
+    per_cell_nanos: u64,
 }
 
 impl TickTimings {
     fn of(samples: &Samples) -> Self {
+        let processed: usize = samples.processed.iter().copied().sum();
+        let eval: Duration = samples.eval.iter().copied().sum();
+        let per_cell_nanos = if processed == 0 {
+            0
+        } else {
+            u64::try_from(eval.as_nanos() / processed as u128).unwrap_or(u64::MAX)
+        };
+
         Self {
             tick_p95: nearest_rank(&samples.wall),
             eval_p95: nearest_rank(&samples.eval),
             commit_p95: nearest_rank(&samples.commit),
             chunks_p95: nearest_rank(&samples.chunks),
+            per_cell_nanos,
         }
     }
 
-    /// The rail's bound is what the budget check holds: [`MAX_CELLS_PER_TICK`]
-    /// cells of rule work at the measured per-cell cost. The 4 ms tripwire is
-    /// the whole tick and is reported beside it.
+    /// The rule work per drained cell is what the budget check holds, so the
+    /// bound follows the scene. The 4 ms tripwire is the whole tick and is
+    /// reported beside it.
     fn budget_check(&self, label: &str) -> Result<(), String> {
-        if self.rule_work_overrun() {
+        if self.per_cell_overrun() {
             return Err(format!(
-                "{label}: p95 rule work {:.3?} overruns the rail's {RULE_WORK_RAIL:.3?} bound",
-                self.eval_p95
+                "{label}: rule work {} ns a drained cell overruns the {CELL_COST_NANOS} ns bound",
+                self.per_cell_nanos
             ));
         }
 
         Ok(())
     }
 
-    /// Whether the rule work crosses the rail's bound, which is the failure the
-    /// budget check asserts.
-    fn rule_work_overrun(&self) -> bool {
-        self.eval_p95 > RULE_WORK_RAIL
+    /// Whether the rule work crosses the per-cell budget, which is the failure
+    /// the check asserts.
+    fn per_cell_overrun(&self) -> bool {
+        self.per_cell_nanos > CELL_COST_NANOS
     }
 
-    /// Whether the rule work crossed the 4 ms tripwire but stayed inside the
-    /// rail, which is a large scene draining as designed rather than a
-    /// regression.
+    /// Whether the rule work crossed the 4 ms tripwire at a per-cell cost
+    /// inside the budget, which is a large scene draining as designed rather
+    /// than a regression.
     fn drain_over_tripwire(&self) -> bool {
-        self.eval_p95 > TICK_BUDGET && !self.rule_work_overrun()
+        self.eval_p95 > TICK_BUDGET && !self.per_cell_overrun()
     }
 
     /// Whether the whole tick is over the 4 ms tripwire with its rule work
@@ -535,7 +538,7 @@ impl TickTimings {
     }
 
     fn verdict(&self) -> &'static str {
-        if self.rule_work_overrun() {
+        if self.per_cell_overrun() {
             "OVERRUN"
         } else if self.drain_over_tripwire() {
             "DRAIN"
@@ -567,7 +570,7 @@ impl Failures {
 
 fn print_header() {
     println!(
-        "{:>9} {:>9} {:>11} {:>9} {:>11} {:>11} {:>11} {:>10} {:>8}",
+        "{:>9} {:>9} {:>11} {:>9} {:>11} {:>11} {:>11} {:>10} {:>9} {:>8}",
         "occupancy",
         "active",
         "voxels",
@@ -576,6 +579,7 @@ fn print_header() {
         "p95 eval",
         "p95 commit",
         "p95 chunks",
+        "ns/cell",
         "budget"
     );
 }
@@ -584,7 +588,7 @@ fn print_row(point: &SweepPoint) {
     let block = format!("{}x{}", point.edge, point.layers);
 
     println!(
-        "{:>9} {:>9} {:>11} {:>9} {:>11.3?} {:>11.3?} {:>11.3?} {:>10} {:>8}",
+        "{:>9} {:>9} {:>11} {:>9} {:>11.3?} {:>11.3?} {:>11.3?} {:>10} {:>9} {:>8}",
         point.occupancy,
         point.active,
         point.voxels,
@@ -593,6 +597,7 @@ fn print_row(point: &SweepPoint) {
         point.timings.eval_p95,
         point.timings.commit_p95,
         point.timings.chunks_p95,
+        point.timings.per_cell_nanos,
         point.timings.verdict()
     );
 }
@@ -613,28 +618,16 @@ fn print_crossings(points: &[SweepPoint]) {
         }
     }
 
-    let overrunning: Vec<&SweepPoint> = points
+    let worst = points
         .iter()
-        .filter(|point| point.timings.rule_work_overrun())
-        .collect();
+        .max_by_key(|point| point.timings.per_cell_nanos);
 
-    if overrunning.is_empty() {
-        println!(
-            "no point's rule work crosses the rail's {RULE_WORK_RAIL:.3?} bound up to 1M, which is the crossing the budget check asserts"
-        );
-
-        return;
-    }
-
-    println!(
-        "rule work over the rail's {RULE_WORK_RAIL:.3?} bound, the crossing the budget check asserts:"
-    );
-
-    for point in overrunning {
-        println!(
-            "  {:>9} {:>9} p95 rule work {:.3?}",
-            point.occupancy, point.active, point.timings.eval_p95
-        );
+    match worst {
+        Some(point) => println!(
+            "per cell      {} ns a drained cell at {:>9} {}, against the {CELL_COST_NANOS} ns the budget check holds",
+            point.timings.per_cell_nanos, point.occupancy, point.active
+        ),
+        None => println!("per cell      no point measured"),
     }
 }
 
@@ -651,12 +644,11 @@ struct SurfacePoint {
 }
 
 /// Runs one generated surface through the real host: generate, emit, activate
-/// with the generator's own grain list, then drive the measured ticks. The
-/// surface is the scene the rail exists for, since a Generated World's Sand
-/// surface is Falling granular wherever the column surface sits below ground
-/// level, so the grain count runs to millions and the full lattice stands above
-/// [`MAX_CELLS_PER_TICK`]. The activation is measured too, because it seeds the
-/// queue with every one of those grains.
+/// with the generator's own grain list, then drive the measured ticks. A
+/// Generated World's Sand surface is Falling granular wherever the column
+/// surface sits below ground level, so the grain count runs to millions. The
+/// activation is measured too, because it seeds the queue with every one of
+/// those grains.
 fn surface_point(extent: i32) -> SurfacePoint {
     let params = GenerationParams::new(SURFACE_SEED, IVec3::splat(extent));
     let generated = generate(&Progress::generate_path(), params)
@@ -703,7 +695,7 @@ fn surface_point(extent: i32) -> SurfacePoint {
 
 fn print_surface_header() {
     println!(
-        "{:>9} {:>12} {:>10} {:>11} {:>11} {:>11} {:>11} {:>10} {:>8} {:>8}",
+        "{:>9} {:>12} {:>10} {:>11} {:>11} {:>11} {:>11} {:>10} {:>9} {:>8} {:>8}",
         "extent",
         "voxels",
         "grains",
@@ -712,6 +704,7 @@ fn print_surface_header() {
         "p95 eval",
         "p95 commit",
         "p95 chunks",
+        "ns/cell",
         "moving",
         "budget"
     );
@@ -719,7 +712,7 @@ fn print_surface_header() {
 
 fn print_surface_row(point: &SurfacePoint) {
     println!(
-        "{:>9} {:>12} {:>10} {:>11.3?} {:>11.3?} {:>11.3?} {:>11.3?} {:>10} {:>8} {:>8}",
+        "{:>9} {:>12} {:>10} {:>11.3?} {:>11.3?} {:>11.3?} {:>11.3?} {:>10} {:>9} {:>8} {:>8}",
         point.extent,
         point.voxels,
         point.grains,
@@ -728,25 +721,21 @@ fn print_surface_row(point: &SurfacePoint) {
         point.timings.eval_p95,
         point.timings.commit_p95,
         point.timings.chunks_p95,
+        point.timings.per_cell_nanos,
         point.moving,
         point.timings.verdict()
     );
 }
 
 /// The generated-surface tripwire. A full-lattice Generation writes about
-/// eight and a half million Falling granular surface cells, which stands above
-/// the rail: one tick drains [`MAX_CELLS_PER_TICK`] of them and a sweep takes
-/// `ceil(queued / MAX_CELLS_PER_TICK)` ticks, so every grain is served once a
-/// sweep rather than stalling the tick. The 512, 1024 and 2048 extents sit
-/// below the rail, so one tick drains their whole queue. The budget check still
-/// holds the rail's bound, and the commit window is reported rather than
-/// asserted on.
+/// eight and a half million Falling granular surface cells, and one tick drains
+/// all of them, so the rule work is the scene's own size at every extent. The
+/// budget check holds the per-cell cost, and the commit window is reported
+/// rather than asserted on.
 #[test]
 #[ignore = "bench: cargo test --release generated_surface_tick_timings -- --ignored --nocapture"]
 fn generated_surface_tick_timings() {
-    println!(
-        "rail          {RULE_WORK_RAIL:.3?} p95 rule work, the bound of {MAX_CELLS_PER_TICK} cells at {CELL_COST_NANOS} ns each"
-    );
+    println!("per cell      {CELL_COST_NANOS} ns a drained cell, the bound the budget check holds");
     println!("tripwire      {TICK_BUDGET:.3?} p95 whole tick, reported beside the rule work");
     println!(
         "clock         frames at 60 fps, tick fixed at 30 Hz, {SURFACE_TICKS} measured ticks per point"
@@ -793,14 +782,13 @@ fn p95_takes_the_nearest_rank() {
 }
 
 #[test]
-fn the_budget_fails_only_over_the_rails_bound() {
-    let over = RULE_WORK_RAIL.saturating_add(Duration::from_micros(1));
+fn the_budget_fails_only_over_the_per_cell_bound() {
     let within = TickTimings {
-        eval_p95: RULE_WORK_RAIL,
+        per_cell_nanos: CELL_COST_NANOS,
         ..TickTimings::default()
     };
     let beyond = TickTimings {
-        eval_p95: over,
+        per_cell_nanos: CELL_COST_NANOS.saturating_add(1),
         ..TickTimings::default()
     };
 
@@ -823,7 +811,8 @@ fn a_commit_overrun_is_named_apart_from_the_rule_work() {
     };
     let overrunning = TickTimings {
         tick_p95: over,
-        eval_p95: RULE_WORK_RAIL.saturating_add(Duration::from_micros(1)),
+        eval_p95: over,
+        per_cell_nanos: CELL_COST_NANOS.saturating_add(1),
         ..TickTimings::default()
     };
 
@@ -835,20 +824,20 @@ fn a_commit_overrun_is_named_apart_from_the_rule_work() {
     assert_eq!(
         draining.verdict(),
         "DRAIN",
-        "rule work over the tripwire but inside the rail is a large scene, not a regression"
+        "rule work over the tripwire at the budget's per-cell cost is a large scene, not a regression"
     );
     assert_eq!(
         overrunning.verdict(),
         "OVERRUN",
-        "rule work over the rail is the failure the sweep asserts"
+        "rule work over the per-cell budget is the failure the sweep asserts"
     );
     assert_eq!(TickTimings::default().verdict(), "ok");
     assert!(
         !overrunning.commit_overrun(),
-        "rule work over the rail is not a commit-only overrun"
+        "a per-cell overrun is not a commit-only overrun"
     );
-    assert!(overrunning.budget_check("over the rail").is_err());
-    assert!(draining.budget_check("inside the rail").is_ok());
+    assert!(overrunning.budget_check("over the budget").is_err());
+    assert!(draining.budget_check("inside the budget").is_ok());
 }
 
 #[test]

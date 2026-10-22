@@ -12,14 +12,11 @@ use glam::{IVec3, Vec3};
 
 use common::*;
 
-/// The length of the row scene below. It used to be the cell cap, which the
-/// simulation held at 4096 and which the sweep replaces with a rail far above
-/// any scene a test builds.
+/// The length of the row scene below: one grain per lattice x coordinate.
 const ROW_LENGTH: usize = 4096;
 
-/// One row of grains across the lattice x axis plus the single cell past it, so
-/// a scene has one more cell than the old cap had slots and can still show that
-/// a tick serves every one of them.
+/// One row of grains across the lattice x axis plus the single cell beside it,
+/// so the scene holds one more cell than the axis does.
 fn a_row_across_the_lattice() -> Vec<VoxelEdit> {
     let mut edits = Vec::with_capacity(ROW_LENGTH.saturating_add(1));
 
@@ -642,7 +639,7 @@ fn two_identical_90_tick_sequences_hash_the_same_under_both_parity_policies() {
 }
 
 #[test]
-fn a_row_under_the_rail_is_served_in_full_each_tick() {
+fn a_row_across_the_lattice_is_served_in_full_each_tick() {
     let (_world, handle) = spawn_sim();
     let edits = a_row_across_the_lattice();
 
@@ -658,7 +655,7 @@ fn a_row_under_the_rail_is_served_in_full_each_tick() {
     assert_eq!(
         held.iter().filter(|cell| cell.y == 10).count(),
         0,
-        "the rail binds no cell of this row, so the tick serves every one"
+        "the tick serves every cell of this row"
     );
     assert_eq!(
         held.iter().filter(|cell| cell.y == 9).count(),
@@ -673,12 +670,12 @@ fn a_row_under_the_rail_is_served_in_full_each_tick() {
     assert_eq!(
         held.iter().filter(|cell| cell.y == 8).count(),
         ROW_LENGTH.saturating_add(1),
-        "the next sweep serves the destinations, so the whole row falls again"
+        "the next tick serves the destinations, so the whole row falls again"
     );
 }
 
 #[test]
-fn a_scene_larger_than_the_cap_replays_identically() {
+fn a_row_across_the_lattice_replays_identically() {
     let mut runs = [0u64; 2];
 
     for run in &mut runs {
@@ -695,13 +692,13 @@ fn a_scene_larger_than_the_cap_replays_identically() {
 
         let moved = world_hash(&handle);
 
-        assert_ne!(moved, rested, "the capped ticks have to move the grains");
+        assert_ne!(moved, rested, "the ticks have to move the grains");
 
         *run = moved;
     }
 
     assert_eq!(
         runs[0], runs[1],
-        "two capped sequences over one scene and one cap hash the same"
+        "two sequences over one scene hash the same"
     );
 }

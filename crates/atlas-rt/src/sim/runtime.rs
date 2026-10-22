@@ -20,7 +20,6 @@ use crate::world::diff::{
 use crate::world::grid::in_lattice;
 use crate::world::material::PhysicalMaterialTable;
 
-use super::MAX_CELLS_PER_TICK;
 use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;
 use super::physics::field::Field;
@@ -493,12 +492,12 @@ impl Runtime {
     /// Runs one tick's movement on the player and one drain of the rule
     /// queue on the same read lock, so the rules read one immutable view of
     /// the World for the whole tick and hand back a pending edit list. A tick
-    /// drains the whole queue up to [`MAX_CELLS_PER_TICK`], which no designed
-    /// scene binds, and the cells a bound leaves unserved carry into the next
-    /// tick ahead of any cell this tick served. Returns the window's duration
-    /// and the queued cells the drain evaluated. The window starts before the
-    /// lock is taken, so it carries any wait for a host reader and stamps the
-    /// jump deadline.
+    /// drains every cell the queue holds, so the rules advance the whole World
+    /// as one step and a scene that costs more than a frame period makes the
+    /// World's rate fall rather than advancing it partially. Returns the
+    /// window's duration and the queued cells the drain evaluated. The window
+    /// starts before the lock is taken, so it carries any wait for a host
+    /// reader and stamps the jump deadline.
     fn evaluate(&mut self) -> (Duration, usize) {
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
@@ -518,13 +517,7 @@ impl Runtime {
             );
         }
 
-        let drained = rules::drain(
-            &guard,
-            &self.materials,
-            &mut queue,
-            self.parity,
-            MAX_CELLS_PER_TICK,
-        );
+        let drained = rules::drain(&guard, &self.materials, &mut queue, self.parity);
 
         drop(guard);
 

@@ -50,6 +50,10 @@ resolved, because the body advanced in the wrong order rather than all at once.
 
 ## What a tick serves
 
+Superseded (2026-10-22) by [0021](0021-drain-the-whole-queue.md): a tick serves
+every cell the queue holds, so the rail, the `ceil(Q / cap)` sweep and the
+queue's halves are gone. This section stays as the record of the rail.
+
 A tick drains the whole queue below `MAX_CELLS_PER_TICK`, which is a rail rather
 than the mechanism. A designed scene never reaches it: the ball's queue holds
 1,110,768 cells, a queued-cell count, while the ball itself holds 1,097,917
@@ -145,3 +149,6 @@ queue's prefix in `(y, x, z)` order and that the cap is the mechanism. Amends
 **Simulation tick**, **Update queue** and **Cell cap** in `GLOSSARY.md`, adds
 **Sweep**, and replaces the sand ball's timings in `README.md`. Raises the cap
 to a 2,000,000-cell rail.
+Amended (2026-10-22) by [0021](0021-drain-the-whole-queue.md): the rail is
+removed, so a tick drains the whole queue and **Sweep** and **Cell cap** leave
+`GLOSSARY.md`.

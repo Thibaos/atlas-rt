@@ -28,23 +28,18 @@ impl PartialOrd for QueueCell {
 /// order a tick drains them and never as World state. Settled means absent, so
 /// a Falling granular cell blocks the player only while this holds it.
 ///
-/// A sweep serves every cell once before serving any cell twice. The ready half
-/// holds the cells this sweep has not served and the served half the cells it
-/// has, so a tick drains the ready half's lowest cells and the halves swap once
-/// that half empties. A mover's destination joins the served half, because the
-/// mark travels with the grain, and a wake joins the ready half only when the
-/// sweep's front has not passed the cell yet.
+/// A tick serves every cell the queue holds. One half is the cells this tick
+/// serves and the other is the cells its moves and wakes queue for the next, so
+/// a grain moves at most once a tick and no cell is served twice in one.
 #[derive(Clone, Debug, Default)]
 pub(in crate::sim) struct UpdateQueue {
     ready: BTreeSet<QueueCell>,
-    served: BTreeSet<QueueCell>,
-    front: Option<QueueCell>,
-    spent: bool,
+    next: BTreeSet<QueueCell>,
 }
 
 impl UpdateQueue {
     /// Replaces the queue with the Falling granular cells of `world`, the seed
-    /// every activation starts from: all of them in the ready half. A
+    /// every activation starts from: all of them ready for the first tick. A
     /// generator's `granular_cells` seeds in time proportional to the cells;
     /// `None` scans the World, which a `.vox` load and a failed rule batch need.
     pub(in crate::sim) fn seed(
@@ -53,9 +48,7 @@ impl UpdateQueue {
         table: &PhysicalMaterialTable,
         granular_cells: Option<&[IVec3]>,
     ) {
-        self.served = BTreeSet::new();
-        self.front = None;
-        self.spent = false;
+        self.next = BTreeSet::new();
 
         if let Some(cells) = granular_cells {
             self.ready = cells.iter().copied().map(QueueCell).collect();
@@ -72,90 +65,64 @@ impl UpdateQueue {
     }
 
     pub(in crate::sim) fn len(&self) -> usize {
-        self.ready.len().saturating_add(self.served.len())
+        self.ready.len().saturating_add(self.next.len())
     }
 
-    /// Whether either half holds the cell, which is what in flight and blocking
-    /// ask: ready and served are both grains the rules have not settled.
+    /// Whether the queue holds the cell, which is what in flight and blocking
+    /// ask: both halves are grains the rules have not settled.
     pub(in crate::sim) fn contains(&self, cell: IVec3) -> bool {
         let cell = QueueCell(cell);
 
-        self.ready.contains(&cell) || self.served.contains(&cell)
+        self.ready.contains(&cell) || self.next.contains(&cell)
     }
 
-    /// The whole queue, each half in its own order, which only the tests read:
-    /// nothing in the rules walks the served half, because a tick serves the
-    /// ready half alone.
+    /// Every queued cell, this tick's in their order and then the next tick's,
+    /// which only the tests read.
     #[cfg(test)]
     pub(in crate::sim) fn iter(&self) -> impl Iterator<Item = &IVec3> {
         let ready = self.ready.iter();
-        let served = self.served.iter();
+        let next = self.next.iter();
 
-        ready.chain(served).map(|cell| &cell.0)
+        ready.chain(next).map(|cell| &cell.0)
     }
 
-    /// The cells this sweep has not served, in drain order.
+    /// The cells this tick serves, in drain order.
     pub(in crate::sim) fn unserved(&self) -> impl Iterator<Item = &IVec3> {
         self.ready.iter().map(|cell| &cell.0)
     }
 
-    /// Starts a sweep when the ready half is empty, which is the only place the
-    /// halves swap. A swap anywhere else would serve a cell twice in one sweep,
-    /// and a destination is always one level below its source, so its grain
-    /// would move twice in a tick.
-    pub(in crate::sim) fn begin_sweep(&mut self) {
+    /// Makes the cells the last tick queued this tick's own. A tick ends once
+    /// its ready half is served, so the swap waits only for the first tick
+    /// after a seed, which already holds its cells.
+    pub(in crate::sim) fn begin_tick(&mut self) {
         if self.ready.is_empty() {
-            mem::swap(&mut self.ready, &mut self.served);
-            self.front = None;
-            self.spent = false;
+            mem::swap(&mut self.ready, &mut self.next);
         }
     }
 
-    /// Ends the tick: the cells a tick served are the ready half's front, so
-    /// everything at or after `boundary` stays unserved and becomes the sweep's
-    /// front. A boundary of nothing means the sweep has served every ready cell
-    /// it had, which `wake` needs to tell from a sweep that never started. The
-    /// served half keeps every cell this sweep has already served.
-    pub(in crate::sim) fn finish(&mut self, boundary: Option<IVec3>) {
-        self.front = boundary.map(QueueCell);
-        self.spent = boundary.is_none();
-        self.ready =
-            boundary.map_or_else(BTreeSet::new, |cell| self.ready.split_off(&QueueCell(cell)));
+    /// Drops the cells this tick served: a grain that moved is queued at its
+    /// destination for the next tick, and one that settled leaves the queue.
+    pub(in crate::sim) fn end_tick(&mut self) {
+        self.ready.clear();
     }
 
-    /// Queues a mover's destination: the grain was served this sweep, so the
-    /// cell joins the served half and is served again only in the next sweep.
+    /// Queues a mover's destination for the next tick, since the grain was
+    /// served this one.
     pub(in crate::sim) fn mark_moved(&mut self, cell: IVec3) {
-        let cell = QueueCell(cell);
-
-        self.ready.remove(&cell);
-        self.served.insert(cell);
+        self.next.insert(QueueCell(cell));
     }
 
-    /// Queues a cell whose support just changed. A cell the sweep has not
-    /// reached keeps its turn in the ready half. Every other cell joins the
-    /// served half, either because the front has passed it or because the sweep
-    /// has no ready cells left at all, so a wake never serves a grain twice in
-    /// one sweep and never keeps a finished sweep alive by feeding its ready
-    /// half. A wake that is not queued at all is the case the front decides:
-    /// ahead of it the sweep has not reached the cell, behind it, or after the
-    /// sweep has served everything, it has.
+    /// Queues a cell whose support changed for the next tick, unless the queue
+    /// holds it already. A cell served in this tick is gone from the ready half
+    /// by the time the wakes arrive, so its wake queues it for the next.
     pub(in crate::sim) fn wake(&mut self, cell: IVec3) {
         let cell = QueueCell(cell);
 
-        if self.ready.contains(&cell) || self.served.contains(&cell) {
+        if self.ready.contains(&cell) || self.next.contains(&cell) {
             return;
         }
 
-        let ahead = !self.spent && self.front.is_none_or(|front| cell >= front);
-
-        if ahead {
-            self.ready.insert(cell);
-
-            return;
-        }
-
-        self.served.insert(cell);
+        self.next.insert(cell);
     }
 }
 
@@ -219,11 +186,11 @@ mod tests {
         seeded.seed(&world, &table, Some(&listed));
 
         assert_eq!(seeded.ready, scanned.ready);
-        assert_eq!(seeded.served, scanned.served);
+        assert_eq!(seeded.next, scanned.next);
     }
 
     #[test]
-    fn a_seed_leaves_the_served_half_empty() {
+    fn a_seed_holds_every_cell_for_the_first_tick() {
         let mut queue = UpdateQueue::default();
 
         queue.seed(&mixed_world(), &table(), None);
@@ -231,9 +198,20 @@ mod tests {
         assert_eq!(
             unserved(&queue),
             vec![IVec3::new(-1, 0, 0), IVec3::new(1, 2, 3)],
-            "every seeded cell is unserved, in drain order"
+            "every seeded cell is served in the first tick, in drain order"
         );
-        assert!(queue.served.is_empty(), "no sweep has served anything yet");
+        assert!(
+            queue.next.is_empty(),
+            "a seed queues nothing for a later tick"
+        );
+
+        queue.begin_tick();
+
+        assert_eq!(
+            unserved(&queue).len(),
+            2,
+            "the first tick serves the seed's own cells"
+        );
     }
 
     #[test]
@@ -264,124 +242,83 @@ mod tests {
     }
 
     #[test]
-    fn a_destination_waits_for_the_next_sweep() {
+    fn a_destination_waits_for_the_next_tick() {
         let mut queue = UpdateQueue::default();
 
         queue.wake(IVec3::new(0, 5, 0));
+        queue.begin_tick();
         queue.mark_moved(IVec3::new(0, 4, 0));
 
         assert_eq!(
             unserved(&queue),
             vec![IVec3::new(0, 5, 0)],
-            "a mover's destination is not this sweep's to serve"
+            "this tick serves the cells it started with"
         );
         assert!(
             queue.contains(IVec3::new(0, 4, 0)),
-            "the destination is queued and in flight"
+            "the destination is queued for the next tick"
         );
         assert_eq!(queue.len(), 2, "both halves count toward the queue");
-    }
 
-    #[test]
-    fn a_wake_of_an_unserved_cell_keeps_its_place() {
-        let mut queue = UpdateQueue::default();
-
-        queue.wake(IVec3::new(0, 5, 0));
-        queue.wake(IVec3::new(0, 7, 0));
-        queue.mark_moved(IVec3::new(0, 5, 0));
-        queue.finish(Some(IVec3::new(0, 7, 0)));
-        queue.wake(IVec3::new(0, 7, 0));
+        queue.end_tick();
+        queue.begin_tick();
 
         assert_eq!(
             unserved(&queue),
-            vec![IVec3::new(0, 7, 0)],
-            "a wake of an unserved cell leaves it unserved"
+            vec![IVec3::new(0, 4, 0)],
+            "the next tick serves the destination"
         );
     }
 
     #[test]
-    fn a_wake_behind_the_front_waits_for_the_next_sweep() {
+    fn a_wake_of_a_queued_cell_leaves_it_in_place() {
         let mut queue = UpdateQueue::default();
 
         queue.wake(IVec3::new(0, 5, 0));
-        queue.wake(IVec3::new(0, 7, 0));
-        queue.finish(Some(IVec3::new(0, 7, 0)));
+        queue.wake(IVec3::new(0, 5, 0));
 
-        assert_eq!(unserved(&queue), vec![IVec3::new(0, 7, 0)]);
-
-        queue.wake(IVec3::new(0, 3, 0));
-
-        assert_eq!(
-            unserved(&queue),
-            vec![IVec3::new(0, 7, 0)],
-            "a cell the front has passed is not served again this sweep"
-        );
-        assert!(
-            queue.contains(IVec3::new(0, 3, 0)),
-            "it is queued for the next sweep instead of dropped"
-        );
+        assert_eq!(queue.len(), 1, "a woken cell is queued once");
     }
 
     #[test]
-    fn a_wake_after_the_sweep_served_everything_waits_for_the_next_one() {
+    fn a_wake_of_a_cell_the_queue_does_not_hold_waits_for_the_next_tick() {
         let mut queue = UpdateQueue::default();
 
-        queue.wake(IVec3::new(0, 5, 0));
-        queue.finish(None);
+        queue.begin_tick();
         queue.wake(IVec3::new(0, 3, 0));
 
         assert!(
             unserved(&queue).is_empty(),
-            "the finished sweep has no turn left to give, so its ready half stays empty and the \
-             next one can swap"
+            "the tick's cells are fixed once it begins"
         );
         assert!(
             queue.contains(IVec3::new(0, 3, 0)),
-            "the woken cell is queued for the next sweep instead of dropped"
+            "the woken cell is queued for the next tick"
         );
     }
 
     #[test]
-    fn the_sweep_swaps_once_the_ready_half_empties() {
+    fn a_wake_after_the_tick_served_the_cell_queues_it_again() {
         let mut queue = UpdateQueue::default();
+        let cell = IVec3::new(0, 5, 0);
 
-        for cell in [IVec3::new(0, 4, 0), IVec3::new(0, 5, 0)] {
-            queue.wake(cell);
-            queue.mark_moved(cell);
-        }
+        queue.wake(cell);
+        queue.begin_tick();
+        queue.end_tick();
+        queue.wake(cell);
 
-        queue.finish(None);
-        queue.begin_sweep();
+        assert!(unserved(&queue).is_empty(), "the cell was served this tick");
+        assert!(
+            queue.contains(cell),
+            "a wake after the tick served the cell queues it for the next one"
+        );
+
+        queue.begin_tick();
 
         assert_eq!(
             unserved(&queue),
-            vec![IVec3::new(0, 4, 0), IVec3::new(0, 5, 0)],
-            "the served half becomes the next sweep's ready half"
-        );
-        assert!(
-            queue.served.is_empty(),
-            "the swap leaves the served half empty"
-        );
-    }
-
-    #[test]
-    fn a_sweep_in_progress_does_not_swap() {
-        let mut queue = UpdateQueue::default();
-
-        queue.wake(IVec3::new(0, 4, 0));
-        queue.wake(IVec3::new(0, 5, 0));
-        queue.mark_moved(IVec3::new(0, 4, 0));
-        queue.finish(Some(IVec3::new(0, 5, 0)));
-        queue.begin_sweep();
-
-        assert_eq!(
-            unserved(&queue),
-            vec![IVec3::new(0, 5, 0)],
-            "the unserved tail is still this sweep's to serve"
-        );
-        assert!(
-            queue.contains(IVec3::new(0, 4, 0)),
-            "the cell this sweep already served keeps its mark"
+            vec![cell],
+            "the next tick serves the woken cell again"
         );
     }
 
@@ -390,7 +327,8 @@ mod tests {
         let mut queue = UpdateQueue::default();
 
         queue.wake(IVec3::new(0, 4, 0));
-        queue.finish(None);
+        queue.begin_tick();
+        queue.end_tick();
 
         assert_eq!(queue.len(), 0, "a settled cell loses its place");
         assert!(!queue.contains(IVec3::new(0, 4, 0)));

@@ -34,10 +34,10 @@ use crate::world::load::progress::Progress;
 use crate::world::material::PhysicalMaterialTable;
 use crate::world::micro::MicroChunk;
 
+use super::ParityPolicy;
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::drain;
 use super::runtime::SnapshotFold;
-use super::{MAX_CELLS_PER_TICK, ParityPolicy};
 
 const FOLD_BUDGET: Duration = Duration::from_millis(250);
 const FOLD_SNAPSHOTS: usize = 1 << 20;
@@ -137,14 +137,7 @@ fn commit_tick(
     queue: &mut UpdateQueue,
     tracked: &mut TrackedCoords,
 ) -> usize {
-    let edits = drain(
-        world,
-        table,
-        queue,
-        ParityPolicy::Alternate,
-        MAX_CELLS_PER_TICK,
-    )
-    .edits;
+    let edits = drain(world, table, queue, ParityPolicy::Alternate).edits;
     let moves = edits.len() / 2;
 
     if edits.is_empty() {
@@ -231,9 +224,9 @@ fn print_surface_run(run: &SurfaceRun) {
 /// cells a Generation writes, the cells the first tick moves, and the ticks and
 /// wall time a drain takes to empty the queue. The queue is seeded from the
 /// generator's own list and the tracked set from the emitted Snapshots, and the
-/// drain is the simulation's own under `MAX_CELLS_PER_TICK`, so the figures
-/// follow the scene until the rail binds. The grain count and the moves are
-/// world-generation issue 08's figures, re-taken on the coherent field.
+/// drain is the simulation's own, so the figures are the scene's. The grain
+/// count and the moves are world-generation issue 08's figures, re-taken on the
+/// coherent field.
 #[test]
 #[ignore = "bench: cargo test --release generation_first_tick_timings -- --ignored --nocapture (ATLAS_BENCH_SURFACE_EXTENT pins one extent edge)"]
 fn generation_first_tick_timings() {
@@ -249,7 +242,7 @@ fn generation_first_tick_timings() {
     );
 
     println!(
-        "rail          {MAX_CELLS_PER_TICK} cells a tick at most, {SETTLE_TICKS} ticks at most before the queue is reported undrained"
+        "ticks         one tick drains the whole queue, {SETTLE_TICKS} ticks at most before the queue is reported undrained"
     );
     println!(
         "{:>9} {:>12} {:>10} {:>11} {:>7} {:>12} {:>11} {:>12}",

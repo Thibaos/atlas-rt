@@ -15,7 +15,9 @@ This record was written when the cap was the mechanism and stood at 4096, and
 processed cells are the queue's prefix in `(y, x, z)` order, and that the cap is
 the mechanism. Read the rest of this record as the queue's order, which 0020
 keeps, plus the history of why the cap was introduced. Each superseded statement
-is marked where it appears.
+is marked where it appears. [0021](0021-drain-the-whole-queue.md) then removes
+the cap, so what outlives this record is the queue's order alone: the cap, its
+2,000,000 value and the sweep discipline are history.
 
 The cap is the second fixed bound on an update's work, beside the scheduler's
 catch-up cap in
@@ -218,3 +220,9 @@ cuts the drain short. `a_tick_stops_at_the_cap_and_leaves_the_rest_queued` lost
 its subject, since a 4097-grain row does not reach a 2,000,000-cell rail, and
 `a_row_under_the_rail_is_served_in_full_each_tick` asserts the inverse property
 through the same boundary.
+
+Amended (2026-10-22) by [0021](0021-drain-the-whole-queue.md): the cap is
+removed and a tick serves every queued cell, so this record is the history of
+the cap and the queue's order. `a_row_under_the_rail_is_served_in_full_each_tick`
+is now `a_row_across_the_lattice_is_served_in_full_each_tick`, and the capped
+tests in `sim/physics/rules.rs` are gone with the cap.

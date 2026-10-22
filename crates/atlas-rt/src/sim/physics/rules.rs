@@ -23,38 +23,26 @@ pub(in crate::sim) struct Drained {
     pub(in crate::sim) processed: usize,
 }
 
-/// Drains at most `cap` of the cells this sweep has not served, in ascending y,
-/// then x, then z, against `world`: each move goes into an overlay a later cell
-/// reads, and nothing here writes to the World. The cells the tick did not reach
-/// stay unserved. A destination is at `src.y - 1` and the scan serves ascending
-/// y, so it needs no moved-this-tick guard. The front is set before the wakes, so
-/// a wake behind it waits for the next sweep and a wake ahead keeps its turn in
-/// this one. A mover's destination is marked served, since the mark travels with
-/// the grain.
+/// Drains every cell this tick's queue holds, in ascending y, then x, then z,
+/// against `world`: each move goes into an overlay a later cell reads, and
+/// nothing here writes to the World. A destination is at `src.y - 1` and the
+/// scan serves ascending y, so it needs no moved-this-tick guard. The moves and
+/// the wakes queue their cells for the next tick, so a grain moves at most once
+/// a tick.
 pub(in crate::sim) fn drain(
     world: &World,
     table: &PhysicalMaterialTable,
     queue: &mut UpdateQueue,
     parity: ParityPolicy,
-    cap: usize,
 ) -> Drained {
-    queue.begin_sweep();
+    queue.begin_tick();
 
     let mut served: Vec<IVec3> = Vec::new();
-    let mut boundary = None;
 
     {
         let field = Field::new(world, table, queue);
 
-        for cell in field.queued_cells().copied() {
-            if served.len() >= cap {
-                boundary = Some(cell);
-
-                break;
-            }
-
-            served.push(cell);
-        }
+        served.extend(field.queued_cells().copied());
     }
 
     let mut processed = 0usize;
@@ -85,7 +73,7 @@ pub(in crate::sim) fn drain(
         }
     }
 
-    queue.finish(boundary);
+    queue.end_tick();
 
     for cell in woken {
         queue.wake(cell);
@@ -338,8 +326,8 @@ mod tests {
         cells
     }
 
-    fn step(world: &mut World, queue: &mut UpdateQueue, cap: usize) -> Vec<VoxelEdit> {
-        let edits = drain(world, &table(), queue, ParityPolicy::Alternate, cap).edits;
+    fn step(world: &mut World, queue: &mut UpdateQueue) -> Vec<VoxelEdit> {
+        let edits = drain(world, &table(), queue, ParityPolicy::Alternate).edits;
 
         edit_world(world, &edits, &TrackedCoords::default())
             .unwrap_or_else(|error| panic!("the edits must apply: {error}"));
@@ -348,76 +336,21 @@ mod tests {
     }
 
     #[test]
-    fn a_tick_drains_at_most_the_cap_and_leaves_the_rest_queued() {
+    fn a_tick_serves_every_queued_cell() {
         let world = row();
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 2).edits;
+        let drained = drain(&world, &table(), &mut queue, ParityPolicy::Alternate);
 
-        assert_eq!(
-            edits,
-            vec![
-                clear(0, 5, 0),
-                set(0, 4, 0, GRAIN),
-                clear(1, 5, 0),
-                set(1, 4, 0, GRAIN),
-            ],
-            "only the first two cells in drain order moved"
-        );
-        assert_eq!(
-            queue.unserved().copied().collect::<Vec<_>>(),
-            vec![
-                IVec3::new(2, 5, 0),
-                IVec3::new(3, 5, 0),
-                IVec3::new(4, 5, 0),
-            ],
-            "the cells past the cap stay unserved, in drain order"
-        );
+        assert_eq!(drained.processed, 5, "the tick evaluates every queued cell");
+        assert_eq!(drained.edits.len(), 10, "every grain moves one cell");
         assert!(
-            queue.contains(IVec3::new(0, 4, 0)) && queue.contains(IVec3::new(1, 4, 0)),
-            "the destinations are queued, and the sweep has served them"
-        );
-    }
-
-    #[test]
-    fn the_processed_cells_match_the_uncapped_drain() {
-        let world = row();
-        let mut capped_queue = queued(&world);
-        let mut uncapped_queue = queued(&world);
-
-        let capped = drain(
-            &world,
-            &table(),
-            &mut capped_queue,
-            ParityPolicy::Alternate,
-            2,
-        );
-        let uncapped = drain(
-            &world,
-            &table(),
-            &mut uncapped_queue,
-            ParityPolicy::Alternate,
-            usize::MAX,
-        );
-        let prefix: Vec<VoxelEdit> = uncapped
-            .edits
-            .iter()
-            .take(capped.edits.len())
-            .copied()
-            .collect();
-
-        assert_eq!(
-            capped.edits, prefix,
-            "the cap cuts the uncapped drain short and changes nothing it keeps"
+            queue.unserved().next().is_none(),
+            "the tick leaves none of its own cells unserved"
         );
         assert_eq!(
-            uncapped.edits.len(),
-            10,
-            "the uncapped drain moves every grain"
-        );
-        assert_eq!(capped.processed, 2, "the cap bounds the cells it evaluates");
-        assert_eq!(
-            uncapped.processed, 5,
-            "an uncapped drain evaluates every queued cell"
+            queue.len(),
+            5,
+            "only the five destinations wait for the next tick"
         );
     }
 
@@ -425,14 +358,7 @@ mod tests {
     fn a_column_advances_every_grain_one_cell_in_one_tick() {
         let mut world = column();
         let mut queue = queued(&world);
-        let edits = drain(
-            &world,
-            &table(),
-            &mut queue,
-            ParityPolicy::Alternate,
-            usize::MAX,
-        )
-        .edits;
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
 
         assert_eq!(
             edits,
@@ -475,7 +401,7 @@ mod tests {
         let landing = lowest - (FLOOR_Y + 1);
 
         for tick in 1..=landing {
-            step(&mut world, &mut queue, usize::MAX);
+            step(&mut world, &mut queue);
 
             let fallen: Vec<IVec3> = resting
                 .iter()
@@ -515,7 +441,7 @@ mod tests {
             (IVec3::new(6, 2, 6), GRAIN),
         ]);
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate, 3).edits;
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
 
         assert_eq!(
             edits,
@@ -548,14 +474,7 @@ mod tests {
 
         queue.wake(IVec3::new(0, 1, 0));
 
-        let edits = drain(
-            &world,
-            &table(),
-            &mut queue,
-            ParityPolicy::Alternate,
-            usize::MAX,
-        )
-        .edits;
+        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
 
         assert_eq!(
             edits,
@@ -581,50 +500,47 @@ mod tests {
     }
 
     #[test]
-    fn a_sweep_serves_every_cell_once_before_serving_any_cell_twice() {
+    fn a_tick_serves_every_grain_once_and_queues_their_destinations() {
         let mut world = scattered();
         let mut queue = queued(&world);
-        let total = queue.len();
-        let cap = 3;
-        let sweep = total.div_ceil(cap);
 
-        assert_eq!(total, 6, "the scene is six grains");
+        assert_eq!(queue.len(), 6, "the scene is six grains");
 
-        for _ in 0..sweep {
-            step(&mut world, &mut queue, cap);
-        }
+        step(&mut world, &mut queue);
 
         assert_eq!(
             held(&world),
             (0..6)
                 .map(|index| IVec3::new(index * 4, 4, 0))
                 .collect::<Vec<_>>(),
-            "one sweep served every grain once, so every grain fell exactly one cell"
+            "every grain fell exactly one cell in the one tick"
         );
-        assert!(
-            queue.unserved().next().is_none(),
-            "the sweep has served every cell it started with, and none of them twice"
-        );
-
-        step(&mut world, &mut queue, cap);
-
         assert_eq!(
-            held(&world).iter().filter(|cell| cell.y == 3).count(),
-            cap,
-            "the next sweep begins with the cap's worth of destinations"
+            order(&queue),
+            (0..6)
+                .map(|index| IVec3::new(index * 4, 4, 0))
+                .collect::<Vec<_>>(),
+            "the queue holds exactly the six destinations, and no source"
+        );
+
+        step(&mut world, &mut queue);
+
+        assert!(
+            held(&world).iter().all(|cell| cell.y == 3),
+            "the next tick falls the same six grains one cell further"
         );
     }
 
     #[test]
-    fn a_capped_sequence_repeats_exactly() {
+    fn a_sequence_repeats_exactly() {
         let mut first_world = row();
         let mut first = queued(&first_world);
         let mut second_world = row();
         let mut second = queued(&second_world);
 
         for tick in 0..6 {
-            let edits = step(&mut first_world, &mut first, 2);
-            let repeat = step(&mut second_world, &mut second, 2);
+            let edits = step(&mut first_world, &mut first);
+            let repeat = step(&mut second_world, &mut second);
 
             assert_eq!(
                 edits, repeat,

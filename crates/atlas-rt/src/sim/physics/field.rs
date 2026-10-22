@@ -68,8 +68,7 @@ impl<'a> Field<'a> {
         }
     }
 
-    /// The coordinates this sweep has not served yet, in the order a tick
-    /// drains them.
+    /// The coordinates this tick serves, in the order a tick drains them.
     pub(in crate::sim) fn queued_cells(&self) -> impl Iterator<Item = &IVec3> {
         self.queued.unserved()
     }

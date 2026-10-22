@@ -142,6 +142,13 @@ now: at 1,000,000 active cells the whole tick's p95 is 579.831 ms at synth,
 435.298 ms, 434.709 ms and 433.336 ms and the commit is 137.021 ms, 138.014 ms
 and 157.752 ms.
 
+[0021](0021-drain-the-whole-queue.md) removes the rail and with it the fixed
+bound this section states. The check holds the rule work per drained cell
+instead, 600 ns against the 310 ns the sweep measures at 1,000,000 active
+cells, so it follows the scene rather than cutting it at a count. `DRAIN` and
+`OVERRUN` survive as the tripwire's and the per-cell bound's break-outs. The
+figures above stand as the run they were taken on.
+
 ## Consequences
 
 - The simulation is drivable headless. Nothing in it needs a frame, so the acceptance walkthroughs run without a window.
@@ -162,4 +169,6 @@ for a tick that costs more than a frame period, per
 [0020](0020-in-tick-drain.md). The World's rate is the host clock's only while a
 tick fits in a frame period, a raycast's one-tick staleness is now up to about
 0.6 s on the sand ball, and a host edit waits through the tail of the evaluation
-window and the commit rather than on the drain alone.
+window and the commit rather than on the drain alone. Amended (2026-10-22): the
+budget check holds a rule-work bound per drained cell rather than the rail's
+fixed bound, per [0021](0021-drain-the-whole-queue.md).
