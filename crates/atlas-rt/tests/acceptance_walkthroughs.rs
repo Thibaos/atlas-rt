@@ -101,14 +101,12 @@ fn grains(handle: &Handle) -> Vec<IVec3> {
     cells
 }
 
-/// Feeds one whole period, requires exactly one tick, and hands back the
-/// batches that tick submitted.
-fn one_tick(handle: &Handle) -> Vec<Vec<MicroChunkSnapshot>> {
+/// Feeds one whole period, takes the one tick it owes, and hands back the batch
+/// that tick submitted.
+fn one_tick(handle: &Handle) -> Option<Vec<MicroChunkSnapshot>> {
     let tick = run_tick(handle);
 
-    assert_eq!(tick.report.ticks, 1, "one frame owes one tick");
-
-    tick.report.batches
+    tick.report.batch
 }
 
 /// Steps until the queue stays empty for five straight ticks, and returns
@@ -117,7 +115,7 @@ fn drain(handle: &Handle, what: &str) -> u32 {
     let mut quiet = 0_u32;
 
     for tick in 1..=60 {
-        if one_tick(handle).is_empty() {
+        if one_tick(handle).is_none() {
             quiet += 1;
 
             if quiet == 5 {
@@ -276,7 +274,7 @@ fn walkthrough_empty_solid_and_granular_fall() {
     let settled = run_tick(&handle);
 
     assert!(
-        settled.report.batches.is_empty(),
+        settled.report.batch.is_none(),
         "the queue has drained, so nothing commits"
     );
     assert!(
@@ -329,7 +327,7 @@ fn walkthrough_a_contested_diagonal_resolves_in_one_tick() {
 
     let tick = run_tick(&handle);
 
-    assert!(tick.report.batches.is_empty(), "every grain has settled");
+    assert!(tick.report.batch.is_none(), "every grain has settled");
     assert_eq!(
         grains(&handle),
         vec![
@@ -906,7 +904,7 @@ fn walkthrough_a_dig_wakes_the_edited_cell_and_the_three_above() {
     let resting = run_tick(&handle);
 
     assert!(
-        resting.report.batches.is_empty(),
+        resting.report.batch.is_none(),
         "the slab and its sand settle first"
     );
     assert_eq!(
@@ -923,7 +921,7 @@ fn walkthrough_a_dig_wakes_the_edited_cell_and_the_three_above() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.batches.len(), 1, "the dig committed");
+    assert!(tick.report.batch.is_some(), "the dig committed");
     assert_eq!(held(&handle, IVec3::new(4, 3, 4)), None, "the cell is open");
     assert_eq!(
         grains(&handle),
@@ -972,7 +970,7 @@ fn walkthrough_a_dig_wakes_the_edited_cell_and_the_three_above() {
     let settled = run_tick(&handle);
 
     assert!(
-        settled.report.batches.is_empty(),
+        settled.report.batch.is_none(),
         "the queue drains back to zero once the hole has eaten its column"
     );
 
@@ -1049,12 +1047,7 @@ fn walkthrough_the_renderer_trails_and_drops_a_failing_batch() {
     assert_geometry(&input.packed_regions().unwrap(), &current);
 
     let frame = run_tick(&handle);
-    let mut failing = frame
-        .report
-        .batches
-        .first()
-        .expect("the grain still commits")
-        .clone();
+    let mut failing = frame.report.batch.expect("the grain still commits").clone();
 
     failing.push(MicroChunkSnapshot {
         global_coords: IVec3::new(2048, 0, 0),
@@ -1100,11 +1093,7 @@ fn walkthrough_the_renderer_trails_and_drops_a_failing_batch() {
     );
 
     let resume = run_tick(&handle);
-    let resume_batch = resume
-        .report
-        .batches
-        .first()
-        .expect("the grain still commits");
+    let resume_batch = resume.report.batch.expect("the grain still commits");
 
     input.submit_batch(resume_batch.iter().cloned()).unwrap();
     input.wait_until_idle().unwrap();

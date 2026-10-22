@@ -405,13 +405,16 @@ fn a_three_tick_update_runs_three_ticks_of_arc_after_one_press() {
 
     handle.frame(period().saturating_mul(3), pressed());
 
-    let tick = expect_tick(recv_push(&handle));
+    let mut last = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 3);
+    for _ in 1..3 {
+        last = expect_tick(recv_push(&handle));
+    }
+
     assert!(
-        near(tick.player.feet.y, 11.333333),
+        near(last.player.feet.y, 11.333333),
         "three ticks of arc put the feet at {}",
-        tick.player.feet.y
+        last.player.feet.y
     );
 }
 

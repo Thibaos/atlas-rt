@@ -78,7 +78,7 @@ fn a_micro_chunk_command_diffs_against_the_world_at_commit() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.batches.len(), 1, "the command committed");
+    assert!(tick.report.batch.is_some(), "the command committed");
 
     let guard = world.read().unwrap();
 
@@ -119,7 +119,7 @@ fn an_empty_chunk_clears_every_cell_it_covers() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.batches.len(), 1, "the command committed");
+    assert!(tick.report.batch.is_some(), "the command committed");
 
     let guard = world.read().unwrap();
 
@@ -155,20 +155,19 @@ fn two_writes_in_one_tick_window_apply_in_arrival_order() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(
-        tick.report.batches.len(),
-        1,
+    assert!(
+        tick.report.batch.is_some(),
         "the two writes merge into one batch"
     );
 
-    let batch = tick.report.batches.first().expect("one batch");
+    let batch = tick.report.batch.expect("one batch");
 
     assert_eq!(
         batch.len(),
         1,
         "both writes touch one Micro-chunk, so the chunk reaches the renderer once"
     );
-    forward(&handle, batch);
+    forward(&handle, &batch);
 
     assert_eq!(
         held(&handle, IVec3::ZERO),
@@ -189,9 +188,8 @@ fn a_repeated_clear_resolves_as_a_no_op() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(
-        tick.report.batches.len(),
-        1,
+    assert!(
+        tick.report.batch.is_some(),
         "only the first clear changes the World"
     );
     assert_eq!(held(&handle, IVec3::new(3, 3, 3)), None);
@@ -201,7 +199,7 @@ fn a_repeated_clear_resolves_as_a_no_op() {
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the cell is already clear, so nothing commits"
     );
 }
@@ -223,9 +221,8 @@ fn commands_buffer_while_paused_and_apply_in_order_after_resume() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(
-        tick.report.batches.len(),
-        1,
+    assert!(
+        tick.report.batch.is_some(),
         "the buffered commands commit as one batch"
     );
     assert_eq!(
@@ -251,10 +248,8 @@ fn a_command_waits_for_a_frame_and_commits_at_the_next_one() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.ticks, 1, "the short frame owed no tick");
-    assert_eq!(
-        tick.report.batches.len(),
-        1,
+    assert!(
+        tick.report.batch.is_some(),
         "the command commits with the first tick that runs after it"
     );
     assert_eq!(held(&handle, IVec3::new(6, 6, 6)), Some(4));
@@ -272,7 +267,7 @@ fn an_out_of_lattice_command_is_dropped_and_the_sim_keeps_running() {
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the out-of-lattice cell commits nothing"
     );
     assert_eq!(held(&handle, IVec3::ZERO), Some(1));
@@ -284,11 +279,10 @@ fn an_out_of_lattice_command_is_dropped_and_the_sim_keeps_running() {
 
     let tick = run_tick(&handle);
 
-    assert!(tick.report.batches.is_empty());
+    assert!(tick.report.batch.is_none());
 
-    let tick = run_tick(&handle);
+    run_tick(&handle);
 
-    assert_eq!(tick.report.ticks, 1, "the sim keeps ticking");
     assert_eq!(held(&handle, IVec3::ZERO), Some(1));
 }
 
@@ -317,23 +311,19 @@ fn a_dig_wakes_the_cell_it_left_and_the_three_above() {
 
     let tick = run_tick(&handle);
 
-    assert!(
-        tick.report.batches.is_empty(),
-        "the grain rests on the floor"
-    );
+    assert!(tick.report.batch.is_none(), "the grain rests on the floor");
 
     handle.command(Command::Cell(clear(4, 3, 4)));
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.batches.len(), 1, "the dig committed");
+    assert!(tick.report.batch.is_some(), "the dig committed");
     assert_eq!(held(&handle, IVec3::new(4, 3, 4)), None);
 
     let tick = run_tick(&handle);
 
-    assert_eq!(
-        tick.report.batches.len(),
-        1,
+    assert!(
+        tick.report.batch.is_some(),
         "the woken grain falls without a world scan"
     );
     assert_eq!(held(&handle, IVec3::new(4, 4, 4)), None);
@@ -369,7 +359,7 @@ fn a_raycast_through_the_read_lock_sees_the_world_the_dig_left() {
 
     let tick = run_tick(&handle);
 
-    assert_eq!(tick.report.batches.len(), 1, "the dig committed");
+    assert!(tick.report.batch.is_some(), "the dig committed");
 
     let after = world.read().unwrap();
     let hits_after = after.raycast(ray);

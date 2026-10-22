@@ -429,19 +429,17 @@ fn drive(host: &mut SimHost, ticks: usize) -> Samples {
         let report = &tick.report;
 
         assert_eq!(
-            report.ticks, 1,
-            "the second frame of the pair must run one tick"
-        );
-        assert_eq!(
             report.discarded, 0,
             "one frame must not outrun the catch-up cap"
         );
 
-        if !report.batches.is_empty() {
+        if report.batch.is_some() {
             samples.moving = samples.moving.saturating_add(1);
         }
 
-        samples.chunks.push(report.batches.iter().flatten().count());
+        samples
+            .chunks
+            .push(report.batch.as_ref().map_or(0, Vec::len));
         samples.processed.push(report.processed);
         samples
             .wall

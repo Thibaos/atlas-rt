@@ -406,7 +406,8 @@ One advance of the voxel rules and player movement. Player movement resolves
 first, then voxel rules. Input is sampled outside the tick and consumed by the
 controller during the tick. A tick drains the whole Update queue, so its rate
 falls below the profile's when a tick costs more than a frame period, and the
-World never advances partially to keep up.
+World never advances partially to keep up. Each tick reaches the host as it
+finishes, so an update that runs several shows every one of them.
 _Avoid_: physics frame, render frame
 
 **Update queue**:

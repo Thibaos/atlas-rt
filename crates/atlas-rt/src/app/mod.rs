@@ -48,7 +48,7 @@ use atlas_rt::{
 use input::{Input, InputButton, InputKey};
 use launch::WorldRequest;
 use player::PlayerController;
-use sim_host::SimHost;
+use sim_host::{SimHost, Tally};
 use timers::ScheduleController;
 
 #[allow(clippy::struct_excessive_bools)]
@@ -248,18 +248,26 @@ impl App {
         self.log_since = Instant::now();
     }
 
-    /// Logs the queue's depth and the rate the rules process grains at beside
-    /// the frame rate. The rate is the queued cells the ticks applied since
-    /// the last line evaluated, over that window, so the lines before the
-    /// first tick reports one carry the frame rate alone.
+    /// Logs the simulation's own numbers beside the frame rate: the queue's
+    /// depth, the grains one tick serves, the tick rate and the mean tick's
+    /// wall time. The tick figures are the sim's counters over the same window,
+    /// so a burst of catch-up ticks cannot read as a rate and the per-tick cost
+    /// stays visible. The lines before the first tick reports one carry the
+    /// frame rate alone.
     fn log_queue(&mut self, fps: f32, window: Duration) {
         let queued = self.sim.as_ref().and_then(SimHost::queued);
-        let processed = self.sim.as_mut().map_or(0, SimHost::take_processed);
+        let tally = self
+            .sim
+            .as_mut()
+            .map_or_else(Tally::default, SimHost::take_tally);
 
         if let Some(now) = queued {
-            let rate = processed_rate(processed, window);
+            let rates = TickRates::over(tally, window);
 
-            info!("{fps:.0} fps, {now} grains in queue, {rate:.0} grains processed/s");
+            info!(
+                "{fps:.0} fps, {now} grains in queue, {} grains/tick, {:.1} ticks/s, {:.1} ms/tick",
+                rates.grains_per_tick, rates.ticks_per_second, rates.millis_per_tick
+            );
         } else {
             info!("{fps:.0} fps");
         }
@@ -547,9 +555,43 @@ impl ApplicationHandler for App {
     }
 }
 
-/// The queued cells the rules evaluated per second over `window`.
-fn processed_rate(processed: usize, window: Duration) -> f64 {
-    processed as f64 / window.as_secs_f64()
+/// What one log window's tick counters mean per second, per tick and per
+/// grain served. The tick count is the sim's own, so a window that caught a
+/// catch-up burst divides the burst by the ticks in it rather than reporting
+/// the burst as a rate.
+struct TickRates {
+    ticks_per_second: f32,
+    millis_per_tick: f32,
+    grains_per_tick: usize,
+}
+
+impl TickRates {
+    fn over(tally: Tally, window: Duration) -> Self {
+        let seconds = window.as_secs_f32();
+
+        let ticks_per_second = if seconds > 0.0 {
+            tally.ticks as f32 / seconds
+        } else {
+            0.0
+        };
+
+        let millis_per_tick = if tally.ticks > 0 {
+            tally.time.as_secs_f32() * 1000.0 / tally.ticks as f32
+        } else {
+            0.0
+        };
+
+        let grains_per_tick = tally
+            .processed
+            .checked_div(usize::try_from(tally.ticks).unwrap_or(1))
+            .unwrap_or(0);
+
+        Self {
+            ticks_per_second,
+            millis_per_tick,
+            grains_per_tick,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -557,9 +599,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_processed_rate_is_the_grains_evaluated_per_second() {
-        assert!((processed_rate(6_000, Duration::from_secs(1)) - 6_000.0).abs() < 0.0001);
-        assert!(processed_rate(0, Duration::from_secs(1)).abs() < 0.0001);
-        assert!((processed_rate(5_000, Duration::from_secs(2)) - 2_500.0).abs() < 0.0001);
+    fn the_tick_rates_divide_the_tally_by_the_ticks_in_the_window() {
+        let burst = Tally {
+            ticks: 5,
+            processed: 5_553_840,
+            time: Duration::from_millis(2_975),
+        };
+        let rates = TickRates::over(burst, Duration::from_secs(1));
+
+        assert_eq!(rates.grains_per_tick, 1_110_768, "the burst's five ticks");
+        assert!(
+            (rates.ticks_per_second - 5.0).abs() < 0.0001,
+            "the rate is the ticks the window caught"
+        );
+        assert!(
+            (rates.millis_per_tick - 595.0).abs() < 0.001,
+            "the cost is per tick, not per window"
+        );
+
+        let idle = TickRates::over(Tally::default(), Duration::from_secs(1));
+
+        assert_eq!(idle.grains_per_tick, 0);
+        assert!(idle.ticks_per_second.abs() < 0.0001);
+        assert!(idle.millis_per_tick.abs() < 0.0001);
     }
 }

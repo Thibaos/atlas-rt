@@ -17,6 +17,7 @@ use tracing::{error, warn};
 use atlas_rt::host::ViewInterpolation;
 use atlas_rt::sim::{
     self, Activation, Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push,
+    UpdateReport,
 };
 use atlas_rt::world::World;
 use atlas_rt::world::diff::batch::TrackedCoords;
@@ -26,6 +27,26 @@ use atlas_rt::world::material::PhysicalMaterialTable;
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);
 const READY_POLL: Duration = Duration::from_millis(50);
+
+/// The ticks the sim reported since the last read, the grains they served, and
+/// the wall time they spent, so the frame log can print a rate and a cost that
+/// a catch-up burst cannot fake.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub ticks: u32,
+    pub processed: usize,
+    pub time: Duration,
+}
+
+impl Tally {
+    const fn record(&mut self, report: &UpdateReport) {
+        self.ticks = self.ticks.saturating_add(1);
+        self.processed = self.processed.saturating_add(report.processed);
+        self.time = self
+            .time
+            .saturating_add(report.tick_time.saturating_add(report.commit_time));
+    }
+}
 
 /// What the host holds until the renderer exists to receive it.
 struct Handover {
@@ -43,7 +64,7 @@ pub struct SimHost {
     ready: bool,
     waited: bool,
     queued: Option<usize>,
-    processed: usize,
+    tally: Tally,
 }
 
 impl SimHost {
@@ -77,7 +98,7 @@ impl SimHost {
             ready: false,
             waited: false,
             queued: None,
-            processed: 0,
+            tally: Tally::default(),
         })
     }
 
@@ -104,7 +125,7 @@ impl SimHost {
         );
 
         self.queued = None;
-        self.processed = 0;
+        self.tally = Tally::default();
 
         self.handle.activate(Activation {
             world,
@@ -229,12 +250,11 @@ impl SimHost {
         self.queued
     }
 
-    /// The queued cells the ticks applied since the last call evaluated, taken
-    /// and cleared, so a caller that divides by its own window gets the rate
-    /// over that window.
-    #[must_use]
-    pub fn take_processed(&mut self) -> usize {
-        mem::take(&mut self.processed)
+    /// The ticks, grains and wall time the ticks applied since the last call
+    /// reported, taken and cleared, so a caller that divides by its own window
+    /// gets the rates over that window.
+    pub fn take_tally(&mut self) -> Tally {
+        mem::take(&mut self.tally)
     }
 
     /// The pose one frame draws from the pushes applied so far: feet
@@ -257,7 +277,9 @@ impl SimHost {
                 self.ready = true;
             }
             Push::Tick(tick) => {
-                for batch in tick.report.batches {
+                self.tally.record(&tick.report);
+
+                if let Some(batch) = tick.report.batch {
                     forward_batch(forward, batch);
                 }
 
@@ -269,7 +291,6 @@ impl SimHost {
                 }
 
                 self.queued = Some(tick.report.queued);
-                self.processed = self.processed.saturating_add(tick.report.processed);
 
                 self.view
                     .advance(Instant::now(), tick.player, tick.remainder);
@@ -429,7 +450,7 @@ mod tests {
         let tick = take_tick(&host);
         let feet = tick.player.feet;
 
-        assert!(tick.report.batches.is_empty(), "no edits means no batch");
+        assert!(tick.report.batch.is_none(), "no edits means no batch");
         assert_ne!(feet, before.feet, "the forward sample moved the feet");
 
         let mut collector = Collector::default();
@@ -552,9 +573,8 @@ mod tests {
 
         let tick = take_tick(&host);
 
-        assert_eq!(
-            tick.report.batches.len(),
-            1,
+        assert!(
+            tick.report.batch.is_some(),
             "the command's batch rides its tick"
         );
 
@@ -621,11 +641,15 @@ mod tests {
     }
 
     #[test]
-    fn the_host_accumulates_the_grains_the_ticks_processed() {
+    fn the_host_accumulates_the_ticks_and_grains_the_sim_reported() {
         let (mut host, _world) = ready_host();
         let mut total = 0usize;
 
-        assert_eq!(host.take_processed(), 0, "no tick has reported yet");
+        assert_eq!(
+            host.take_tally(),
+            Tally::default(),
+            "no tick has reported yet"
+        );
 
         for x in 0..2 {
             host.command(Command::Cell(VoxelEdit {
@@ -649,11 +673,14 @@ mod tests {
             total, 8,
             "each command's four woken cells are evaluated by the tick after its commit"
         );
+
+        let tally = host.take_tally();
+
+        assert_eq!(tally.ticks, 4, "one tick per push the host applied");
         assert_eq!(
-            host.take_processed(),
-            total,
-            "the grains a window's ticks evaluated reach the log's reader"
+            tally.processed, total,
+            "the grains a window's ticks served reach the log's reader"
         );
-        assert_eq!(host.take_processed(), 0, "taking the count clears it");
+        assert_eq!(host.take_tally(), Tally::default(), "taking clears it");
     }
 }

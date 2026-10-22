@@ -55,14 +55,12 @@ fn grains(handle: &Handle) -> Vec<IVec3> {
     cells
 }
 
-/// Feeds one whole period, requires exactly one tick, and hands back the
-/// batches that tick submitted.
-fn one_tick(handle: &Handle) -> Vec<Vec<MicroChunkSnapshot>> {
+/// Feeds one whole period, takes the one tick it owes, and hands back the batch
+/// that tick submitted.
+fn one_tick(handle: &Handle) -> Option<Vec<MicroChunkSnapshot>> {
     let tick = run_tick(handle);
 
-    assert_eq!(tick.report.ticks, 1, "one frame owes one tick");
-
-    tick.report.batches
+    tick.report.batch
 }
 
 /// A renderer input holding the World as it stands, so the batches that
@@ -127,22 +125,16 @@ fn a_grain_falls_straight_down_while_the_column_under_it_is_open() {
 
     for y in [5, 4, 3, 2, 1] {
         let before = emit_snapshots(&handle.world().read().unwrap()).unwrap();
-        let batches = one_tick(&handle);
+        let batch = one_tick(&handle).expect("a moving grain commits a batch");
 
-        assert_eq!(batches.len(), 1, "a moving grain commits one batch");
-        handoff(
-            &handle,
-            &input,
-            &before,
-            batches.first().expect("one batch"),
-        );
+        handoff(&handle, &input, &before, &batch);
         assert_eq!(grains(&handle), vec![IVec3::new(6, y, 6)]);
     }
 
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the settled grain submits nothing"
     );
     assert!(tick.report.commit_time.is_zero(), "nothing left to commit");
@@ -150,7 +142,7 @@ fn a_grain_falls_straight_down_while_the_column_under_it_is_open() {
 }
 
 #[test]
-fn two_due_ticks_submit_two_batches_in_tick_order() {
+fn two_due_ticks_push_their_own_batches_in_tick_order() {
     let (_world, handle) = spawn_sim();
     let mut edits = floor();
 
@@ -162,13 +154,14 @@ fn two_due_ticks_submit_two_batches_in_tick_order() {
 
     feed(&handle, part(9, 4));
 
-    let tick = expect_tick(recv_push(&handle));
+    for _ in 0..2 {
+        let tick = expect_tick(recv_push(&handle));
+        let batch = tick
+            .report
+            .batch
+            .expect("each due tick submits the batch it committed");
 
-    assert_eq!(tick.report.ticks, 2, "two whole periods are owed two ticks");
-    assert_eq!(tick.report.batches.len(), 2, "one batch per due tick");
-
-    for batch in &tick.report.batches {
-        submit(&input, batch);
+        submit(&input, &batch);
     }
 
     let after = emit_snapshots(&handle.world().read().unwrap()).unwrap();
@@ -216,10 +209,8 @@ fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
         "the column lands on the floor with its spacing intact"
     );
 
-    let batches = one_tick(&handle);
-
     assert!(
-        batches.is_empty(),
+        one_tick(&handle).is_none(),
         "the stack rests while the floor grain is still queued, which holds the grain above it"
     );
     assert_eq!(
@@ -257,7 +248,7 @@ fn a_falling_column_stays_coherent_and_spreads_into_a_row_at_the_floor() {
 
     let tick = run_tick(&handle);
 
-    assert!(tick.report.batches.is_empty(), "the row has settled");
+    assert!(tick.report.batch.is_none(), "the row has settled");
 }
 
 #[test]
@@ -270,9 +261,7 @@ fn a_grain_slides_a_diagonal_when_the_cell_below_holds_it() {
     handle.activate(granular_activation_of(&edits));
     wait_ready(&handle);
 
-    let batches = one_tick(&handle);
-
-    assert_eq!(batches.len(), 1);
+    assert!(one_tick(&handle).is_some());
     assert_eq!(
         grains(&handle),
         vec![IVec3::new(7, 1, 6)],
@@ -287,7 +276,7 @@ fn a_grain_slides_a_diagonal_when_the_cell_below_holds_it() {
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the grain that landed on the floor settles"
     );
 }
@@ -310,7 +299,7 @@ fn a_corner_squeeze_is_sealed_at_the_grains_own_height() {
         let tick = run_tick(&handle);
 
         assert!(
-            tick.report.batches.is_empty(),
+            tick.report.batch.is_none(),
             "every diagonal below is open, so only the sealed flanks hold the grain"
         );
         assert_eq!(grains(&handle), vec![IVec3::new(6, 2, 6)]);
@@ -380,7 +369,7 @@ fn a_diagonal_on_the_z_axis_follows_the_same_parity_ties() {
         let tick = run_tick(&handle);
 
         assert!(
-            tick.report.batches.is_empty(),
+            tick.report.batch.is_none(),
             "the grain has settled on the floor"
         );
     }
@@ -417,7 +406,7 @@ fn a_contested_diagonal_settles_within_one_tick() {
 
     let tick = run_tick(&handle);
 
-    assert!(tick.report.batches.is_empty(), "every grain has settled");
+    assert!(tick.report.batch.is_none(), "every grain has settled");
     assert_eq!(
         grains(&handle),
         vec![
@@ -455,7 +444,7 @@ fn a_grain_sealed_by_a_pillar_follows_the_cell_a_fall_vacated() {
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the stack rests: every diagonal below the top grain is the floor"
     );
 }
@@ -503,7 +492,7 @@ fn a_grain_settles_on_an_occupied_cell_that_is_not_solid() {
     let tick = run_tick(&handle);
 
     assert!(
-        tick.report.batches.is_empty(),
+        tick.report.batch.is_none(),
         "the cell below is neither solid nor a settled grain, so no diagonal is tried"
     );
     assert_eq!(grains(&handle), vec![IVec3::new(6, 2, 6)]);
@@ -528,7 +517,7 @@ fn a_grain_at_the_lattice_edge_settles_as_against_a_solid() {
         let tick = run_tick(&handle);
 
         assert!(
-            tick.report.batches.is_empty(),
+            tick.report.batch.is_none(),
             "a destination outside the lattice is unavailable, so both grains settle"
         );
     }
@@ -561,11 +550,8 @@ fn every_activation_reseeds_the_queue() {
     handle.activate(scene());
     wait_ready(&handle);
 
-    let batches = one_tick(&handle);
-
-    assert_eq!(
-        batches.len(),
-        1,
+    assert!(
+        one_tick(&handle).is_some(),
         "the new World's grain moved on its first tick"
     );
     assert_eq!(

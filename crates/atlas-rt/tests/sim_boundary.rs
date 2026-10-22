@@ -31,14 +31,9 @@ fn frames_before_the_first_activation_run_no_ticks() {
 
     assert!(wait_ready(&handle).grounded);
 
-    feed(&handle, period());
+    run_tick(&handle);
 
-    let tick = expect_tick(recv_push(&handle));
-
-    assert_eq!(
-        tick.report.ticks, 1,
-        "the frames before activation left no owed time"
-    );
+    assert_silent(&handle);
 }
 
 #[test]
@@ -215,10 +210,9 @@ fn a_clear_is_an_activation_with_an_empty_world_and_still_ticks() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(
-        tick.report.ticks, 1,
-        "a clear is an activation, so it ticks"
-    );
+    assert_eq!(tick.report.queued, 0, "a clear ticks an empty queue");
+
+    assert_silent(&handle);
 }
 
 #[test]
@@ -236,9 +230,8 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1);
-    assert_eq!(tick.report.batches.len(), 1, "the command committed");
-    forward(&handle, tick.report.batches.first().expect("one batch"));
+    let batch = tick.report.batch.expect("the command committed");
+    forward(&handle, &batch);
     assert_eq!(held(&handle, IVec3::new(5, 5, 5)), Some(3));
 
     feed(&handle, period());
@@ -246,7 +239,7 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
     let tick = expect_tick(recv_push(&handle));
 
     assert!(tick.report.commit_time.is_zero(), "no command to commit");
-    assert!(tick.report.batches.is_empty());
+    assert!(tick.report.batch.is_none());
 
     feed(&handle, part(9, 10));
     assert_silent(&handle);
@@ -265,8 +258,10 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1, "the activation reset the accumulator");
-    assert_eq!(tick.report.batches.len(), 1, "the queued command survived");
+    assert!(
+        tick.report.batch.is_some(),
+        "the queued command survived the activation"
+    );
     assert!(tick.snap, "the first update after an activation snaps");
     assert_eq!(held(&handle, IVec3::new(7, 7, 7)), Some(5));
     assert_eq!(held(&handle, IVec3::new(1, 1, 1)), Some(2));
@@ -279,7 +274,7 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
 }
 
 #[test]
-fn an_update_pushes_once_with_report_remainder_and_snap() {
+fn a_multi_tick_update_pushes_each_tick_as_it_finishes() {
     let (_world, handle) = spawn_sim();
 
     handle.command(Command::Cell(set(1, 1, 1, 4)));
@@ -288,23 +283,43 @@ fn an_update_pushes_once_with_report_remainder_and_snap() {
 
     feed(&handle, period().saturating_mul(3));
 
-    let tick = expect_tick(recv_push(&handle));
+    let first = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 3);
-    assert_eq!(tick.report.discarded, 0);
-    assert_eq!(tick.report.batches.len(), 1);
-    forward(&handle, tick.report.batches.first().expect("one batch"));
-    assert!(tick.snap);
-    assert!(tick.remainder.is_zero());
+    let batch = first
+        .report
+        .batch
+        .expect("the command committed on the update's first tick");
+    forward(&handle, &batch);
+    assert_eq!(first.report.discarded, 0);
+    assert!(first.snap, "the update's first tick carries the snap");
+    assert!(first.remainder.is_zero());
+
+    for _ in 1..3 {
+        let tick = expect_tick(recv_push(&handle));
+
+        assert_eq!(
+            tick.report.discarded, 0,
+            "only the update's first tick reports the drop"
+        );
+        assert!(
+            tick.report.batch.is_none(),
+            "the command commits once per update"
+        );
+        assert!(!tick.snap, "only the update's first tick snaps");
+        assert!(
+            tick.remainder.is_zero(),
+            "three whole periods leave no remainder"
+        );
+    }
+
     assert_silent(&handle);
 
     feed(&handle, period().saturating_add(part(1, 2)));
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1);
     assert_eq!(tick.report.discarded, 0);
-    assert!(tick.report.batches.is_empty());
+    assert!(tick.report.batch.is_none());
     assert!(tick.report.commit_time.is_zero());
     assert!(!tick.snap);
     assert_eq!(tick.remainder, part(1, 2));
@@ -342,7 +357,7 @@ fn the_report_carries_the_cells_the_last_tick_left_queued() {
         .find(|tick| tick.report.queued == 0)
         .expect("the settled grain leaves the queue empty");
 
-    assert_eq!(settled.report.ticks, 1);
+    assert_eq!(settled.report.queued, 0);
 
     let resting = run_tick(&handle);
 
@@ -361,11 +376,20 @@ fn an_update_runs_at_most_five_ticks_and_reports_the_discard() {
 
     feed(&handle, period().saturating_mul(12));
 
-    let tick = expect_tick(recv_push(&handle));
+    let first = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 5, "catch-up is capped at five ticks");
-    assert_eq!(tick.report.discarded, 7, "the rest is reported, not run");
-    assert!(tick.remainder.is_zero());
+    assert_eq!(first.report.discarded, 7, "the rest is reported, not run");
+    assert!(first.remainder.is_zero());
+
+    for _ in 1..5 {
+        let tick = expect_tick(recv_push(&handle));
+
+        assert_eq!(
+            tick.report.discarded, 0,
+            "only the update's first tick reports the drop"
+        );
+    }
+
     assert_silent(&handle);
 }
 
@@ -381,9 +405,9 @@ fn ticks_only_run_while_frames_arrive() {
 
     feed(&handle, part(2, 10));
 
-    let tick = expect_tick(recv_push(&handle));
+    expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1, "only the frames' time is owed");
+    assert_silent(&handle);
 }
 
 #[test]
@@ -403,7 +427,7 @@ fn the_write_lock_stalls_a_tick_until_the_host_releases_it() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1);
+    assert!(tick.report.commit_time.is_zero());
 }
 
 #[test]
@@ -428,8 +452,7 @@ fn commit_waits_for_the_write_lock_while_the_host_reads() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1);
-    assert_eq!(tick.report.batches.len(), 1);
+    assert!(tick.report.batch.is_some(), "the command committed");
     assert!(
         !tick.report.commit_time.is_zero(),
         "the commit window carries the lock wait, measured {:?}",
@@ -455,7 +478,6 @@ fn evaluation_takes_only_the_read_lock_and_pushes_while_the_host_reads() {
             .expect("the tick must reach the host while the host reads"),
     );
 
-    assert_eq!(tick.report.ticks, 1);
     assert!(
         tick.report.commit_time.is_zero(),
         "no queued command means the write lock is never taken"
@@ -564,10 +586,6 @@ fn pausing_stops_accumulation_and_resume_starts_from_an_empty_accumulator() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(
-        tick.report.ticks, 1,
-        "resume starts with an empty accumulator"
-    );
     assert_eq!(tick.report.discarded, 0);
     assert_eq!(tick.remainder, part(2, 10));
     assert_silent(&handle);
@@ -587,14 +605,18 @@ fn time_owed_while_paused_is_neither_run_nor_reported_as_a_drop() {
 
     feed(&handle, period().saturating_mul(12));
 
-    let tick = expect_tick(recv_push(&handle));
+    let first = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 5, "catch-up is capped at five ticks");
     assert_eq!(
-        tick.report.discarded, 7,
+        first.report.discarded, 7,
         "the paused frames owed nothing to discard"
     );
-    assert!(tick.remainder.is_zero());
+    assert!(first.remainder.is_zero());
+
+    for _ in 1..5 {
+        expect_tick(recv_push(&handle));
+    }
+
     assert_silent(&handle);
 }
 
@@ -616,9 +638,9 @@ fn activation_while_paused_stays_paused_until_the_host_resumes() {
     handle.set_paused(false);
     feed(&handle, period());
 
-    let tick = expect_tick(recv_push(&handle));
+    expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1, "the activation kept the pause");
+    assert_silent(&handle);
 }
 
 #[test]
@@ -636,7 +658,6 @@ fn the_profile_survives_activation_and_a_different_profile_needs_a_new_sim() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 1);
     assert!(tick.remainder.is_zero());
 
     handle.activate(activation_of(&[set(2, 2, 2, 1)]));
@@ -646,11 +667,10 @@ fn the_profile_survives_activation_and_a_different_profile_needs_a_new_sim() {
 
     let tick = expect_tick(recv_push(&handle));
 
-    assert_eq!(
-        tick.report.ticks, 1,
+    assert!(
+        tick.remainder.is_zero(),
         "the swap left the controller's profile in place"
     );
-    assert!(tick.remainder.is_zero());
 }
 
 /// A floor wide enough for three ticks of a walk to stay on it.
@@ -710,15 +730,16 @@ fn burst(scene: &[VoxelEdit], frames: &[(Duration, InputSample)]) -> (Handle, Pl
 fn a_burst_of_queued_frames_coalesces_into_one_update() {
     let (handle, _) = burst(&[set(0, 0, 0, 1)], &[(period(), InputSample::default()); 3]);
 
-    let tick = expect_tick(recv_push(&handle));
+    let mut last = expect_tick(recv_push(&handle));
 
-    assert_eq!(
-        tick.report.ticks, 3,
-        "the burst's three periods are one update"
-    );
-    assert_eq!(tick.report.discarded, 0);
+    assert_eq!(last.report.discarded, 0);
+
+    for _ in 1..3 {
+        last = expect_tick(recv_push(&handle));
+    }
+
     assert!(
-        tick.remainder.is_zero(),
+        last.remainder.is_zero(),
         "the burst divided into whole ticks with nothing left over"
     );
     assert_silent(&handle);
@@ -731,14 +752,23 @@ fn a_burst_past_the_catch_up_cap_reports_the_discarded_ticks() {
         &[(period(), InputSample::default()); 12],
     );
 
-    let tick = expect_tick(recv_push(&handle));
+    let first = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 5, "catch-up is capped at five ticks");
     assert_eq!(
-        tick.report.discarded, 7,
+        first.report.discarded, 7,
         "the rest of the burst is reported, not run"
     );
-    assert!(tick.remainder.is_zero());
+    assert!(first.remainder.is_zero());
+
+    for _ in 1..5 {
+        let tick = expect_tick(recv_push(&handle));
+
+        assert_eq!(
+            tick.report.discarded, 0,
+            "only the update's first tick reports the drop"
+        );
+    }
+
     assert_silent(&handle);
 }
 
@@ -755,20 +785,23 @@ fn a_burst_applies_the_newest_movement_sample() {
         ],
     );
 
-    let tick = expect_tick(recv_push(&handle));
+    let mut last = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 3, "the whole burst is one update");
+    for _ in 1..3 {
+        last = expect_tick(recv_push(&handle));
+    }
+
     assert!(
-        near(tick.player.feet.x, spawn.feet.x - 3.0 * DISTANCE),
+        near(last.player.feet.x, spawn.feet.x - 3.0 * DISTANCE),
         "only the newest movement ran, so three ticks walked west from {}: {}",
         spawn.feet.x,
-        tick.player.feet.x
+        last.player.feet.x
     );
     assert_eq!(
-        tick.player.feet.y, spawn.feet.y,
+        last.player.feet.y, spawn.feet.y,
         "the walk stayed on the floor instead of leaving it"
     );
-    assert!(tick.player.grounded);
+    assert!(last.player.grounded);
 }
 
 #[test]
@@ -782,17 +815,20 @@ fn a_jump_edge_inside_a_coalesced_burst_still_launches() {
         ],
     );
 
-    let tick = expect_tick(recv_push(&handle));
+    let mut last = expect_tick(recv_push(&handle));
 
-    assert_eq!(tick.report.ticks, 3);
+    for _ in 1..3 {
+        last = expect_tick(recv_push(&handle));
+    }
+
     assert!(
-        near(tick.player.feet.y, spawn.feet.y + 7.333333),
+        near(last.player.feet.y, spawn.feet.y + 7.333333),
         "the press on the first frame of the run launched three ticks of arc from {}: {}",
         spawn.feet.y,
-        tick.player.feet.y
+        last.player.feet.y
     );
-    assert_eq!(tick.player.feet.x, spawn.feet.x);
-    assert_eq!(tick.player.feet.z, spawn.feet.z);
+    assert_eq!(last.player.feet.x, spawn.feet.x);
+    assert_eq!(last.player.feet.z, spawn.feet.z);
 }
 
 #[test]
@@ -811,18 +847,15 @@ fn a_command_between_frames_ends_the_coalesced_run() {
 
     let before = expect_tick(recv_push(&handle));
 
-    assert_eq!(before.report.ticks, 1, "the command ended the frame run");
     assert!(
-        before.report.batches.is_empty(),
+        before.report.batch.is_none(),
         "the command had not arrived when the first run ticked"
     );
 
     let after = expect_tick(recv_push(&handle));
 
-    assert_eq!(after.report.ticks, 1, "the second run keeps its own time");
-    assert_eq!(
-        after.report.batches.len(),
-        1,
+    assert!(
+        after.report.batch.is_some(),
         "the command committed in the second update"
     );
     assert_eq!(held(&handle, IVec3::new(5, 5, 5)), Some(3));

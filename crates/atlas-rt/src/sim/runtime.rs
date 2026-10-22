@@ -66,7 +66,7 @@ pub enum Command {
 }
 
 /// What the sim hands back: an activation batch, the readiness reply, or one
-/// push per update that ran ticks.
+/// tick's end.
 #[derive(Debug)]
 pub enum Push {
     ActivationBatch(Vec<MicroChunkSnapshot>),
@@ -74,7 +74,8 @@ pub enum Push {
     Tick(TickEnd),
 }
 
-/// One update's tick-end payload, sent once per update that ran ticks.
+/// One tick's end, sent as the tick finishes rather than at the end of the
+/// update it belongs to, so the host shows every step the World took.
 #[derive(Debug)]
 pub struct TickEnd {
     pub player: PlayerState,
@@ -83,16 +84,16 @@ pub struct TickEnd {
     pub report: UpdateReport,
 }
 
-/// What one update did: ticks run, batches committed in tick order, ticks
-/// past the catch-up cap, the summed evaluation and commit times, and the
-/// grains the last tick left queued.
+/// What one tick did: the batch its commits produced, the grains the queue
+/// served, and the two windows it spent.
 ///
-/// `processed` is the queued cells the rules evaluated across those ticks,
-/// moved or not, which is what the host's log rate divides by its window.
+/// `discarded` rides the first tick of an update, the only one that can report
+/// what the scheduler dropped before the update ran. `processed` is the queued
+/// cells the rules evaluated, moved or not, which is the scene's own size and
+/// what the host's log divides by the ticks it reports.
 #[derive(Debug)]
 pub struct UpdateReport {
-    pub ticks: u32,
-    pub batches: Vec<Vec<MicroChunkSnapshot>>,
+    pub batch: Option<Vec<MicroChunkSnapshot>>,
     pub discarded: u64,
     pub processed: usize,
     pub queued: usize,
@@ -390,33 +391,35 @@ impl Runtime {
             return;
         }
 
-        let snap = mem::take(&mut self.snap_pending);
-        let mut report = UpdateReport {
-            ticks,
-            batches: Vec::new(),
-            discarded,
-            processed: 0,
-            queued: self.queue.len(),
-            tick_time: Duration::ZERO,
-            commit_time: Duration::ZERO,
-        };
+        let mut snap = mem::take(&mut self.snap_pending);
 
-        for _ in 0..ticks {
+        for index in 0..ticks {
             if self.shutting_down() {
                 return;
             }
 
+            let mut report = UpdateReport {
+                batch: None,
+                discarded: if index == 0 { discarded } else { 0 },
+                processed: 0,
+                queued: self.queue.len(),
+                tick_time: Duration::ZERO,
+                commit_time: Duration::ZERO,
+            };
+
             self.tick(&mut report);
+
+            let push = Push::Tick(TickEnd {
+                player: self.player,
+                remainder: self.scheduler.remainder(),
+                snap,
+                report,
+            });
+
+            let _ = self.pushes.send(push);
+
+            snap = false;
         }
-
-        let push = Push::Tick(TickEnd {
-            player: self.player,
-            remainder: self.scheduler.remainder(),
-            snap,
-            report,
-        });
-
-        let _ = self.pushes.send(push);
     }
 
     /// One tick: the player moves and the voxel rules drain the queue under
@@ -425,14 +428,11 @@ impl Runtime {
         let (evaluated, processed) = self.evaluate();
         let (committed, batch) = self.commit();
 
-        report.tick_time = report.tick_time.saturating_add(evaluated);
-        report.commit_time = report.commit_time.saturating_add(committed);
-        report.processed = report.processed.saturating_add(processed);
+        report.tick_time = evaluated;
+        report.commit_time = committed;
+        report.processed = processed;
         report.queued = self.queue.len();
-
-        if let Some(snapshots) = batch {
-            report.batches.push(snapshots);
-        }
+        report.batch = batch;
     }
 
     fn on_command(&mut self, command: Command) {

@@ -23,7 +23,10 @@ starts with no accumulated time and runs no immediate tick. The frames already
 queued behind the one an update starts from are merged into that update, so the
 elapsed time one slow tick accumulates arrives as a single owed batch and the
 discard reported for it is what the World's rate fell short by, as
-[0020](0020-in-tick-drain.md) records.
+[0020](0020-in-tick-drain.md) records. Each tick reaches the host as it finishes
+rather than at the end of the update, so an update of several shows every step,
+and the drop count and the snap flag ride the update's first tick
+([0022](0022-serve-each-tick-as-it-finishes.md)).
 
 ## Considered options
 
@@ -78,12 +81,12 @@ is ready.
 ## Timing handed to the host
 
 The tick-end push carries the sub-tick remainder as of that tick, plus a snap
-flag. The host computes `(remainder + elapsed_since_applying_that_push) /
-tick_period`, clamped to `[0, 1]`. The simulation reports and the host
-computes. Host-side arrival timestamping was rejected because it folds channel
-and frame-scheduling jitter into the value interpolation exists to smooth, and
-a reply-channel query buys no accuracy over the remainder that already rides
-the push.
+flag, and there is one push per tick. The host computes `(remainder +
+elapsed_since_applying_that_push) / tick_period`, clamped to `[0, 1]`. The
+simulation reports and the host computes. Host-side arrival timestamping was
+rejected because it folds channel and frame-scheduling jitter into the value
+interpolation exists to smooth, and a reply-channel query buys no accuracy over
+the remainder that already rides the push.
 
 The remainder and the snap flag are siblings of `PlayerState` on the push, not
 fields of it. Scheduler timing and delivery annotation are not player state.
@@ -171,4 +174,7 @@ tick fits in a frame period, a raycast's one-tick staleness is now up to about
 0.6 s on the sand ball, and a host edit waits through the tail of the evaluation
 window and the commit rather than on the drain alone. Amended (2026-10-22): the
 budget check holds a rule-work bound per drained cell rather than the rail's
-fixed bound, per [0021](0021-drain-the-whole-queue.md).
+fixed bound, per [0021](0021-drain-the-whole-queue.md). Amended (2026-10-22): a
+tick reaches the host as it finishes, one push per tick, per
+[0022](0022-serve-each-tick-as-it-finishes.md); the five-tick cap and its
+discard are unchanged.
