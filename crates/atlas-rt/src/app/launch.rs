@@ -6,11 +6,13 @@
 //! the Seed so a run repeats, and `--extent` bounds a Generation's ground.
 //! The Seed's bits are reinterpreted from the host's signed integer.
 //!
-//! `--world-type` names the generated World type: `terrain`, the default, or
+//! `--world-type` names the generated World type: `terrain`, the default,
 //! `sand-ball`, which writes a ball of Sand above a one-cell floor at the
-//! Lattice's bottom. The ball is a fixed shape, so `--seed` and `--extent` are
-//! ignored beside it. A World type and a `--world` file are two World sources,
-//! so naming both is refused.
+//! Lattice's bottom, or `raining`, which writes a Bedrock plate full of holes
+//! above the same floor and lets the simulation rain Sand through them. The
+//! ball and the rain are fixed shapes, so `--seed` and `--extent` are ignored
+//! beside them. A World type and a `--world` file are two World sources, so
+//! naming both is refused.
 //!
 //! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
 //! character controller and leaves the simulation running, so the free camera
@@ -30,13 +32,14 @@ use glam::IVec3;
 
 use atlas_rt::world::generation::GenerationParams;
 
-/// The World a run builds at startup: a `.vox` load, a Generation or the sand
-/// ball.
+/// The World a run builds at startup: a `.vox` load, a Generation, the sand
+/// ball or the rain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldRequest {
     Load(String),
     Generate(GenerationParams),
     SandBall,
+    Raining,
 }
 
 /// The generated World type `--world-type` names. Terrain is the default, so a
@@ -45,6 +48,7 @@ pub enum WorldRequest {
 enum WorldType {
     Terrain,
     SandBall,
+    Raining,
 }
 
 /// A parsed command line: the World to build, whether the camera flies free of
@@ -64,8 +68,8 @@ pub struct Launch {
 /// # Errors
 ///
 /// Returns a reason when a value flag has no value, when a Seed or extent is
-/// not an integer, when a World type is not `terrain` or `sand-ball`, or when
-/// `--extent` or `--world-type` is given beside `--world`.
+/// not an integer, when a World type is not `terrain`, `sand-ball` or
+/// `raining`, or when `--extent` or `--world-type` is given beside `--world`.
 pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world = None;
     let mut world_type = None;
@@ -105,6 +109,7 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
             ));
         }
         (_, Some(WorldType::SandBall), _) => WorldRequest::SandBall,
+        (_, Some(WorldType::Raining), _) => WorldRequest::Raining,
         (_, _, Some(seed)) => WorldRequest::Generate(generation_params(seed, extent)),
         (Some(_), _, None) if extent.is_some() => {
             return Err(String::from(
@@ -164,8 +169,9 @@ fn parse_world_type(value: &str) -> Result<WorldType, String> {
     match value {
         "terrain" => Ok(WorldType::Terrain),
         "sand-ball" => Ok(WorldType::SandBall),
+        "raining" => Ok(WorldType::Raining),
         _ => Err(format!(
-            "the world type {value} is not terrain or sand-ball"
+            "the world type {value} is not terrain, sand-ball or raining"
         )),
     }
 }
@@ -255,6 +261,39 @@ mod tests {
         assert_eq!(
             launch(&["--seed", "42"]).request,
             WorldRequest::Generate(GenerationParams::full_lattice(42))
+        );
+    }
+
+    #[test]
+    fn a_raining_world_type_builds_the_rain() {
+        assert_eq!(
+            launch(&["--world-type", "raining"]).request,
+            WorldRequest::Raining
+        );
+    }
+
+    #[test]
+    fn the_rain_ignores_a_seed_and_an_extent() {
+        assert_eq!(
+            launch(&["--world-type", "raining", "--seed", "7", "--extent", "128"]).request,
+            WorldRequest::Raining
+        );
+    }
+
+    #[test]
+    fn a_world_type_beside_a_world_is_refused() {
+        assert!(parse(&args(&["--world", "sponza.vox", "--world-type", "raining"])).is_err());
+    }
+
+    #[test]
+    fn an_unrecognized_world_type_names_the_accepted_values() {
+        let refused = parse(&args(&["--world-type", "bogus"]))
+            .err()
+            .unwrap_or_else(|| panic!("an unrecognized world type must be refused"));
+
+        assert_eq!(
+            refused, "the world type bogus is not terrain, sand-ball or raining",
+            "the reason lists every accepted value"
         );
     }
 

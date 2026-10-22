@@ -14,11 +14,13 @@ use tracing::error;
 use crate::world::World;
 use crate::world::diff::{
     batch::{TrackedCoords, plan_load},
-    edit::{MicroChunkEdit, VoxelEdit, edit_world},
+    edit::{MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
     snapshot::MicroChunkSnapshot,
 };
 use crate::world::grid::in_lattice;
 use crate::world::material::PhysicalMaterialTable;
+use crate::world::rain::Emitter;
+use crate::world::vocabulary::Material;
 
 use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;
@@ -27,6 +29,7 @@ use super::physics::queue::UpdateQueue;
 use super::physics::rules::{self, ParityPolicy};
 use super::physics::spawn::{floor_pose, pose};
 use super::profile::PlayerProfile;
+use super::rain;
 use super::scheduler::Scheduler;
 
 /// One frame of host time and buffered input, one pause change, one edit
@@ -45,8 +48,9 @@ enum Message {
 /// The `World` handover.
 ///
 /// The loaded `World` with the snapshots and tracked set that describe what
-/// the renderer already holds. The sim plans the snapshots under its write
-/// lock, so it owns tracking from here on.
+/// the renderer already holds, and the emitter that rains grains into it while
+/// the World is active. The sim plans the snapshots under its write lock, so it
+/// owns tracking from here on.
 #[derive(Debug)]
 pub struct Activation {
     pub world: World,
@@ -54,6 +58,7 @@ pub struct Activation {
     pub tracked: TrackedCoords,
     pub materials: PhysicalMaterialTable,
     pub granular_cells: Option<Vec<IVec3>>,
+    pub emitter: Option<Emitter>,
 }
 
 /// A host edit resolved at the next commit, against the `World` then active.
@@ -84,8 +89,16 @@ pub struct TickEnd {
     pub report: UpdateReport,
 }
 
+/// The grains an emitter planted on one tick, and the ones it could not because
+/// their cell already held a grain.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Emission {
+    pub emitted: usize,
+    pub skipped: usize,
+}
+
 /// What one tick did: the batch its commits produced, the grains the queue
-/// served, and the two windows it spent.
+/// served, the grains the emitter planted, and the two windows it spent.
 ///
 /// `discarded` rides the first tick of an update, the only one that can report
 /// what the scheduler dropped before the update ran. `processed` is the queued
@@ -97,6 +110,7 @@ pub struct UpdateReport {
     pub discarded: u64,
     pub processed: usize,
     pub queued: usize,
+    pub emission: Emission,
     pub tick_time: Duration,
     pub commit_time: Duration,
 }
@@ -244,6 +258,8 @@ struct Runtime {
     tracked: TrackedCoords,
     commands: Vec<Command>,
     rule_edits: Vec<VoxelEdit>,
+    emitter: Option<Emitter>,
+    tick_count: u64,
     scheduler: Scheduler,
     player: PlayerState,
     controller: Controller,
@@ -274,6 +290,8 @@ impl Runtime {
             tracked: TrackedCoords::default(),
             commands: Vec::new(),
             rule_edits: Vec::new(),
+            emitter: None,
+            tick_count: 0,
             scheduler,
             player: floor_pose(),
             controller: Controller::new(),
@@ -403,6 +421,7 @@ impl Runtime {
                 discarded: if index == 0 { discarded } else { 0 },
                 processed: 0,
                 queued: self.queue.len(),
+                emission: Emission::default(),
                 tick_time: Duration::ZERO,
                 commit_time: Duration::ZERO,
             };
@@ -423,16 +442,20 @@ impl Runtime {
     }
 
     /// One tick: the player moves and the voxel rules drain the queue under
-    /// the read lock, then the pending edits commit under the write lock.
+    /// the read lock, then the pending edits and the emitter's grains commit
+    /// under the write lock.
     fn tick(&mut self, report: &mut UpdateReport) {
         let (evaluated, processed) = self.evaluate();
-        let (committed, batch) = self.commit();
+        let (committed, batch, emission) = self.commit();
 
         report.tick_time = evaluated;
         report.commit_time = committed;
         report.processed = processed;
         report.queued = self.queue.len();
         report.batch = batch;
+        report.emission = emission;
+
+        self.tick_count = self.tick_count.saturating_add(1);
     }
 
     fn on_command(&mut self, command: Command) {
@@ -450,6 +473,7 @@ impl Runtime {
             tracked,
             materials,
             granular_cells,
+            emitter,
         } = activation;
 
         let outgoing = mem::take(&mut self.tracked);
@@ -480,6 +504,8 @@ impl Runtime {
         self.tracked = planned.tracked;
         self.tracked.extend(tracked);
         self.player = player;
+        self.emitter = emitter;
+        self.tick_count = 0;
         self.scheduler.reset();
         self.controller.reset();
         self.active = true;
@@ -529,20 +555,23 @@ impl Runtime {
 
     /// Applies the rule edits as one batch and then every queued command as
     /// its own batch, in arrival order, all under one write lock, so a later
-    /// command diffs against the World the earlier ones left. The batches of
-    /// a tick merge into one snapshot list, the last snapshot per
-    /// Micro-chunk winning. A failed rule batch reseeds the queue from the
+    /// command diffs against the World the earlier ones left. The emitter then
+    /// plants its grains against the World those left.
+    ///
+    /// The batches of a tick merge into one snapshot list, the last snapshot
+    /// per Micro-chunk winning. A failed rule batch reseeds the queue from the
     /// World it left behind; a failed command is logged and dropped. The
     /// measured window starts before the lock is taken, so it carries any
     /// wait for a host reader.
-    fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>) {
-        if self.rule_edits.is_empty() && self.commands.is_empty() {
-            return (Duration::ZERO, None);
+    fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>, Emission) {
+        if self.rule_edits.is_empty() && self.commands.is_empty() && self.emitter.is_none() {
+            return (Duration::ZERO, None, Emission::default());
         }
 
         let started = Instant::now();
         let shared = Arc::clone(&self.world);
         let mut merged = SnapshotFold::default();
+        let emission;
 
         {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
@@ -573,13 +602,63 @@ impl Runtime {
                 self.apply_command(&mut guard, command, &mut merged);
             }
 
+            emission = self.emit(&mut guard, &mut merged);
+
             drop(guard);
         }
 
         let elapsed = started.elapsed();
         let pushed = (!merged.is_empty()).then(|| merged.into_vec());
 
-        (elapsed, pushed)
+        (elapsed, pushed, emission)
+    }
+
+    /// Plants the tick's grains from the emitter, after the rule edits and the
+    /// commands, so a hole the pile has reached is skipped rather than cleared.
+    /// Each planted cell is woken the way a host edit is, so the following
+    /// tick's drain serves it.
+    fn emit(&mut self, guard: &mut World, merged: &mut SnapshotFold) -> Emission {
+        let Some(emitter) = self.emitter.as_ref() else {
+            return Emission::default();
+        };
+
+        let planted = rain::emitted(self.tick_count, emitter);
+        let sand = Material::Sand.index();
+        let mut emission = Emission::default();
+        let mut edits: Vec<VoxelEdit> = Vec::with_capacity(planted.len());
+
+        for position in planted {
+            if guard.get_voxel(&position).is_some() {
+                emission.skipped = emission.skipped.saturating_add(1);
+
+                continue;
+            }
+
+            edits.push(VoxelEdit {
+                position,
+                change: VoxelChange::Set(sand),
+            });
+        }
+
+        if edits.is_empty() {
+            return emission;
+        }
+
+        match edit_world(guard, &edits, &self.tracked) {
+            Ok(batch) => {
+                self.tracked = batch.tracked;
+                merged.merge(batch.snapshots);
+
+                for edit in &edits {
+                    self.wake(edit.position);
+                }
+
+                emission.emitted = edits.len();
+            }
+            Err(error) => error!("atlas_rt: dropped a failed rain batch: {error}"),
+        }
+
+        emission
     }
 
     /// Diffs one command against the World it will land in and applies what

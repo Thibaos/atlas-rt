@@ -21,7 +21,7 @@ use glam::IVec3;
 use super::{
     World,
     generation::GeneratedWorld,
-    grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH, grid_origin},
+    grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH, chunks_across, grid_origin},
     load::progress::{Progress, Stage},
     micro::{self, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, MicroChunkRef},
     vocabulary::{Material, Vocabulary},
@@ -167,14 +167,6 @@ fn fillable_chunks(lower: IVec3, upper: IVec3) -> usize {
 /// The Micro-chunk origin at or below `position`.
 fn chunk_origin(position: IVec3) -> IVec3 {
     grid_origin(position, MICRO_CHUNK_LENGTH)
-}
-
-/// How many Micro-chunk origins the fill steps through over `span` cells.
-fn chunks_across(span: i32) -> usize {
-    let edge = MICRO_CHUNK_LENGTH.cast_signed();
-    let edge_span = edge.saturating_sub(1);
-
-    usize::try_from(span.saturating_add(edge_span).div_euclid(edge)).unwrap_or(0)
 }
 
 /// Fills the column of Micro-chunks at `origin`'s x and z, from `floor` up to

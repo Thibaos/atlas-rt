@@ -5,6 +5,7 @@
 mod input;
 mod physics;
 mod profile;
+mod rain;
 mod runtime;
 mod scheduler;
 
@@ -14,4 +15,4 @@ mod bench;
 pub use input::{InputSample, PlayerState};
 pub use physics::rules::ParityPolicy;
 pub use profile::{PlayerProfile, ProfileError};
-pub use runtime::{Activation, Command, Handle, Push, TickEnd, UpdateReport, spawn};
+pub use runtime::{Activation, Command, Emission, Handle, Push, TickEnd, UpdateReport, spawn};

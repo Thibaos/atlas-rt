@@ -343,6 +343,7 @@ fn sweep(source: &Source, occupancy: &'static str, active: usize) -> SweepPoint 
         snapshots,
         tracked,
         None,
+        None,
         &table,
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
@@ -668,6 +669,7 @@ fn surface_point(extent: i32) -> SurfacePoint {
         snapshots,
         tracked,
         Some(generated.granular_cells),
+        None,
         &generated.materials,
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));

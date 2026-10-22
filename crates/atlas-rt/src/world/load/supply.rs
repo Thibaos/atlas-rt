@@ -10,6 +10,7 @@ use crate::world::{
     generation::{self, GeneratedWorld, GenerationParams},
     material::{PhysicalMaterialTable, load_table},
     palette::get_effective_palette,
+    rain::{self, Emitter},
     sand_ball,
     vox::open_bytes,
 };
@@ -61,9 +62,11 @@ impl WorldSource for FileWorldSource {
     }
 }
 
-/// A supplied World with the data that describes it. A .vox load and a
-/// Generation both deliver this shape, so a host cannot tell the two supplies
-/// apart.
+/// A supplied World with the data that describes it.
+///
+/// A .vox load and a Generation both deliver this shape, so a host cannot tell
+/// the two supplies apart. A rain World adds the emitter that plants grains into
+/// it while the simulation runs.
 #[derive(Debug)]
 pub struct SuppliedWorld {
     pub world: World,
@@ -71,6 +74,7 @@ pub struct SuppliedWorld {
     pub palette: [Vec4; 256],
     pub materials: PhysicalMaterialTable,
     pub granular_cells: Option<Vec<IVec3>>,
+    pub emitter: Option<Emitter>,
     pub clipped: usize,
 }
 
@@ -120,6 +124,7 @@ pub fn load(
         palette,
         materials,
         granular_cells: None,
+        emitter: None,
         clipped,
     })
 }
@@ -156,9 +161,30 @@ pub fn sand_ball(progress: &Progress) -> anyhow::Result<SuppliedWorld> {
     assemble(progress, "the sand ball", built)
 }
 
+/// Writes the rain plate and its floor, emits their Snapshots, and pairs the
+/// World with the emitter its holes make.
+///
+/// The rain is a fixed scene: it takes no Seed and no extent, it places nothing
+/// outside the Lattice, so it clips nothing, and it delivers a precomputed
+/// granular cell list, empty because the scene holds no Sand until the
+/// simulation plants some. It never consults the cell budget.
+///
+/// # Errors
+///
+/// Returns an error when its Snapshots cannot be emitted.
+pub fn raining(progress: &Progress) -> anyhow::Result<SuppliedWorld> {
+    let (built, emitter) = rain::build(progress);
+    let mut supplied = assemble(progress, "the raining world", built)?;
+
+    supplied.emitter = Some(emitter);
+
+    Ok(supplied)
+}
+
 /// Assembles a supplied World from a built one: ends the Build stage, emits the
 /// Snapshots, and pairs the World with its Palette, materials and precomputed
-/// granular cells.
+/// granular cells. A supplied World carries no emitter unless the caller adds
+/// one.
 ///
 /// A built World places nothing outside the Lattice, so it clips nothing.
 ///
@@ -187,6 +213,7 @@ fn assemble(
         palette,
         materials,
         granular_cells: Some(granular_cells),
+        emitter: None,
         clipped: 0,
     })
 }

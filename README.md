@@ -36,20 +36,21 @@ refused. There is no `--help`: it is unrecognized, so it starts an ordinary run.
 | Flag | What it does |
 | --- | --- |
 | `--world <path>` | Loads a `.vox` file instead of generating a World. The path resolves under `crates/atlas-rt/assets/`, so run from the repository root. |
-| `--world-type <type>` | Selects the generated World: `terrain`, the default, or `sand-ball`. |
+| `--world-type <type>` | Selects the generated World: `terrain`, the default, `sand-ball`, or `raining`. |
 | `--seed <integer>` | Pins the Seed a Generation is built from. An unsigned or a signed literal, where a negative Seed names the same bits as Godot's. |
 | `--extent <integer>` | Bounds a generated World's ground to a square of `extent` by `extent` cells from the Lattice's negative corner. The fill spans the full Lattice depth, so y is ignored. Defaults to the full Lattice. |
 | `--fly` | Frees the camera from the simulated player and leaves the simulation running, so a World can be watched settle. |
 | `--no-sim` | Runs no simulation thread, so no voxel rule runs and the World changes only where the host edits it. The camera flies free either way, because there is no player pose to follow. |
 
-A run with no `--world`, no `--seed` and no `--world-type sand-ball` generates
-terrain from a random Seed and logs that Seed, so a logged Seed repeats a World:
+A run with no `--world`, no `--seed` and no `--world-type` generates terrain from
+a random Seed and logs that Seed, so a logged Seed repeats a World:
 
     cargo run -p atlas-rt
     cargo run -p atlas-rt -- --seed 42
     cargo run -p atlas-rt -- --seed 42 --extent 512
     cargo run -p atlas-rt -- --world test/matl-alpha.vox
     cargo run -p atlas-rt -- --world-type sand-ball --fly
+    cargo run -p atlas-rt -- --world-type raining
 
 Only the fixtures under `crates/atlas-rt/assets/test/` are tracked. The large
 worlds, such as `castle.vox` and `sponza.vox`, are per-checkout and absent from a
@@ -64,12 +65,13 @@ How the flags combine:
 - `--extent` beside `--world` is refused, because there is no ground to bound.
 - `--world-type sand-ball` ignores `--seed` and `--extent`, because the ball is a
   fixed shape and neither flag has anything to act on.
+- `--world-type raining` ignores `--seed` and `--extent` for the same reason.
 - An unrecognized `--world-type` value is refused rather than quietly building
   terrain.
 
 Each refusal names its reason, and prints before any window opens:
 
-    Error: the world type bogus is not terrain or sand-ball
+    Error: the world type bogus is not terrain, sand-ball or raining
     Error: --world loads a file, so --world-type has nothing to select
     Error: --world loads a file, so --extent has nothing to bound
 
@@ -94,3 +96,29 @@ and the pile stay in one view, and the pile's creasing continues at a shrinking
 cost as the queue empties, so a queue that keeps running is not a fault. The
 binary logs the frame rate, the queued grain count and the rate the rules process
 grains once a second.
+
+### The rain
+
+`--world-type raining` builds one fixed Bedrock plate full of holes 1,024 voxels
+above a one-cell Bedrock floor, and the simulation rains Sand through it. The
+plate is a disc of radius 256 at y = -1024 with 3,209 holes, a hole every eight
+cells in x and z, and 202,652 cells of Bedrock around them. The floor is the
+Lattice's bottom layer at y = -2048, as the sand ball's is.
+
+The holes are an emitter rather than a shape: every tick the simulation plants
+128 grains in the holes that are empty, and a hole fires at most every second
+tick, so no column ever holds two grains one cell apart. A grain falls from
+-1024 to the pile 1,023 cells below it, so the queue fills to about 131,000
+grains over the first 1,023 ticks and then holds there, and a tick costs about
+120 ms. A grain changing its Micro-chunk every tick is most of that cost, since a
+falling grain is usually alone in its chunk.
+
+The player spawns on the floor at the centre column, under a hole, so the rain
+falls on it and the pile grows at its feet. The pile is a grain deep over the
+whole disc within a few minutes and needs about 55 hours of arrivals to reach the
+plate, so the scene keeps raining. The frame log reports the grains emitted and
+skipped a tick beside the queue and the tick rate.
+
+Run it without `--fly`: the floor holds the player, unlike the ball's crown.
+`--no-sim` builds the plate and the floor and rains nothing, because there is no
+tick to plant from.

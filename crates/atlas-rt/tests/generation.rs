@@ -272,6 +272,7 @@ fn a_generated_world_activates_and_the_player_stands_on_its_surface() {
         tracked,
         materials: loaded.materials,
         granular_cells: loaded.granular_cells,
+        emitter: loaded.emitter,
     });
 
     let player = common::wait_ready(&handle);

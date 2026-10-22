@@ -103,6 +103,7 @@ impl App {
             palette,
             materials,
             granular_cells,
+            emitter,
             clipped,
         } = match request {
             WorldRequest::Load(world_path) => {
@@ -122,6 +123,11 @@ impl App {
                 info!("building the sand ball");
 
                 supply::sand_ball(&Progress::generate_path())?
+            }
+            WorldRequest::Raining => {
+                info!("building the raining world");
+
+                supply::raining(&Progress::generate_path())?
             }
         };
 
@@ -149,6 +155,7 @@ impl App {
                 snapshots,
                 tracked.clone(),
                 granular_cells,
+                emitter,
                 &materials,
             )?)
         };
@@ -265,8 +272,11 @@ impl App {
             let rates = TickRates::over(tally, window);
 
             info!(
-                "{fps:.0} fps, {now} grains in queue, {} grains/tick, {:.1} ticks/s, {:.1} ms/tick",
-                rates.grains_per_tick, rates.ticks_per_second, rates.millis_per_tick
+                "{fps:.0} fps, {now} grains in queue, {} grains/tick, {:.1} ticks/s, {:.1} ms/tick{}",
+                rates.grains_per_tick,
+                rates.ticks_per_second,
+                rates.millis_per_tick,
+                rates.emission()
             );
         } else {
             info!("{fps:.0} fps");
@@ -563,6 +573,8 @@ struct TickRates {
     ticks_per_second: f32,
     millis_per_tick: f32,
     grains_per_tick: usize,
+    emitted_per_tick: usize,
+    skipped_per_tick: usize,
 }
 
 impl TickRates {
@@ -581,16 +593,29 @@ impl TickRates {
             0.0
         };
 
-        let grains_per_tick = tally
-            .processed
-            .checked_div(usize::try_from(tally.ticks).unwrap_or(1))
-            .unwrap_or(0);
+        let ticks = usize::try_from(tally.ticks).unwrap_or(1);
+        let per_tick = |count: usize| count.checked_div(ticks).unwrap_or(0);
 
         Self {
             ticks_per_second,
             millis_per_tick,
-            grains_per_tick,
+            grains_per_tick: per_tick(tally.processed),
+            emitted_per_tick: per_tick(tally.emitted),
+            skipped_per_tick: per_tick(tally.skipped),
         }
+    }
+
+    /// The emission the frame log appends, empty for a window in which nothing
+    /// rained.
+    fn emission(&self) -> String {
+        if self.emitted_per_tick == 0 && self.skipped_per_tick == 0 {
+            return String::new();
+        }
+
+        format!(
+            ", {} emitted/tick, {} skipped/tick",
+            self.emitted_per_tick, self.skipped_per_tick
+        )
     }
 }
 
@@ -604,6 +629,7 @@ mod tests {
             ticks: 5,
             processed: 5_553_840,
             time: Duration::from_millis(2_975),
+            ..Tally::default()
         };
         let rates = TickRates::over(burst, Duration::from_secs(1));
 

@@ -6,6 +6,7 @@ pub mod load;
 pub mod material;
 pub mod micro;
 pub mod palette;
+pub mod rain;
 pub mod raycast;
 pub mod sand_ball;
 pub(crate) mod store;

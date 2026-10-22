@@ -21,6 +21,15 @@ pub fn grid_origin(global: IVec3, edge: u32) -> IVec3 {
     grid_index(global, edge).saturating_mul(IVec3::splat(edge.cast_signed()))
 }
 
+/// How many Micro-chunk origins a span of `span` cells covers, rounded up.
+#[must_use]
+pub fn chunks_across(span: i32) -> usize {
+    let edge = MICRO_CHUNK_LENGTH.cast_signed();
+    let edge_span = edge.saturating_sub(1);
+
+    usize::try_from(span.saturating_add(edge_span).div_euclid(edge)).unwrap_or(0)
+}
+
 #[must_use]
 pub fn in_lattice(global: IVec3) -> bool {
     let half = IVec3::splat(LATTICE_HALF_EXTENT.cast_signed());

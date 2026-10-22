@@ -23,18 +23,22 @@ use atlas_rt::world::World;
 use atlas_rt::world::diff::batch::TrackedCoords;
 use atlas_rt::world::diff::snapshot::MicroChunkSnapshot;
 use atlas_rt::world::material::PhysicalMaterialTable;
+use atlas_rt::world::rain::Emitter;
 
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);
 const READY_POLL: Duration = Duration::from_millis(50);
 
-/// The ticks the sim reported since the last read, the grains they served, and
-/// the wall time they spent, so the frame log can print a rate and a cost that
-/// a catch-up burst cannot fake.
+/// The ticks the sim reported since the last read, the grains they served, the
+/// grains an emitter planted and the ones it skipped, and the wall time they
+/// spent, so the frame log can print a rate and a cost that a catch-up burst
+/// cannot fake.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Tally {
     pub ticks: u32,
     pub processed: usize,
+    pub emitted: usize,
+    pub skipped: usize,
     pub time: Duration,
 }
 
@@ -42,6 +46,8 @@ impl Tally {
     const fn record(&mut self, report: &UpdateReport) {
         self.ticks = self.ticks.saturating_add(1);
         self.processed = self.processed.saturating_add(report.processed);
+        self.emitted = self.emitted.saturating_add(report.emission.emitted);
+        self.skipped = self.skipped.saturating_add(report.emission.skipped);
         self.time = self
             .time
             .saturating_add(report.tick_time.saturating_add(report.commit_time));
@@ -54,6 +60,7 @@ struct Handover {
     tracked: TrackedCoords,
     materials: PhysicalMaterialTable,
     granular_cells: Option<Vec<IVec3>>,
+    emitter: Option<Emitter>,
 }
 
 /// Nothing on this side waits for the renderer.
@@ -69,8 +76,8 @@ pub struct SimHost {
 
 impl SimHost {
     /// Spawns the simulation thread against `world`, holding the load's
-    /// snapshots, tracked set, and material table until the renderer exists to
-    /// receive them.
+    /// snapshots, tracked set, material table and emitter until the renderer
+    /// exists to receive them.
     ///
     /// # Errors
     ///
@@ -81,6 +88,7 @@ impl SimHost {
         snapshots: Vec<MicroChunkSnapshot>,
         tracked: TrackedCoords,
         granular_cells: Option<Vec<IVec3>>,
+        emitter: Option<Emitter>,
         materials: &PhysicalMaterialTable,
     ) -> Result<Self> {
         let period = profile.tick_period();
@@ -93,6 +101,7 @@ impl SimHost {
                 tracked,
                 materials: *materials,
                 granular_cells,
+                emitter,
             }),
             view: ViewInterpolation::new(period),
             ready: false,
@@ -111,6 +120,7 @@ impl SimHost {
             tracked,
             materials,
             granular_cells,
+            emitter,
         }) = self.handover.take()
         else {
             return;
@@ -133,6 +143,7 @@ impl SimHost {
             tracked,
             materials,
             granular_cells,
+            emitter,
         });
     }
 
@@ -336,6 +347,7 @@ mod tests {
             PlayerProfile::default(),
             snapshots,
             tracked,
+            None,
             None,
             &PhysicalMaterialTable::default(),
         )
