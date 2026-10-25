@@ -26,7 +26,6 @@ use glam::IVec3;
 
 use crate::world::World;
 use crate::world::diff::batch::TrackedCoords;
-use crate::world::diff::edit::edit_world;
 use crate::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use crate::world::generation::{GenerationParams, generate};
 use crate::world::grid::MICRO_CHUNK_LENGTH;
@@ -35,6 +34,7 @@ use crate::world::material::PhysicalMaterialTable;
 use crate::world::micro::MicroChunk;
 
 use super::ParityPolicy;
+use super::commit::{REWRITE_THRESHOLD, commit};
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::{DrainPolicy, drain};
 use super::runtime::SnapshotFold;
@@ -127,9 +127,9 @@ struct SurfaceRun {
     settle: Duration,
 }
 
-/// One tick of the runtime's own commit path: `drain` produces the
-/// edits, `edit_world` compiles them against the renderer's tracked set, and
-/// the batch's tracked set carries on. An empty batch commits nothing, as
+/// One tick of the runtime's own commit path: `drain` produces the moves,
+/// the commit writes the chunks that served enough of them whole, and the
+/// batch's tracked set carries on. An empty batch commits nothing, as
 /// `Runtime::commit` does. Returns how many cells moved.
 fn commit_tick(
     world: &mut World,
@@ -137,22 +137,27 @@ fn commit_tick(
     queue: &mut UpdateQueue,
     tracked: &mut TrackedCoords,
 ) -> usize {
-    let edits = drain(
+    let drained = drain(
         world,
         table,
         queue,
         ParityPolicy::Alternate,
         DrainPolicy::PerCell,
-    )
-    .edits;
-    let moves = edits.len() / 2;
+    );
+    let moves = drained.edits.len() / 2;
 
-    if edits.is_empty() {
+    if drained.edits.is_empty() {
         return 0;
     }
 
-    let batch = edit_world(world, &edits, tracked)
-        .unwrap_or_else(|error| panic!("the tick's edits must apply: {error}"));
+    let batch = commit(
+        world,
+        &drained.edits,
+        &drained.overlay,
+        REWRITE_THRESHOLD,
+        tracked,
+    )
+    .unwrap_or_else(|error| panic!("the tick's edits must apply: {error}"));
 
     *tracked = batch.tracked;
 
