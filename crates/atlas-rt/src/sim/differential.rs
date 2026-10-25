@@ -493,3 +493,43 @@ fn a_dropped_edit_fails_the_comparison() {
         "the difference names the first disagreeing cell: {difference}"
     );
 }
+
+#[test]
+fn a_queue_the_sides_do_not_share_fails_the_comparison() {
+    let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
+
+    per_cell.serve(DrainPolicy::PerCell);
+    runs.serve(DrainPolicy::Runs);
+
+    runs.queue.wake(IVec3::new(9, 9, 9));
+
+    let difference = compare(1, &per_cell, &runs)
+        .expect_err("a cell only one side queued must fail the comparison");
+
+    assert!(
+        difference.contains("the queue's cells differ at"),
+        "the difference names the queue: {difference}"
+    );
+    assert!(
+        difference.contains("IVec3(9, 9, 9)"),
+        "the difference names the cell only one side queued: {difference}"
+    );
+}
+
+#[test]
+fn a_drained_cell_count_the_sides_do_not_share_fails_the_comparison() {
+    let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
+
+    per_cell.serve(DrainPolicy::PerCell);
+    runs.serve(DrainPolicy::Runs);
+
+    runs.processed = per_cell.processed.saturating_add(1);
+
+    let difference = compare(1, &per_cell, &runs)
+        .expect_err("a cell count only one side reported must fail the comparison");
+
+    assert!(
+        difference.contains("the drained cell count differs"),
+        "the difference names the drained cell count: {difference}"
+    );
+}
