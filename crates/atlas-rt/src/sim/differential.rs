@@ -268,13 +268,13 @@ fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
         ));
     }
 
-    for (per_cell, runs) in per_cell.snapshots.iter().zip(&runs.snapshots) {
-        if per_cell != runs {
+    for (expected, actual) in per_cell.snapshots.iter().zip(&runs.snapshots) {
+        if expected != actual {
             return Err(format!(
                 "tick {tick}: the snapshot content at {} differs: {:?} against {:?}",
-                per_cell.global_coords,
-                per_cell.chunk.mask(),
-                runs.chunk.mask()
+                expected.global_coords,
+                expected.chunk.mask(),
+                actual.chunk.mask()
             ));
         }
     }
