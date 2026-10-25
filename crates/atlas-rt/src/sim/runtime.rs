@@ -26,7 +26,7 @@ use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;
 use super::physics::field::Field;
 use super::physics::queue::UpdateQueue;
-use super::physics::rules::{self, ParityPolicy};
+use super::physics::rules::{self, DrainPolicy, ParityPolicy};
 use super::physics::spawn::{floor_pose, pose};
 use super::profile::PlayerProfile;
 use super::rain;
@@ -119,7 +119,7 @@ pub struct UpdateReport {
 /// The sim takes no ticks until an activation arrives.
 ///
 /// The parity policy fixes how a grain breaks a diagonal tie for the life of
-/// the sim.
+/// the sim, and the drain policy fixes how each tick serves the queue.
 ///
 /// # Errors
 ///
@@ -128,13 +128,21 @@ pub fn spawn(
     world: Arc<RwLock<World>>,
     profile: PlayerProfile,
     parity: ParityPolicy,
+    policy: DrainPolicy,
 ) -> Result<Handle> {
     let (host, inbox) = mpsc::channel();
     let (pushes, outbox) = mpsc::channel();
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let shared = Arc::clone(&world);
-    let runtime = Runtime::new(shared, profile, parity, pushes, Arc::clone(&shutdown));
+    let runtime = Runtime::new(
+        shared,
+        profile,
+        parity,
+        policy,
+        pushes,
+        Arc::clone(&shutdown),
+    );
 
     let thread = thread::Builder::new()
         .name(String::from("atlas-sim"))
@@ -253,6 +261,7 @@ struct Runtime {
     world: Arc<RwLock<World>>,
     profile: PlayerProfile,
     parity: ParityPolicy,
+    policy: DrainPolicy,
     materials: PhysicalMaterialTable,
     queue: UpdateQueue,
     tracked: TrackedCoords,
@@ -276,6 +285,7 @@ impl Runtime {
         world: Arc<RwLock<World>>,
         profile: PlayerProfile,
         parity: ParityPolicy,
+        policy: DrainPolicy,
         pushes: mpsc::Sender<Push>,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
@@ -285,6 +295,7 @@ impl Runtime {
             world,
             profile,
             parity,
+            policy,
             materials: PhysicalMaterialTable::default(),
             queue: UpdateQueue::default(),
             tracked: TrackedCoords::default(),
@@ -543,7 +554,7 @@ impl Runtime {
             );
         }
 
-        let drained = rules::drain(&guard, &self.materials, &mut queue, self.parity);
+        let drained = rules::drain(&guard, &self.materials, &mut queue, self.parity, self.policy);
 
         drop(guard);
 

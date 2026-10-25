@@ -12,7 +12,8 @@ use std::time::{Duration, Instant};
 use atlas_rt::render::region::pack::{RegionData, pack_regions};
 use atlas_rt::render::region::queue::RendererInput;
 use atlas_rt::sim::{
-    self, Activation, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push, TickEnd,
+    self, Activation, DrainPolicy, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState,
+    Push, TickEnd,
 };
 use atlas_rt::world::World;
 use atlas_rt::world::diff::batch::TrackedCoords;
@@ -45,7 +46,13 @@ pub fn spawn_sim_parity(parity: ParityPolicy) -> (Arc<RwLock<World>>, Handle) {
 
 fn spawn_with(profile: PlayerProfile, parity: ParityPolicy) -> (Arc<RwLock<World>>, Handle) {
     let world = Arc::new(RwLock::new(World::default()));
-    let handle = sim::spawn(Arc::clone(&world), profile, parity).expect("the sim must spawn");
+    let handle = sim::spawn(
+        Arc::clone(&world),
+        profile,
+        parity,
+        DrainPolicy::default(),
+    )
+    .expect("the sim must spawn");
 
     (world, handle)
 }

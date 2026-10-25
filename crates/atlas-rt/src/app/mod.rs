@@ -28,7 +28,7 @@ use atlas_rt::{
         context::RenderContext,
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR, task::RenderMode},
     },
-    sim::{Command, PlayerProfile},
+    sim::{Command, DrainPolicy, PlayerProfile},
     world::{
         World,
         budget::cell_budget,
@@ -152,6 +152,7 @@ impl App {
             Some(SimHost::spawn(
                 Arc::clone(&world),
                 profile,
+                DrainPolicy::default(),
                 snapshots,
                 tracked.clone(),
                 granular_cells,

@@ -16,6 +16,15 @@ pub enum ParityPolicy {
     AlwaysNegative,
 }
 
+/// How a drain serves the queue: one cell at a time, or a whole run of
+/// Micro-chunks translated as one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DrainPolicy {
+    #[default]
+    PerCell,
+    Runs,
+}
+
 /// One drain's outcome: the edits it would commit and the queued cells it
 /// evaluated, whether they moved, settled, or were never grains.
 pub(in crate::sim) struct Drained {
@@ -34,6 +43,7 @@ pub(in crate::sim) fn drain(
     table: &PhysicalMaterialTable,
     queue: &mut UpdateQueue,
     parity: ParityPolicy,
+    policy: DrainPolicy,
 ) -> Drained {
     queue.begin_tick();
 
@@ -45,32 +55,21 @@ pub(in crate::sim) fn drain(
         served.extend(field.queued_cells().copied());
     }
 
-    let mut processed = 0usize;
     let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
     let mut woken: Vec<IVec3> = Vec::new();
+    let processed;
 
     {
         let mut field = Field::new(world, table, queue);
 
-        for src in &served {
-            let src = *src;
-
-            processed = processed.saturating_add(1);
-
-            let Some(material) = field.grain(src) else {
-                continue;
-            };
-
-            let Some(dst) = destination(&field, parity, src) else {
-                wake(&field, &mut woken, src.with_y(src.y.saturating_add(1)));
-
-                continue;
-            };
-
-            field.apply_move(src, dst, material);
-            moves.push((src, dst, material));
-            wake_above(&field, &mut woken, src);
-        }
+        processed = match policy {
+            DrainPolicy::PerCell => serve(&mut field, parity, &served, &mut moves, &mut woken),
+            DrainPolicy::Runs => {
+                // Ticket 06 translates each run of chunks here, and the
+                // per-cell pass then moves whatever crosses a run boundary.
+                serve(&mut field, parity, &served, &mut moves, &mut woken)
+            }
+        };
     }
 
     queue.end_tick();
@@ -97,6 +96,40 @@ pub(in crate::sim) fn drain(
     }
 
     Drained { edits, processed }
+}
+
+/// Serves every cell in drain order, one cell at a time, and returns how many
+/// it evaluated.
+fn serve(
+    field: &mut Field,
+    parity: ParityPolicy,
+    served: &[IVec3],
+    moves: &mut Vec<(IVec3, IVec3, u8)>,
+    woken: &mut Vec<IVec3>,
+) -> usize {
+    let mut processed = 0usize;
+
+    for src in served {
+        let src = *src;
+
+        processed = processed.saturating_add(1);
+
+        let Some(material) = field.grain(src) else {
+            continue;
+        };
+
+        let Some(dst) = destination(field, parity, src) else {
+            wake(field, woken, src.with_y(src.y.saturating_add(1)));
+
+            continue;
+        };
+
+        field.apply_move(src, dst, material);
+        moves.push((src, dst, material));
+        wake_above(field, woken, src);
+    }
+
+    processed
 }
 
 /// Where the grain goes this tick: straight down while the cell below is
@@ -327,7 +360,14 @@ mod tests {
     }
 
     fn step(world: &mut World, queue: &mut UpdateQueue) -> Vec<VoxelEdit> {
-        let edits = drain(world, &table(), queue, ParityPolicy::Alternate).edits;
+        let edits = drain(
+            world,
+            &table(),
+            queue,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        )
+        .edits;
 
         edit_world(world, &edits, &TrackedCoords::default())
             .unwrap_or_else(|error| panic!("the edits must apply: {error}"));
@@ -339,7 +379,13 @@ mod tests {
     fn a_tick_serves_every_queued_cell() {
         let world = row();
         let mut queue = queued(&world);
-        let drained = drain(&world, &table(), &mut queue, ParityPolicy::Alternate);
+        let drained = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        );
 
         assert_eq!(drained.processed, 5, "the tick evaluates every queued cell");
         assert_eq!(drained.edits.len(), 10, "every grain moves one cell");
@@ -358,7 +404,14 @@ mod tests {
     fn a_column_advances_every_grain_one_cell_in_one_tick() {
         let mut world = column();
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
+        let edits = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        )
+        .edits;
 
         assert_eq!(
             edits,
@@ -441,7 +494,14 @@ mod tests {
             (IVec3::new(6, 2, 6), GRAIN),
         ]);
         let mut queue = queued(&world);
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
+        let edits = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        )
+        .edits;
 
         assert_eq!(
             edits,
@@ -474,7 +534,14 @@ mod tests {
 
         queue.wake(IVec3::new(0, 1, 0));
 
-        let edits = drain(&world, &table(), &mut queue, ParityPolicy::Alternate).edits;
+        let edits = drain(
+            &world,
+            &table(),
+            &mut queue,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        )
+        .edits;
 
         assert_eq!(
             edits,
@@ -552,5 +619,34 @@ mod tests {
                 "tick {tick}: the remainder is queued in the same order"
             );
         }
+    }
+
+    #[test]
+    fn the_runs_policy_serves_what_the_per_cell_pass_serves() {
+        let world = row();
+        let mut per_cell = queued(&world);
+        let mut runs = queued(&world);
+
+        let served = drain(
+            &world,
+            &table(),
+            &mut per_cell,
+            ParityPolicy::Alternate,
+            DrainPolicy::PerCell,
+        );
+        let translated = drain(
+            &world,
+            &table(),
+            &mut runs,
+            ParityPolicy::Alternate,
+            DrainPolicy::Runs,
+        );
+
+        assert_eq!(
+            translated.edits, served.edits,
+            "the run pass moves what the per-cell pass moves"
+        );
+        assert_eq!(translated.processed, served.processed);
+        assert_eq!(order(&per_cell), order(&runs));
     }
 }
