@@ -87,15 +87,17 @@ the top of the ball.
 
 The scene exists to watch the Falling granular rules at scale. The ball falls as
 a body: every grain moves on every tick, its vertical span stays at 128, and the
-bottom reaches the floor at tick 128. A tick on the full ball costs 555 to 592 ms
-in release, so the simulation runs at about 1.7 ticks a second rather than the
-profile's 30 Hz and that 128-cell fall takes roughly 75 seconds of wall time. The
-frame rate is unaffected, because the renderer and the host's ordinary frame path
-take no World lock. The sand then settles on the floor under the ball, so the ball
-and the pile stay in one view, and the pile's creasing continues at a shrinking
-cost as the queue empties, so a queue that keeps running is not a fault. The
-binary logs the frame rate, the queued grain count and the rate the rules process
-grains once a second.
+bottom reaches the floor at tick 128. A tick serves the queue a Micro-chunk at a
+time and the commit writes a dense Micro-chunk whole, so the per-cell
+bookkeeping no longer dominates the tick. In release the pile's tick p95 is
+230 ms, and the free fall's tick p95, the fall's wall time at the profile's
+30 Hz and the input worker's pack for one tick's batch are the figures the
+ball's bench prints. The frame rate is unaffected, because the
+renderer and the host's ordinary frame path take no World lock. The sand then
+settles on the floor under the ball, so the ball and the pile stay in one view,
+and the pile's creasing continues at a shrinking cost as the queue empties, so a
+queue that keeps running is not a fault. The binary logs the frame rate, the
+queued grain count and the rate the rules process grains once a second.
 
 ### The rain
 
