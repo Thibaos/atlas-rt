@@ -2,6 +2,7 @@
 //! activations in, readiness and tick-end pushes out, against a World behind a
 //! shared lock.
 
+mod commit;
 mod input;
 mod physics;
 mod profile;
