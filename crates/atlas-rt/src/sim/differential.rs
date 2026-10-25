@@ -137,7 +137,7 @@ impl Side {
     }
 
     fn queued(&self) -> Vec<IVec3> {
-        self.queue.iter().copied().collect()
+        self.queue.iter().collect()
     }
 }
 

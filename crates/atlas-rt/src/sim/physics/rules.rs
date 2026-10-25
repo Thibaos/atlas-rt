@@ -52,7 +52,7 @@ pub(in crate::sim) fn drain(
     {
         let field = Field::new(world, table, queue);
 
-        served.extend(field.queued_cells().copied());
+        served.extend(field.queued_cells());
     }
 
     let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
@@ -265,7 +265,7 @@ mod tests {
     }
 
     fn order(queue: &UpdateQueue) -> Vec<IVec3> {
-        queue.iter().copied().collect()
+        queue.iter().collect()
     }
 
     fn clear(x: i32, y: i32, z: i32) -> VoxelEdit {

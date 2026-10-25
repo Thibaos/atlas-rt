@@ -69,7 +69,7 @@ impl<'a> Field<'a> {
     }
 
     /// The coordinates this tick serves, in the order a tick drains them.
-    pub(in crate::sim) fn queued_cells(&self) -> impl Iterator<Item = &IVec3> {
+    pub(in crate::sim) fn queued_cells(&self) -> impl Iterator<Item = IVec3> + '_ {
         self.queued.unserved()
     }
 
