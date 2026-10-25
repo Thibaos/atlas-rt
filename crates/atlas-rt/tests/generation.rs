@@ -8,7 +8,7 @@
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use atlas_rt::sim::{self, Activation, ParityPolicy, PlayerProfile};
+use atlas_rt::sim::{self, Activation, DrainPolicy, ParityPolicy, PlayerProfile};
 use atlas_rt::world::{
     World,
     diff::batch::TrackedCoords,
@@ -263,6 +263,7 @@ fn a_generated_world_activates_and_the_player_stands_on_its_surface() {
         Arc::clone(&world),
         PlayerProfile::default(),
         ParityPolicy::default(),
+        DrainPolicy::default(),
     )
     .unwrap_or_else(|error| panic!("the simulation must spawn: {error}"));
 

@@ -36,7 +36,7 @@ use crate::world::micro::MicroChunk;
 
 use super::ParityPolicy;
 use super::physics::queue::UpdateQueue;
-use super::physics::rules::drain;
+use super::physics::rules::{DrainPolicy, drain};
 use super::runtime::SnapshotFold;
 
 const FOLD_BUDGET: Duration = Duration::from_millis(250);
@@ -137,7 +137,14 @@ fn commit_tick(
     queue: &mut UpdateQueue,
     tracked: &mut TrackedCoords,
 ) -> usize {
-    let edits = drain(world, table, queue, ParityPolicy::Alternate).edits;
+    let edits = drain(
+        world,
+        table,
+        queue,
+        ParityPolicy::Alternate,
+        DrainPolicy::PerCell,
+    )
+    .edits;
     let moves = edits.len() / 2;
 
     if edits.is_empty() {

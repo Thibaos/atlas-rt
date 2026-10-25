@@ -11,8 +11,10 @@ mod scheduler;
 
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod differential;
 
 pub use input::{InputSample, PlayerState};
-pub use physics::rules::ParityPolicy;
+pub use physics::rules::{DrainPolicy, ParityPolicy};
 pub use profile::{PlayerProfile, ProfileError};
 pub use runtime::{Activation, Command, Emission, Handle, Push, TickEnd, UpdateReport, spawn};

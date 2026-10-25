@@ -35,7 +35,7 @@ use dot_vox::DotVoxData;
 use glam::IVec3;
 
 use atlas_rt::{
-    sim::{InputSample, PlayerProfile, Push},
+    sim::{DrainPolicy, InputSample, PlayerProfile, Push},
     world::{
         World,
         diff::{
@@ -340,6 +340,7 @@ fn sweep(source: &Source, occupancy: &'static str, active: usize) -> SweepPoint 
     let mut host = SimHost::spawn(
         Arc::new(RwLock::new(world)),
         PlayerProfile::default(),
+        DrainPolicy::default(),
         snapshots,
         tracked,
         None,
@@ -666,6 +667,7 @@ fn surface_point(extent: i32) -> SurfacePoint {
     let mut host = SimHost::spawn(
         Arc::new(RwLock::new(generated.world)),
         PlayerProfile::default(),
+        DrainPolicy::default(),
         snapshots,
         tracked,
         Some(generated.granular_cells),
