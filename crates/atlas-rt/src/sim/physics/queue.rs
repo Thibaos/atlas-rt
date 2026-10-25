@@ -224,6 +224,11 @@ mod tests {
             IVec3::new(3, 4, 1),
             IVec3::new(0, 6, 0),
             IVec3::new(0, 4, 1),
+            IVec3::new(-1, 4, -1),
+            IVec3::new(-9, 4, 0),
+            IVec3::new(8, 4, 0),
+            IVec3::new(9, 4, 8),
+            IVec3::new(1, 3, 0),
         ];
 
         queue.seed(&World::default(), &table(), Some(&cells));
@@ -231,13 +236,18 @@ mod tests {
         assert_eq!(
             unserved(&queue),
             vec![
+                IVec3::new(1, 3, 0),
+                IVec3::new(-9, 4, 0),
+                IVec3::new(-1, 4, -1),
                 IVec3::new(0, 4, 1),
                 IVec3::new(0, 4, 9),
                 IVec3::new(3, 4, 1),
+                IVec3::new(8, 4, 0),
+                IVec3::new(9, 4, 8),
                 IVec3::new(1, 5, 0),
                 IVec3::new(0, 6, 0),
             ],
-            "y leads, then x, then z, and a repeated cell stays one entry"
+            "y leads, then x, then z, across chunks and negative coordinates, and a repeated cell stays one entry"
         );
     }
 
