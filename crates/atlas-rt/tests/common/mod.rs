@@ -46,13 +46,8 @@ pub fn spawn_sim_parity(parity: ParityPolicy) -> (Arc<RwLock<World>>, Handle) {
 
 fn spawn_with(profile: PlayerProfile, parity: ParityPolicy) -> (Arc<RwLock<World>>, Handle) {
     let world = Arc::new(RwLock::new(World::default()));
-    let handle = sim::spawn(
-        Arc::clone(&world),
-        profile,
-        parity,
-        DrainPolicy::default(),
-    )
-    .expect("the sim must spawn");
+    let handle = sim::spawn(Arc::clone(&world), profile, parity, DrainPolicy::default())
+        .expect("the sim must spawn");
 
     (world, handle)
 }

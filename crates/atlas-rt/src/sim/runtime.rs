@@ -554,7 +554,13 @@ impl Runtime {
             );
         }
 
-        let drained = rules::drain(&guard, &self.materials, &mut queue, self.parity, self.policy);
+        let drained = rules::drain(
+            &guard,
+            &self.materials,
+            &mut queue,
+            self.parity,
+            self.policy,
+        );
 
         drop(guard);
 
