@@ -100,7 +100,7 @@ impl World {
     /// The Micro-chunk entry `origin` names, or `None` for a Micro-chunk with no
     /// entry.
     #[must_use]
-    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<micro::MicroChunkRef<'_>> {
+    pub(crate) fn chunk_entry(&self, origin: IVec3) -> Option<micro::MicroChunkRef<'_>> {
         self.store.chunk_entry(origin)
     }
 

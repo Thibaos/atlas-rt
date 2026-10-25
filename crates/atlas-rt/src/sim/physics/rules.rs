@@ -4,7 +4,7 @@ use crate::world::World;
 use crate::world::diff::edit::{VoxelChange, VoxelEdit};
 use crate::world::material::PhysicalMaterialTable;
 
-use super::field::Field;
+use super::field::{Field, Overlay};
 use super::queue::UpdateQueue;
 
 /// How a grain breaks a diagonal tie on the axis it picked: by the parity of
@@ -25,11 +25,14 @@ pub enum DrainPolicy {
     Runs,
 }
 
-/// One drain's outcome: the edits it would commit and the queued cells it
-/// evaluated, whether they moved, settled, or were never grains.
+/// One drain's outcome: the edits it would commit, the queued cells it
+/// evaluated, whether they moved, settled, or were never grains, and the
+/// overlay the commit reads.
 pub(in crate::sim) struct Drained {
     pub(in crate::sim) edits: Vec<VoxelEdit>,
     pub(in crate::sim) processed: usize,
+    #[allow(dead_code, reason = "the commit reads it, and ticket 05 lands it")]
+    pub(in crate::sim) overlay: Overlay,
 }
 
 /// Drains every cell this tick's queue holds, in ascending y, then x, then z,
@@ -58,17 +61,19 @@ pub(in crate::sim) fn drain(
     let mut moves: Vec<(IVec3, IVec3, u8)> = Vec::new();
     let mut woken: Vec<IVec3> = Vec::new();
 
-    let processed = {
+    let (processed, overlay) = {
         let mut field = Field::new(world, table, queue);
 
-        match policy {
+        let processed = match policy {
             DrainPolicy::PerCell => serve(&mut field, parity, &served, &mut moves, &mut woken),
             DrainPolicy::Runs => {
                 // Ticket 06 translates each run of chunks here, and the
                 // per-cell pass then moves whatever crosses a run boundary.
                 serve(&mut field, parity, &served, &mut moves, &mut woken)
             }
-        }
+        };
+
+        (processed, field.into_overlay())
     };
 
     queue.end_tick();
@@ -94,7 +99,11 @@ pub(in crate::sim) fn drain(
         });
     }
 
-    Drained { edits, processed }
+    Drained {
+        edits,
+        processed,
+        overlay,
+    }
 }
 
 /// Serves every cell in drain order, one cell at a time, and returns how many
