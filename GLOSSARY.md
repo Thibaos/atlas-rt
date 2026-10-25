@@ -406,16 +406,23 @@ One advance of the voxel rules and player movement. Player movement resolves
 first, then voxel rules. Input is sampled outside the tick and consumed by the
 controller during the tick. A tick drains the whole Update queue, so its rate
 falls below the profile's when a tick costs more than a frame period, and the
-World never advances partially to keep up. Each tick reaches the host as it
-finishes, so an update that runs several shows every one of them.
+World never advances partially to keep up. The drain holds each touched chunk's
+post-tick state in an overlay, and the commit writes a chunk whole when it moved
+more than 4 cells, dropping the per-cell edits that entry already holds. Each
+tick reaches the host as it finishes, so an update that runs several shows every
+one of them.
 _Avoid_: physics frame, render frame
 
 **Update queue**:
-The cells the voxel rules have not evaluated yet, held in the order a tick
-drains them: ascending y, then x, then z. Settled means absent, so a Falling
-granular cell blocks the player only while the queue holds it. A tick serves
-every cell the queue holds, so a grain moves at most one cell a tick and a cell
-whose support changes is served in the next tick.
+The cells the voxel rules have not evaluated yet, held as one 512-bit mask per
+Micro-chunk: byte `y * 8 + x` holds the z bits of one (y, x), the transpose of
+the store's byte `y + 8z`, so a chunk's 64 bytes yield its cells in ascending
+y, then x, then z, the order a tick drains them. Settled means absent, so a
+Falling granular cell blocks the player only while the queue holds it. A tick
+serves every cell the queue holds, so a grain moves at most one cell a tick and
+a cell whose support changes is served in the next tick. A tick may serve a
+maximal run of chunks whose grains all fall straight down as one mask write per
+chunk, and the per-cell pass moves whatever crosses a run boundary.
 _Avoid_: dirty list, work list
 
 **Input sample**:
