@@ -989,7 +989,6 @@ fn sand_ball_tick_timings() {
     println!(
         "gate          p95 whole tick, {FREE_FALL_GATE:?} for the fall and {PILE_GATE:?} for the pile, reported rather than asserted until the run translation lands"
     );
-    print_scene_header();
 
     let generated = sand_ball::build(&Progress::generate_path());
     let grains = generated.granular_cells.len();
@@ -1033,6 +1032,7 @@ fn sand_ball_tick_timings() {
     println!(
         "scene         sand ball, {grains} grains and {voxels} voxels, activated with the generator's own granular cells"
     );
+    print_scene_header();
 
     let mut failures = Failures::default();
 
@@ -1063,7 +1063,6 @@ fn sand_ball_tick_timings() {
 fn raining_tick_timings() {
     println!("clock         frames at 60 fps, tick fixed at 30 Hz, {RAIN_TICKS} measured ticks");
     println!("gate          p95 whole tick, {PLATEAU_GATE:?} over the plateau, asserted");
-    print_scene_header();
 
     let (generated, emitter) = rain::build(&Progress::generate_path());
     let holes = emitter.cells.len();
@@ -1098,6 +1097,7 @@ fn raining_tick_timings() {
     println!(
         "scene         rain plate, {holes} holes and {voxels} voxels, {per_tick} grains a tick, no granular cells seeded"
     );
+    print_scene_header();
 
     let mut failures = Failures::default();
 
