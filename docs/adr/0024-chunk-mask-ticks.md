@@ -73,10 +73,12 @@ suite proves it and a differential test proves it again against the unmodified
 per-cell path. Stage B adds the run translation, and the per-cell pass moves
 whatever crosses a run boundary.
 
-The rain has no such redundancy. Its 120 ms is 262,000 chunk snapshots a tick,
-with a grain changing Micro-chunk every tick, and neither stage reduces the
-number of chunks a move touches. That is why a run is gated per chunk per tick
-rather than switched on for a scene.
+The rain has no such redundancy. A grain there is alone in its Micro-chunk, so
+it costs a chunk's overlay seed and a chunk's queue slot for one cell, and
+neither stage reduces the number of chunks a move touches. Its plateau measured
+110 ms p95 before these changes and 143 to 160 ms after, which is what the chunk
+granularity costs a scene whose chunks hold one grain. That is why a run is
+gated per chunk per tick rather than switched on for a scene.
 
 ## Consequences
 
@@ -96,8 +98,9 @@ rather than switched on for a scene.
   store entry.
 - The rewrite filter costs about 10 ns per edit and is skipped when no chunk is
   rewritten.
-- The rain's 262,000 chunk snapshots a tick are untouched. It needs its own
-  spec.
+- The rain's 262,000 chunk snapshots a tick are untouched, and its plateau paid
+  the chunk granularity on one-grain chunks: 110 ms p95 before, 143 to 160 ms
+  after. It needs its own spec.
 - The renderer is unchanged. The frame path costs about 6,800 packed chunks a
   tick and is measured at the new tick rate rather than reworked.
 
