@@ -258,7 +258,7 @@ scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 **Procedural sky**:
 The analytic Background: a piecewise-linear radiance gradient in
 μ = cos(elevation), knots at ground/horizon/zenith (all positive),
-evaluated by the miss shader. No assets, no Sun disk. It also lights surfaces:
+evaluated for every ray that hits nothing. No assets, no Sun disk. It also lights
 the Sky ambient samples it, so raising a knot brightens what the geometry below
 it receives, not only the Background.
 _Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
@@ -269,8 +269,7 @@ The light a surface takes from the Procedural sky: the cosine-weighted mean of
 the Procedural sky's radiance over the hemisphere around the Normal, measured by
 Occlusion samples and added to the binary Sun term, so a hit's radiance is
 `albedo * (sun_visible + ambient)`. The fraction of samples that reach the sky
-is the occlusion, which makes the term a measurement, not a strength factor.
-Voxel mode only.
+is the occlusion. Voxel mode only.
 _Avoid_: ambient occlusion (the measurement, not the light), ambient light,
 sky visibility (the fraction, not the radiance)
 
@@ -278,18 +277,16 @@ sky visibility (the fraction, not the radiance)
 One secondary ray from a hit toward the sky, drawn cosine-weighted over the
 hemisphere around the Normal and traced at most 8 Voxels against the opaque-only
 shadow group, so a transparent surface never occludes. A sample that hits
-nothing contributes the Procedural sky along its direction, one that hits inside
-that reach contributes a tenth of the sky radiance at the Normal, and one at or
-below the tangent plane is dropped and contributes nothing at all. The Sky
-ambient is the mean over the sample count (0 to 16, default 4), so the
-denominator stays that count rather than the number of samples that passed.
+nothing contributes the Procedural sky along its direction and one that hits
+inside that reach contributes a tenth of the sky radiance at the Normal. The Sky
+ambient is the mean over the sample count (0 to 16, default 4).
 _Avoid_: AO ray, ambient ray, shadow ray (that is the Sun trace)
 
 **Background**:
-The radiance produced where no geometry is hit (the miss shader's output):
-the Procedural sky. Rays that leave the loaded world hit nothing and report
-the Background color. The ray pass's t-range equals the camera's near/far,
-so Background also appears beyond the far plane.
+The radiance produced where no geometry is hit: the Procedural sky. Rays that
+leave the loaded world hit nothing and report the Background color. The ray
+pass's t-range equals the camera's near/far, so Background also appears beyond
+the far plane.
 _Avoid_: empty space ("empty" is a property of the sparse world,
 not a place)
 
