@@ -21,7 +21,8 @@ use crate::{
     render::{
         context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
         pipeline::task::{
-            RegionRenderContext, RegionRenderTask, RenderMode, production_raygen, scene,
+            RegionRenderContext, RegionRenderTask, RenderMode, production_raygen,
+            scene_with_samples,
         },
         region::{queue::RendererInput, residency::RegionStore},
     },
@@ -195,7 +196,7 @@ impl FramePipeline {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
-            scene: scene(ao_samples),
+            scene: scene_with_samples(ao_samples),
             swapchain_storage_image_ids: swapchain_storage.clone(),
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,

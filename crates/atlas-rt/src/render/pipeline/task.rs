@@ -211,7 +211,7 @@ pub const fn default_scene() -> production_raygen::Scene {
 /// The Scene the standalone path renders with. Only the sample count comes from
 /// the command line; the radius and the floor keep `default_scene()`'s values.
 #[must_use]
-pub const fn scene(ao_samples: u32) -> production_raygen::Scene {
+pub const fn scene_with_samples(ao_samples: u32) -> production_raygen::Scene {
     production_raygen::Scene {
         ao_samples,
         ..default_scene()

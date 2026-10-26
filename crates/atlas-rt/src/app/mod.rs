@@ -46,7 +46,7 @@ use atlas_rt::{
 };
 
 use input::{Input, InputButton, InputKey};
-use launch::WorldRequest;
+use launch::{Launch, WorldRequest};
 use player::PlayerController;
 use sim_host::{SimHost, Tally};
 use timers::ScheduleController;
@@ -90,13 +90,14 @@ impl App {
     ///
     /// Returns an error if the GPU could not be initialized or the World
     /// cannot be supplied.
-    pub fn new(
-        event_loop: &EventLoop<()>,
-        request: WorldRequest,
-        ao_samples: u32,
-        free_camera: bool,
-        no_sim: bool,
-    ) -> anyhow::Result<Self> {
+    pub fn new(event_loop: &EventLoop<()>, launch: Launch) -> anyhow::Result<Self> {
+        let Launch {
+            request,
+            ao_samples,
+            free_camera,
+            no_sim,
+        } = launch;
+
         let gpu = RenderContext::new(event_loop)?;
 
         let SuppliedWorld {

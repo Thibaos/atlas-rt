@@ -11,13 +11,7 @@ fn main() -> anyhow::Result<()> {
 
     let event_loop = EventLoop::new()?;
 
-    let mut app = App::new(
-        &event_loop,
-        launch.request,
-        launch.ao_samples,
-        launch.free_camera,
-        launch.no_sim,
-    )?;
+    let mut app = App::new(&event_loop, launch)?;
 
     event_loop.run_app(&mut app)?;
 

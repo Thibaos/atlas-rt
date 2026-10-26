@@ -8,7 +8,7 @@
 
 #include "../common/header.glsl"
 #include "../common/bindings.glsl"
-#include "../common/noise.glsl"
+#include "../common/sampling.glsl"
 
 struct HullAabb {
     vec3 min;
