@@ -41,8 +41,10 @@ The commit materializes the overlay. A touched chunk whose move count exceeds
 `REWRITE_THRESHOLD`, 4, is written whole through `write_entry` from the
 overlay's mask and materials, and every per-cell edit whose position lies in a
 rewritten chunk is dropped, because the entry already holds that move. The
-remaining edits go through `edit_world` as they do now. Both snapshot lists fold
-into one batch through `SnapshotFold`, and the tracked set is planned once.
+remaining edits go through `apply_edits`, and both snapshot lists fold into one
+batch through `SnapshotFold`, so the tracked set is planned once. `edit_world`
+is the whole of the commit only when no chunk crosses the threshold, and the
+overlay reports the most moves it served, so that answer costs one comparison.
 
 ## Why
 
@@ -80,7 +82,7 @@ rather than switched on for a scene.
 
 - The serve order is unchanged, so a contested destination resolves as it did
   and the order stays part of the result.
-- The five tests in `sim/physics/rules.rs` that compare a `Vec<VoxelEdit>`
+- The three tests in `sim/physics/rules.rs` that compare a `Vec<VoxelEdit>`
   exactly stay written against the per-cell policy, because stage A emits the
   same edits.
 - The per-cell path remains the oracle and the fallback. `DrainPolicy` selects
@@ -124,7 +126,10 @@ overlay, the run translation and the whole-chunk commit from
 [0020](0020-in-tick-drain.md)'s in-tick state and
 [0021](0021-drain-the-whole-queue.md)'s whole-queue drain in force: the drain
 still resolves against an immutable World, writes each move into an overlay as
-it makes it, and serves every queued cell. The one statement it supersedes is
-0020's description of the overlay's shape, which was per cell. Restates
-**Simulation tick** and **Update queue** in `GLOSSARY.md` and replaces the sand
-ball's timings in `README.md`.
+it makes it, and serves every queued cell. Two of 0020's statements are
+superseded: the overlay's shape, which was per cell, and its claim that the edit
+list and the commit path are unchanged, which no longer holds, because a
+translated chunk emits no per-cell edit for the cells it moves and the commit
+writes a rewritten chunk whole rather than replaying its moves as edits.
+Restates **Simulation tick** and **Update queue** in `GLOSSARY.md` and replaces
+the sand ball's timings in `README.md`.
