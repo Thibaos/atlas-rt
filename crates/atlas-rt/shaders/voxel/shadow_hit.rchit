@@ -13,5 +13,5 @@ layout(location = 2) rayPayloadInEXT OcclusionPayload occlusion;
 
 void main() {
     shadow_payload.t = gl_RayTmaxEXT;
-    occlusion = OcclusionPayload(vec3(0.0), 0.0);
+    occlusion.visible = 0.0;
 }

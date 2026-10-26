@@ -6,7 +6,6 @@ struct MainPassPayload {
 };
 
 struct OcclusionPayload {
-    vec3 radiance;
     float visible;
 };
 

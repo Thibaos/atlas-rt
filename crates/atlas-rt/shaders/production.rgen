@@ -9,7 +9,7 @@
 #include "common/bindings.glsl"
 #include "common/raygen_common.glsl"
 #include "common/sky.glsl"
-#include "common/noise.glsl"
+#include "common/sampling.glsl"
 
 const float PI = 3.14159265359;
 const float AO_ORIGIN_OFFSET = 1e-3;
@@ -58,12 +58,19 @@ vec3 sky_ambient(vec3 sample_origin, vec3 normal) {
             continue;
         }
 
+        occlusion.visible = 1.0;
+
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, sample_origin, RAY_T_MIN, sample_direction, scene.ao_radius, 2);
 
-        ambient += (occlusion.visible > 0.5) ? occlusion.radiance : floor_radiance;
+        ambient += (occlusion.visible > 0.5) ? sky_radiance(sample_direction) : floor_radiance;
     }
 
     return ambient / float(scene.ao_samples);
+}
+
+void assume_miss(vec3 direction) {
+    payload.color = vec4(sky_radiance(direction), 1.0);
+    payload.alpha = 1.0;
 }
 
 void shade_hit(vec3 origin, vec3 direction) {
@@ -100,6 +107,7 @@ void main() {
     build_primary_ray(origin, direction);
 
     reset_payload();
+    assume_miss(direction);
 
     uint sbt_offset = (mode == MODE_HULL) ? HULL_SBT_INDEX : VOXEL_SBT_INDEX;
 
@@ -121,6 +129,9 @@ void main() {
         float coverage = payload.alpha;
         vec4 stashed_color = payload.color;
         float stashed_t = payload.t;
+
+        reset_payload();
+        assume_miss(direction);
 
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, RETRACE_SBT_INDEX, 0u, 0u, origin, stashed_t, direction, RAY_T_MAX, 0);
 
