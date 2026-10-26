@@ -9,7 +9,9 @@
 #include "../common/bindings.glsl"
 
 layout(location = 1) rayPayloadInEXT MainPassPayload shadow_payload;
+layout(location = 2) rayPayloadInEXT OcclusionPayload occlusion;
 
 void main() {
     shadow_payload.t = gl_RayTmaxEXT;
+    occlusion = OcclusionPayload(vec3(0.0), 0.0);
 }

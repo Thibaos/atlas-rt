@@ -17,7 +17,7 @@ const float SHADOWED_ALBEDO_SCALE = 0.25;
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 layout(location = 1) rayPayloadEXT MainPassPayload shadow_payload;
-layout(location = 2) rayPayloadEXT vec4 occlusion_radiance;
+layout(location = 2) rayPayloadEXT OcclusionPayload occlusion;
 
 void reset_payload() {
     payload.t = FLT_MAX;
@@ -58,10 +58,9 @@ vec3 sky_ambient(vec3 sample_origin, vec3 normal) {
             continue;
         }
 
-        shadow_payload.t = FLT_MAX;
         traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, sample_origin, RAY_T_MIN, sample_direction, scene.ao_radius, 2);
 
-        ambient += (shadow_payload.t >= FLT_MAX) ? occlusion_radiance.rgb : floor_radiance;
+        ambient += (occlusion.visible > 0.5) ? occlusion.radiance : floor_radiance;
     }
 
     return ambient / float(scene.ao_samples);

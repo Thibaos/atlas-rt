@@ -5,6 +5,11 @@ struct MainPassPayload {
     vec3 normal;
 };
 
+struct OcclusionPayload {
+    vec3 radiance;
+    float visible;
+};
+
 #define EPSILON 1e-20
 #define FLT_MAX 3.402823466e+38
 
