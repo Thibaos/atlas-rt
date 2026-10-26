@@ -177,7 +177,7 @@ impl Overlay {
 }
 
 /// What the commit reads to write a touched chunk whole, in no particular
-/// order. A chunk the tick has not touched answers an absent mask and no moves.
+/// order. A chunk the tick has not touched answers an absent mask.
 impl Overlay {
     pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> {
         self.entries.iter().map(|(origin, state)| (*origin, state))
@@ -189,10 +189,6 @@ impl Overlay {
 
     pub(in crate::sim) fn material_at(&self, origin: IVec3, cell: usize) -> Option<u8> {
         self.entries.get(&origin)?.material(cell)
-    }
-
-    pub(in crate::sim) fn moves(&self, origin: IVec3) -> usize {
-        self.entries.get(&origin).map_or(0, ChunkHeld::moves)
     }
 }
 
@@ -428,8 +424,12 @@ mod tests {
             "a second material materializes the per-cell array"
         );
         assert!(state.uniform.is_none(), "the uniform marker is dropped");
-        assert_eq!(overlay.moves(chunk), 0, "the chunk served no move");
-        assert_eq!(overlay.moves(source), 1, "the source's chunk served it");
+        assert_eq!(state.moves(), 0, "the chunk served no move");
+        assert_eq!(
+            overlay.entries.get(&source).map_or(0, ChunkHeld::moves),
+            1,
+            "the source's chunk served it"
+        );
         assert_eq!(
             overlay.mask(source),
             Some(&[0u8; MICRO_BYTES]),
@@ -493,6 +493,10 @@ mod tests {
             Some(&[0u8; MICRO_BYTES]),
             "a chunk the World keeps no entry for starts as a zero mask"
         );
-        assert_eq!(overlay.moves(absent), 0, "a seeded chunk served no move");
+        assert_eq!(
+            overlay.entries.get(&absent).map_or(0, ChunkHeld::moves),
+            0,
+            "a seeded chunk served no move"
+        );
     }
 }

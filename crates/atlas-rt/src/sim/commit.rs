@@ -58,8 +58,8 @@ pub(in crate::sim) fn commit(
     }
 
     let mut edited = apply_edits(world, &remaining)?.into_iter();
-    let mut ordered = Vec::with_capacity(touched.len());
     let touched_chunks = touched.len();
+    let mut ordered = Vec::with_capacity(touched_chunks);
 
     for origin in touched {
         if let Some(snapshot) = rewrites.remove(&origin) {
@@ -86,8 +86,8 @@ pub(in crate::sim) fn commit(
 fn rewritten(overlay: &Overlay, threshold: usize) -> FxHashMap<IVec3, MicroChunkSnapshot> {
     let mut rewrites: FxHashMap<IVec3, MicroChunkSnapshot> = FxHashMap::default();
 
-    for (origin, _) in overlay.chunks() {
-        if overlay.moves(origin) <= threshold {
+    for (origin, held) in overlay.chunks() {
+        if held.moves() <= threshold {
             continue;
         }
 
@@ -252,6 +252,15 @@ mod tests {
         world_of(&cells)
     }
 
+    /// The moves the tick served in `origin`'s chunk, which is what the
+    /// threshold reads.
+    fn served(overlay: &Overlay, origin: IVec3) -> usize {
+        overlay
+            .chunks()
+            .find(|(touched, _)| *touched == origin)
+            .map_or(0, |(_, held)| held.moves())
+    }
+
     #[test]
     fn only_a_chunk_that_serves_more_moves_than_the_threshold_is_rewritten() {
         let world = dense_and_sparse();
@@ -260,14 +269,14 @@ mod tests {
         let sparse = IVec3::new(16, 0, 0);
 
         assert!(
-            drained.overlay.moves(dense) > REWRITE_THRESHOLD,
+            served(&drained.overlay, dense) > REWRITE_THRESHOLD,
             "the dense chunk serves {} moves",
-            drained.overlay.moves(dense)
+            served(&drained.overlay, dense)
         );
         assert!(
-            drained.overlay.moves(sparse) <= REWRITE_THRESHOLD,
+            served(&drained.overlay, sparse) <= REWRITE_THRESHOLD,
             "the sparse chunk serves {} moves",
-            drained.overlay.moves(sparse)
+            served(&drained.overlay, sparse)
         );
 
         let rewrites = rewritten(&drained.overlay, REWRITE_THRESHOLD);
@@ -341,9 +350,9 @@ mod tests {
 
         assert_eq!(before.len(), 8, "the column is eight grains");
         assert!(
-            drained.overlay.moves(dense) > REWRITE_THRESHOLD,
+            served(&drained.overlay, dense) > REWRITE_THRESHOLD,
             "the dense chunk serves {} moves",
-            drained.overlay.moves(dense)
+            served(&drained.overlay, dense)
         );
 
         let remaining = [clear(0, 8, 0)];
