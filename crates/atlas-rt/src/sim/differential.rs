@@ -1,11 +1,18 @@
 //! The drain's differential harness: one scene built twice, each side driven
 //! through the real drain and commit under one policy, compared after every
-//! tick. `Runs` aliases the per-cell pass until the run translation lands, so
-//! the cases prove the harness itself before they prove a fast path.
+//! tick, so the run translation is checked against the per-cell oracle rather
+//! than argued.
 //!
 //! The commit is compared the same way: one scene drains the same way twice,
 //! once with every move applied as a per-cell edit and once with every touched
 //! chunk written whole from the overlay.
+//!
+//! Both comparisons drive `commit::commit`, because a translated chunk emits no
+//! per-cell edit and would never reach the World through `edit_world`. The two
+//! policies' snapshot lists are compared as content per Micro-chunk: a run pass
+//! drops its chunks' edits, so it has no first-touch position for them, and the
+//! order check belongs to the commit comparison, which drains the same way on
+//! both sides.
 
 use glam::IVec3;
 
@@ -127,12 +134,6 @@ impl Side {
     }
 
     fn commit(&mut self, edits: &[VoxelEdit], overlay: &Overlay, threshold: usize) {
-        if edits.is_empty() {
-            self.snapshots = Vec::new();
-
-            return;
-        }
-
         let batch = commit(&mut self.world, edits, overlay, threshold, &self.tracked)
             .unwrap_or_else(|error| panic!("the tick's edits must apply: {error}"));
 
@@ -166,6 +167,21 @@ impl Side {
             .map(|snapshot| snapshot.global_coords)
             .collect()
     }
+
+    /// The snapshots by Micro-chunk, in origin order, which is what two runs of
+    /// different policies can share: a run pass emits no edit for a chunk it
+    /// translates, so it has no first-touch position to compare.
+    fn snapshot_content(&self) -> Vec<(IVec3, &MicroChunkSnapshot)> {
+        let mut content: Vec<(IVec3, &MicroChunkSnapshot)> = self
+            .snapshots
+            .iter()
+            .map(|snapshot| (snapshot.global_coords, snapshot))
+            .collect();
+
+        content.sort_unstable_by_key(|(origin, _)| origin.to_array());
+
+        content
+    }
 }
 
 /// Drives both drain policies over one scene and compares them after every
@@ -198,6 +214,7 @@ fn run_commits(scene: Scene, ticks: usize) -> Result<(), String> {
         per_cell.serve(DrainPolicy::PerCell, usize::MAX);
         rewrite.serve(DrainPolicy::PerCell, 0);
         compare(tick, &per_cell, &rewrite)?;
+        compare_order(tick, &per_cell, &rewrite)?;
     }
 
     Ok(())
@@ -211,7 +228,7 @@ fn assert_same_commit(scene: Scene, ticks: usize) {
 
 /// One tick of both sides: the World's cells and their count, the queue's cells
 /// in drain order, the cells the drain evaluated, the tracked set, and the
-/// snapshot list in the order the commit planned it.
+/// snapshots' content per Micro-chunk.
 fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
     let cells = per_cell.cells();
     let translated = runs.cells();
@@ -258,6 +275,39 @@ fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
         ));
     }
 
+    let content = per_cell.snapshot_content();
+    let translated = runs.snapshot_content();
+
+    if content.len() != translated.len() {
+        return Err(format!(
+            "tick {tick}: the snapshot content covers {} chunks against {}",
+            content.len(),
+            translated.len()
+        ));
+    }
+
+    for ((origin, expected), (held, actual)) in content.iter().zip(&translated) {
+        if origin != held {
+            return Err(format!(
+                "tick {tick}: the snapshot content at {origin} has no counterpart, the other side names {held}"
+            ));
+        }
+
+        if expected != actual {
+            return Err(format!(
+                "tick {tick}: the snapshot content at {origin} differs: {:?} against {:?}",
+                expected.chunk.mask(),
+                actual.chunk.mask()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// The same tick's snapshot list in the order the commit planned it, which two
+/// runs of one policy keep and two policies do not.
+fn compare_order(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
     let origins = per_cell.snapshot_origins();
     let translated = runs.snapshot_origins();
 
@@ -266,17 +316,6 @@ fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
             "tick {tick}: the snapshot list's order differs at {}",
             first_disagreement(&origins, &translated)
         ));
-    }
-
-    for (expected, actual) in per_cell.snapshots.iter().zip(&runs.snapshots) {
-        if expected != actual {
-            return Err(format!(
-                "tick {tick}: the snapshot content at {} differs: {:?} against {:?}",
-                expected.global_coords,
-                expected.chunk.mask(),
-                actual.chunk.mask()
-            ));
-        }
     }
 
     Ok(())
@@ -433,6 +472,43 @@ fn dense_block() -> World {
     world_of(&cells)
 }
 
+/// A stack of `count` full Micro-chunks of grains, the lowest starting at
+/// y = 0 with open air below it, so the run's bottom row falls into the chunk
+/// below on every tick. The ball hides this: its lowest cell sits one row above
+/// its chunk's row 0, so a naive whole-body shift comes out exact.
+fn full_chunks(count: i32) -> World {
+    let edge = MICRO_CHUNK_LENGTH.cast_signed();
+    let mut cells = Vec::new();
+
+    for x in 0..edge {
+        for z in 0..edge {
+            for y in 0..edge.saturating_mul(count) {
+                cells.push((IVec3::new(x, y, z), GRAIN));
+            }
+        }
+    }
+
+    world_of(&cells)
+}
+
+/// Two full chunks, one above the other, so the run is longer than one chunk and
+/// the lower chunk's top row takes the upper chunk's bottom row.
+fn stacked_chunks() -> World {
+    full_chunks(2)
+}
+
+/// Two full chunks with one grain in the chunk above them: that chunk holds no
+/// more cells than a whole-entry write is cheaper than, so it stays on the
+/// per-cell path and the run's top chunk has an above neighbour outside the run.
+fn run_top_below_a_lone_grain() -> World {
+    let edge = MICRO_CHUNK_LENGTH.cast_signed();
+    let mut world = full_chunks(2);
+
+    world.set_voxel(IVec3::new(0, edge.saturating_mul(2), 0), GRAIN);
+
+    world
+}
+
 fn lowest_grain(world: &World) -> IVec3 {
     world
         .iter_voxels()
@@ -545,6 +621,63 @@ fn a_dense_block_of_full_chunks_falls_the_same_under_both_policies() {
 }
 
 #[test]
+fn a_body_whose_bottom_row_is_occupied_falls_the_same_under_both_policies() {
+    let world = full_chunks(1);
+    let lowest = lowest_grain(&world);
+
+    assert_eq!(
+        (lowest.x, lowest.y, lowest.z),
+        (0, 0, 0),
+        "the fixture's lowest grain sits on its chunk's row 0, which the sand ball's does not"
+    );
+    assert!(
+        !world.contains(&IVec3::new(0, -1, 0)),
+        "the row below the chunk is open, so the bottom row falls into the chunk below"
+    );
+
+    assert_same(Scene::new(|| full_chunks(1), table()), 8);
+}
+
+#[test]
+fn two_stacked_translating_chunks_fall_the_same_under_both_policies() {
+    assert_eq!(
+        full_chunks(2).voxel_count(),
+        1_024,
+        "the fixture is two full Micro-chunks"
+    );
+
+    assert_same(Scene::new(stacked_chunks, table()), 8);
+}
+
+#[test]
+fn a_run_whose_top_chunk_has_a_neighbour_outside_it_falls_the_same() {
+    let world = run_top_below_a_lone_grain();
+    let lone = IVec3::new(0, MICRO_CHUNK_LENGTH.cast_signed().saturating_mul(2), 0);
+
+    assert!(world.contains(&lone), "the fixture holds the lone grain");
+    assert_eq!(
+        grid_origin(lone, MICRO_CHUNK_LENGTH),
+        IVec3::new(0, lone.y, 0),
+        "the lone grain has a chunk of its own"
+    );
+
+    assert_same(Scene::new(run_top_below_a_lone_grain, table()), 8);
+}
+
+#[test]
+fn a_sphere_meeting_a_floor_off_the_chunk_grid_falls_the_same_under_both_policies() {
+    let landing = 8 - 3 - (FLOOR_Y + 1);
+
+    assert_ne!(
+        landing % 8,
+        0,
+        "the sphere falls {landing} cells, which is what breaks the run mid-fall"
+    );
+
+    assert_same(Scene::new(|| sphere(3, 8, FLOOR_Y), table()), 16);
+}
+
+#[test]
 #[cfg_attr(
     not(debug_assertions),
     ignore = "the full ball belongs to the standing bench"
@@ -612,14 +745,14 @@ fn the_sand_ball_commits_the_same_with_and_without_chunk_rewrites() {
 
 #[test]
 fn a_dropped_edit_fails_the_comparison() {
-    let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
+    let [mut per_cell, mut rewrite] = Scene::new(|| full_chunks(1), table()).sides();
 
     per_cell.serve(DrainPolicy::PerCell, REWRITE_THRESHOLD);
 
     let drained = drain(
-        &runs.world,
-        &runs.table,
-        &mut runs.queue,
+        &rewrite.world,
+        &rewrite.table,
+        &mut rewrite.queue,
         ParityPolicy::Alternate,
         DrainPolicy::Runs,
     );
@@ -629,16 +762,16 @@ fn a_dropped_edit_fails_the_comparison() {
     assert_eq!(
         dropped,
         Some(VoxelEdit {
-            position: IVec3::new(4, 4, 0),
+            position: IVec3::new(7, -1, 7),
             change: VoxelChange::Set(GRAIN),
         }),
-        "the fixture's last edit is the fifth grain's destination"
+        "the translated chunk emits only its bottom row's destinations, and the last is its last column"
     );
 
-    runs.processed = drained.processed;
-    runs.commit(&edits, &Overlay::default(), REWRITE_THRESHOLD);
+    rewrite.processed = drained.processed;
+    rewrite.commit(&edits, &drained.overlay, REWRITE_THRESHOLD);
 
-    let difference = compare(1, &per_cell, &runs)
+    let difference = compare(1, &per_cell, &rewrite)
         .expect_err("a dropped destination must leave the two sides different");
 
     assert!(
@@ -650,7 +783,7 @@ fn a_dropped_edit_fails_the_comparison() {
         "the difference names the field that disagrees: {difference}"
     );
     assert!(
-        difference.contains("IVec3(4, 4, 0)"),
+        difference.contains("IVec3(7, -1, 7)"),
         "the difference names the first disagreeing cell: {difference}"
     );
 }

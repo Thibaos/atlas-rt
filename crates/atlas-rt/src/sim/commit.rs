@@ -58,8 +58,7 @@ pub(in crate::sim) fn commit(
     }
 
     let mut edited = apply_edits(world, &remaining)?.into_iter();
-    let touched_chunks = touched.len();
-    let mut ordered = Vec::with_capacity(touched_chunks);
+    let mut ordered = Vec::with_capacity(touched.len().saturating_add(rewrites.len()));
 
     for origin in touched {
         if let Some(snapshot) = rewrites.remove(&origin) {
@@ -69,9 +68,21 @@ pub(in crate::sim) fn commit(
         }
     }
 
+    // A translated chunk emits no edit, so the first-touch order above never
+    // reaches it. Its entry is its own change, and last in the list.
+    let mut translated: Vec<IVec3> = rewrites.keys().copied().collect();
+
+    translated.sort_unstable_by_key(IVec3::to_array);
+
+    for origin in translated {
+        if let Some(snapshot) = rewrites.remove(&origin) {
+            ordered.push(snapshot);
+        }
+    }
+
     debug_assert!(
-        ordered.len() == touched_chunks,
-        "every touched chunk reaches the batch"
+        rewrites.is_empty(),
+        "every rewritten chunk reaches the batch"
     );
 
     let mut folded = SnapshotFold::default();
