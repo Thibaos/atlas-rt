@@ -744,6 +744,47 @@ fn the_sand_ball_commits_the_same_with_and_without_chunk_rewrites() {
 }
 
 #[test]
+fn a_translated_chunk_reaches_the_batch_without_an_edit() {
+    let [_, mut runs] = Scene::new(|| full_chunks(1), table()).sides();
+    let chunk = IVec3::ZERO;
+
+    let drained = runs.serve(DrainPolicy::Runs, REWRITE_THRESHOLD);
+
+    assert!(
+        drained
+            .edits
+            .iter()
+            .all(|edit| grid_origin(edit.position, MICRO_CHUNK_LENGTH) != chunk),
+        "the translation emits no edit inside the chunk it moves, so only the commit can carry it"
+    );
+    assert!(
+        !runs.snapshots.is_empty(),
+        "the tick's batch holds the chunk the run pass translated"
+    );
+
+    let snapshot = runs
+        .snapshots
+        .iter()
+        .find(|snapshot| snapshot.global_coords == chunk)
+        .expect("the translated chunk reaches the batch with no edit to carry it there");
+    let entry = runs
+        .world
+        .chunk_entry(chunk)
+        .expect("the chunk holds the grains the tick moved");
+
+    assert_eq!(
+        snapshot.chunk.mask(),
+        entry.mask,
+        "the batch's snapshot holds the mask the translation left in the World"
+    );
+    assert_eq!(
+        snapshot.chunk.occupied_count(),
+        448,
+        "the chunk fell a row, so its snapshot holds the seven rows it kept and not the eight it started with"
+    );
+}
+
+#[test]
 fn a_dropped_edit_fails_the_comparison() {
     let [mut per_cell, mut rewrite] = Scene::new(|| full_chunks(1), table()).sides();
 
