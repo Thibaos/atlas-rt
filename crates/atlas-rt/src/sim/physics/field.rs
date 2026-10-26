@@ -100,9 +100,7 @@ impl ChunkHeld {
 
     fn write(&mut self, cell: usize, material: u8) {
         if let Some(per_cell) = self.per_cell.as_mut() {
-            if let Some(slot) = per_cell.get_mut(cell) {
-                *slot = material;
-            }
+            set_material(per_cell, cell, material);
 
             return;
         }
@@ -112,9 +110,7 @@ impl ChunkHeld {
             Some(uniform) => {
                 let mut per_cell = Box::new([uniform; MICRO_CELLS]);
 
-                if let Some(slot) = per_cell.get_mut(cell) {
-                    *slot = material;
-                }
+                set_material(&mut per_cell, cell, material);
 
                 self.per_cell = Some(per_cell);
                 self.uniform = None;
@@ -221,14 +217,21 @@ impl Overlay {
     fn install(&mut self, origin: IVec3, state: ChunkHeld) {
         self.most_moves = self.most_moves.max(state.moves());
 
-        if let Some(slot) = self.slots.get(&origin).copied() {
-            if let Some(existing) = self.states.get_mut(slot) {
-                *existing = state;
-            }
-
-            return;
+        match self.slots.get(&origin).copied() {
+            Some(slot) => self.replace(slot, state),
+            None => self.append(origin, state),
         }
+    }
 
+    /// Replaces the state of a chunk the overlay already holds.
+    fn replace(&mut self, slot: usize, state: ChunkHeld) {
+        if let Some(existing) = self.states.get_mut(slot) {
+            *existing = state;
+        }
+    }
+
+    /// Adds a chunk the overlay did not hold before.
+    fn append(&mut self, origin: IVec3, state: ChunkHeld) {
         let slot = self.states.len();
 
         self.origins.push(origin);
@@ -470,6 +473,14 @@ fn chunk_origin(cell: IVec3) -> IVec3 {
 /// in the mask byte `y + 8z`.
 fn chunk_cell(cell: IVec3, origin: IVec3) -> usize {
     micro::mask_index(cell.saturating_sub(origin))
+}
+
+/// Sets one cell's material in a per-cell array, and leaves a cell outside the
+/// array's walk alone.
+fn set_material(per_cell: &mut [u8; MICRO_CELLS], cell: usize, material: u8) {
+    if let Some(slot) = per_cell.get_mut(cell) {
+        *slot = material;
+    }
 }
 
 /// A chunk's materials spread over its mask's set bits in ascending cell order.

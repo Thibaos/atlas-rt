@@ -189,26 +189,53 @@ fn serve_runs(
     let mut served = 0usize;
 
     for cell in queue.unserved_except(&skip) {
-        while let Some(origin) = runs.translating.get(served).copied()
-            && origin.y <= cell.y
-        {
-            processed = processed.saturating_add(runs.translate_chunk(
-                field,
-                origin,
-                edits,
-                destinations,
-                translations,
-                wakes,
-            ));
-            served = served.saturating_add(1);
-        }
+        processed = processed.saturating_add(translate_through(
+            &runs,
+            field,
+            &mut served,
+            cell.y,
+            edits,
+            destinations,
+            translations,
+            wakes,
+        ));
 
         processed = processed.saturating_add(1);
 
         serve_cell(field, parity, cell, edits, destinations, woken);
     }
 
-    while let Some(origin) = runs.translating.get(served).copied() {
+    processed = processed.saturating_add(translate_through(
+        &runs,
+        field,
+        &mut served,
+        i32::MAX,
+        edits,
+        destinations,
+        translations,
+        wakes,
+    ));
+
+    processed
+}
+
+/// Translates every run whose first row the scan has reached by `upto`, in
+/// order, and returns the cells they served.
+fn translate_through(
+    runs: &Runs<'_>,
+    field: &mut Field<'_>,
+    served: &mut usize,
+    upto: i32,
+    edits: &mut Vec<VoxelEdit>,
+    destinations: &mut Vec<IVec3>,
+    translations: &mut Vec<Translation>,
+    wakes: &mut Vec<(IVec3, [u8; MICRO_BYTES])>,
+) -> usize {
+    let mut processed = 0usize;
+
+    while let Some(origin) = runs.translating.get(*served).copied()
+        && origin.y <= upto
+    {
         processed = processed.saturating_add(runs.translate_chunk(
             field,
             origin,
@@ -217,7 +244,7 @@ fn serve_runs(
             translations,
             wakes,
         ));
-        served = served.saturating_add(1);
+        *served = served.saturating_add(1);
     }
 
     processed
