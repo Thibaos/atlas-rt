@@ -21,7 +21,7 @@ use crate::{
     render::{
         context::{MIN_SWAPCHAIN_IMAGES, RenderContext},
         pipeline::task::{
-            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+            RegionRenderContext, RegionRenderTask, RenderMode, production_raygen, scene,
         },
         region::{queue::RendererInput, residency::RegionStore},
     },
@@ -145,6 +145,7 @@ impl FramePipeline {
         gpu: &RenderContext,
         window: Arc<Window>,
         palette: [Vec4; 256],
+        ao_samples: u32,
         world: &World,
     ) -> anyhow::Result<Self> {
         let input = RendererInput::new()?;
@@ -194,7 +195,7 @@ impl FramePipeline {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
-            scene: default_scene(),
+            scene: scene(ao_samples),
             swapchain_storage_image_ids: swapchain_storage.clone(),
             color_image_id: StorageImageId::INVALID,
             delta_time: 0.0,

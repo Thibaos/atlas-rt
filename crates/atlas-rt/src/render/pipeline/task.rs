@@ -195,10 +195,26 @@ impl RegionRenderTask {
     }
 }
 
+/// The occlusion sample count a Scene carries when nothing sets it.
+pub const DEFAULT_AO_SAMPLES: u32 = 4;
+
 #[must_use]
 pub const fn default_scene() -> production_raygen::Scene {
     production_raygen::Scene {
         sky_knots: [0.15, 0.6, 1.2, 0.0],
+        ao_samples: DEFAULT_AO_SAMPLES,
+        ao_radius: 8.0,
+        ao_floor: 0.1,
+    }
+}
+
+/// The Scene the standalone path renders with. Only the sample count comes from
+/// the command line; the radius and the floor keep `default_scene()`'s values.
+#[must_use]
+pub const fn scene(ao_samples: u32) -> production_raygen::Scene {
+    production_raygen::Scene {
+        ao_samples,
+        ..default_scene()
     }
 }
 

@@ -61,6 +61,7 @@ pub struct App {
     focused: bool,
 
     palette: [Vec4; 256],
+    ao_samples: u32,
     world: Arc<RwLock<World>>,
     tracked: TrackedCoords,
     profile: PlayerProfile,
@@ -92,6 +93,7 @@ impl App {
     pub fn new(
         event_loop: &EventLoop<()>,
         request: WorldRequest,
+        ao_samples: u32,
         free_camera: bool,
         no_sim: bool,
     ) -> anyhow::Result<Self> {
@@ -183,6 +185,7 @@ impl App {
             render_mode: RenderMode::default(),
 
             palette,
+            ao_samples,
             world,
             tracked,
             profile,
@@ -418,7 +421,13 @@ impl ApplicationHandler for App {
                 let pipeline = {
                     let guard = self.world.read().unwrap_or_else(PoisonError::into_inner);
 
-                    FramePipeline::new(&self.gpu, window.clone(), self.palette, &guard)
+                    FramePipeline::new(
+                        &self.gpu,
+                        window.clone(),
+                        self.palette,
+                        self.ao_samples,
+                        &guard,
+                    )
                 };
 
                 match pipeline {

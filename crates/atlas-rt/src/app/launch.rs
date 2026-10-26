@@ -14,6 +14,9 @@
 //! beside them. A World type and a `--world` file are two World sources, so
 //! naming both is refused.
 //!
+//! `--ao` sets how many occlusion samples a hit takes, from 0 to 16, where 0
+//! takes none. It defaults to 4.
+//!
 //! `--fly` and `--no-sim` are separate flags. `--fly` frees the camera from the
 //! character controller and leaves the simulation running, so the free camera
 //! can watch a World settle. `--no-sim` spawns no simulation thread, so no
@@ -30,7 +33,7 @@ use std::{
 
 use glam::IVec3;
 
-use atlas_rt::world::generation::GenerationParams;
+use atlas_rt::{render::pipeline::task::DEFAULT_AO_SAMPLES, world::generation::GenerationParams};
 
 /// The World a run builds at startup: a `.vox` load, a Generation, the sand
 /// ball or the rain.
@@ -51,14 +54,16 @@ enum WorldType {
     Raining,
 }
 
-/// A parsed command line: the World to build, whether the camera flies free of
-/// the simulated player, and whether to run without the simulation.
+/// A parsed command line: the World to build, the occlusion sample count,
+/// whether the camera flies free of the simulated player, and whether to run
+/// without the simulation.
 ///
 /// Without a simulation there is no player pose to follow, so the camera flies
 /// free whether or not `free_camera` is set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Launch {
     pub request: WorldRequest,
+    pub ao_samples: u32,
     pub free_camera: bool,
     pub no_sim: bool,
 }
@@ -68,13 +73,15 @@ pub struct Launch {
 /// # Errors
 ///
 /// Returns a reason when a value flag has no value, when a Seed or extent is
-/// not an integer, when a World type is not `terrain`, `sand-ball` or
-/// `raining`, or when `--extent` or `--world-type` is given beside `--world`.
+/// not an integer, when `--ao` is outside 0 to 16, when a World type is not
+/// `terrain`, `sand-ball` or `raining`, or when `--extent` or `--world-type` is
+/// given beside `--world`.
 pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world = None;
     let mut world_type = None;
     let mut seed = None;
     let mut extent = None;
+    let mut ao_samples = DEFAULT_AO_SAMPLES;
     let free_camera = args.iter().any(|arg| arg == "--fly");
     let no_sim = args.iter().any(|arg| arg == "--no-sim");
 
@@ -96,6 +103,10 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
             }
             "--extent" => {
                 extent = Some(parse_extent(value_after(args, index)?)?);
+                index = index.strict_add(2);
+            }
+            "--ao" => {
+                ao_samples = parse_ao(value_after(args, index)?)?;
                 index = index.strict_add(2);
             }
             _ => index = index.strict_add(1),
@@ -122,6 +133,7 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
 
     Ok(Launch {
         request,
+        ao_samples,
         free_camera,
         no_sim,
     })
@@ -162,6 +174,17 @@ fn parse_extent(value: &str) -> Result<i32, String> {
     value
         .parse::<i32>()
         .map_err(|_| format!("the extent {value} is not an integer"))
+}
+
+/// The most occlusion samples `--ao` accepts.
+const MAX_AO_SAMPLES: u32 = 16;
+
+fn parse_ao(value: &str) -> Result<u32, String> {
+    value
+        .parse::<u32>()
+        .ok()
+        .filter(|samples| *samples <= MAX_AO_SAMPLES)
+        .ok_or_else(|| format!("--ao takes 0 to {MAX_AO_SAMPLES}, not {value}"))
 }
 
 /// The World type a `--world-type` value names.
@@ -359,7 +382,33 @@ mod tests {
     fn a_flag_without_a_value_is_refused() {
         assert!(parse(&args(&["--seed"])).is_err());
         assert!(parse(&args(&["--extent"])).is_err());
+        assert!(parse(&args(&["--ao"])).is_err());
         assert!(parse(&args(&["--world"])).is_err());
+    }
+
+    #[test]
+    fn the_ao_sample_count_defaults_to_four() {
+        assert_eq!(launch(&[]).ao_samples, 4);
+    }
+
+    #[test]
+    fn an_ao_flag_sets_the_sample_count() {
+        assert_eq!(launch(&["--ao", "0"]).ao_samples, 0);
+        assert_eq!(launch(&["--ao", "16"]).ao_samples, 16);
+    }
+
+    #[test]
+    fn an_unrecognized_flag_is_ignored() {
+        assert_eq!(launch(&["--bogus", "--ao", "8"]).ao_samples, 8);
+    }
+
+    #[test]
+    fn an_ao_above_sixteen_names_the_flag_and_the_range() {
+        let refused = parse(&args(&["--ao", "17"]))
+            .err()
+            .unwrap_or_else(|| panic!("--ao 17 must be refused"));
+
+        assert_eq!(refused, "--ao takes 0 to 16, not 17");
     }
 
     #[test]

@@ -39,6 +39,7 @@ refused. There is no `--help`: it is unrecognized, so it starts an ordinary run.
 | `--world-type <type>` | Selects the generated World: `terrain`, the default, `sand-ball`, or `raining`. |
 | `--seed <integer>` | Pins the Seed a Generation is built from. An unsigned or a signed literal, where a negative Seed names the same bits as Godot's. |
 | `--extent <integer>` | Bounds a generated World's ground to a square of `extent` by `extent` cells from the Lattice's negative corner. The fill spans the full Lattice depth, so y is ignored. Defaults to the full Lattice. |
+| `--ao <integer>` | Sets how many occlusion samples a hit takes, 0 to 16, where 0 takes none. Defaults to 4. |
 | `--fly` | Frees the camera from the simulated player and leaves the simulation running, so a World can be watched settle. |
 | `--no-sim` | Runs no simulation thread, so no voxel rule runs and the World changes only where the host edits it. The camera flies free either way, because there is no player pose to follow. |
 
