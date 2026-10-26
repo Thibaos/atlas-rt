@@ -7,7 +7,7 @@ use crate::world::grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice};
 use crate::world::material::{PhysicalMaterialTable, Rule};
 use crate::world::micro::{self, MICRO_BYTES, MICRO_EDGE, MicroChunkRef};
 
-use super::field::{Field, Overlay, uniform};
+use super::field::{ChunkSource, Field, Overlay, uniform};
 use super::queue::UpdateQueue;
 use crate::sim::commit::REWRITE_THRESHOLD;
 
@@ -246,7 +246,7 @@ struct Runs<'a> {
     table: &'a PhysicalMaterialTable,
     queue: &'a UpdateQueue,
     translating: Vec<IVec3>,
-    entries: FxHashMap<IVec3, MicroChunkRef<'a>>,
+    entries: FxHashMap<IVec3, ChunkSource<'a>>,
     columns: FxHashMap<(i32, i32), (i32, bool)>,
 }
 
@@ -286,7 +286,9 @@ impl<'a> Runs<'a> {
             return;
         }
 
-        if !self.grains_only(&entry) {
+        let source = ChunkSource::read(entry);
+
+        if !self.grains_only(&source) {
             return;
         }
 
@@ -299,30 +301,38 @@ impl<'a> Runs<'a> {
         }
 
         self.translating.push(origin);
-        self.entries.insert(origin, entry);
+        self.entries.insert(origin, source);
     }
 
     /// Whether every cell the entry holds is Falling granular, which is what
-    /// lets the shift stand for each cell's own decision. A chunk of one
-    /// material answers from that material, and makes up most chunks.
-    fn grains_only(&self, entry: &MicroChunkRef<'_>) -> bool {
-        let Some(first) = entry.materials.first().copied() else {
-            return false;
-        };
-
-        if entry.materials.iter().all(|material| *material == first) {
-            return self.table.get(first).rule == Rule::FallingGranular;
+    /// lets the shift stand for each cell's own decision.
+    fn grains_only(&self, source: &ChunkSource<'_>) -> bool {
+        if let Some(material) = source.uniform {
+            return self.table.get(material).rule == Rule::FallingGranular;
         }
 
-        entry
-            .materials
-            .iter()
-            .all(|material| self.table.get(*material).rule == Rule::FallingGranular)
+        !source.entry.materials.is_empty()
+            && source
+                .entry
+                .materials
+                .iter()
+                .all(|material| self.table.get(*material).rule == Rule::FallingGranular)
     }
 
     /// Whether every grain on the chunk's row 0 falls straight down, which is
-    /// the row whose cell below sits in the chunk below.
+    /// the row whose cell below sits in the chunk below. A chunk below that
+    /// translates has already moved every cell the row can land in.
     fn row_falls(&mut self, origin: IVec3, mask: &[u8; MICRO_BYTES]) -> bool {
+        let below = origin.with_y(origin.y.saturating_sub(MICRO_CHUNK_LENGTH.cast_signed()));
+
+        if !in_lattice(below) {
+            return false;
+        }
+
+        if self.entries.contains_key(&below) {
+            return true;
+        }
+
         for z in 0..MICRO_EDGE {
             let Some(byte) = mask.get(z.strict_mul(MICRO_EDGE)).copied() else {
                 continue;
@@ -426,7 +436,7 @@ impl<'a> Runs<'a> {
         let above = self.entries.get(&above_origin).copied();
 
         if !self.entries.contains_key(&below_origin) {
-            release_row0(field, origin, &source, edits, destinations);
+            release_row0(field, origin, &source.entry, edits, destinations);
         }
 
         field.translate(origin, source, above);
@@ -438,11 +448,11 @@ impl<'a> Runs<'a> {
             above_origin,
             above_origin.with_x(above_origin.x.saturating_add(edge)),
         ];
-        let leftward = grain_mask(self.table, self.neighbour(left));
-        let rightward = grain_mask(self.table, self.neighbour(right));
-        let raised = roof.map(|origin| grain_mask(self.table, self.neighbour(origin)));
+        let leftward = self.grain_mask(left);
+        let rightward = self.grain_mask(right);
+        let raised = roof.map(|origin| self.grain_mask(origin));
         let masks = wake_masks(
-            source.mask,
+            source.entry.mask,
             &leftward,
             &rightward,
             [&raised[0], &raised[1], &raised[2]],
@@ -459,10 +469,10 @@ impl<'a> Runs<'a> {
 
         translations.push(Translation {
             origin,
-            above: above.map(|above| micro::row(above.mask, 0)),
+            above: above.map(|above| micro::row(above.entry.mask, 0)),
         });
 
-        micro::occupied_count(source.mask)
+        self.queue.held(origin)
     }
 
     /// The chunk at `origin`, or nothing outside the lattice, where the World
@@ -475,6 +485,17 @@ impl<'a> Runs<'a> {
         let world = self.world;
 
         world.chunk_entry(origin)
+    }
+
+    /// The cells of a chunk that hold a grain, since a wake reaches a grain and
+    /// nothing else. A chunk that translates holds nothing else, which is the
+    /// case nearly every wake is in.
+    fn grain_mask(&self, origin: IVec3) -> [u8; MICRO_BYTES] {
+        if let Some(source) = self.entries.get(&origin) {
+            return *source.entry.mask;
+        }
+
+        grain_mask(self.table, self.neighbour(origin))
     }
 }
 

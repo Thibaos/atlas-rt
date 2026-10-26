@@ -14,7 +14,7 @@ use crate::world::diff::snapshot::MicroChunkSnapshot;
 use crate::world::grid::{MICRO_CHUNK_LENGTH, grid_origin};
 use crate::world::micro::{self, MICRO_BYTES, MICRO_CELLS};
 
-use super::physics::field::Overlay;
+use super::physics::field::{ChunkHeld, Overlay};
 use super::runtime::SnapshotFold;
 
 /// The moves a chunk serves above which the commit writes it whole: about
@@ -102,33 +102,29 @@ fn rewritten(overlay: &Overlay, threshold: usize) -> FxHashMap<IVec3, MicroChunk
             continue;
         }
 
-        if let Some(snapshot) = snapshot(overlay, origin) {
-            rewrites.insert(origin, snapshot);
-        }
+        rewrites.insert(origin, snapshot(origin, held));
     }
 
     rewrites
 }
 
-/// The chunk `origin` as the entry the commit writes: the overlay's mask and
-/// the material of each occupied cell in ascending cell order, which is the
-/// order the store's entry keeps them in.
-fn snapshot(overlay: &Overlay, origin: IVec3) -> Option<MicroChunkSnapshot> {
-    let mask: [u8; MICRO_BYTES] = *overlay.mask(origin)?;
+/// A chunk as the entry the commit writes: its mask and the material of each
+/// occupied cell in ascending cell order, which is the order the store's entry
+/// keeps them in.
+fn snapshot(origin: IVec3, held: &ChunkHeld) -> MicroChunkSnapshot {
+    let mask: [u8; MICRO_BYTES] = *held.mask();
     let mut materials = Vec::with_capacity(micro::occupied_count(&mask));
 
     for cell in 0..MICRO_CELLS {
-        if let Some(material) = overlay.material_at(origin, cell) {
+        if let Some(material) = held.material(cell) {
             materials.push(material);
         }
     }
 
-    let chunk = micro::owned_chunk(origin, mask, materials);
-
-    Some(MicroChunkSnapshot {
+    MicroChunkSnapshot {
         global_coords: origin,
-        chunk,
-    })
+        chunk: micro::owned_chunk(origin, mask, materials),
+    }
 }
 
 /// The first-touch order of the chunks the edits touch, and the edits outside
@@ -272,6 +268,13 @@ mod tests {
             .map_or(0, |(_, held)| held.moves())
     }
 
+    /// The state the tick left in `origin`'s chunk.
+    fn touched(overlay: &Overlay, origin: IVec3) -> &ChunkHeld {
+        overlay
+            .chunk(origin)
+            .expect("the tick has to touch the chunk the fixture names")
+    }
+
     #[test]
     fn only_a_chunk_that_serves_more_moves_than_the_threshold_is_rewritten() {
         let world = dense_and_sparse();
@@ -317,7 +320,7 @@ mod tests {
         let drained = drained(&world);
         let chunk = IVec3::new(0, 0, 0);
 
-        let rewritten = snapshot(&drained.overlay, chunk).expect("the tick touched the chunk");
+        let rewritten = snapshot(chunk, touched(&drained.overlay, chunk));
 
         assert_eq!(
             rewritten.chunk.materials(),
@@ -341,7 +344,7 @@ mod tests {
         let drained = drained(&world);
         let chunk = IVec3::new(0, 0, 0);
 
-        let rewritten = snapshot(&drained.overlay, chunk).expect("the tick touched the chunk");
+        let rewritten = snapshot(chunk, touched(&drained.overlay, chunk));
 
         assert_eq!(
             rewritten.chunk.materials(),

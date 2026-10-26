@@ -254,7 +254,6 @@ impl ChunkMasks {
 struct CellWalk<'a> {
     chunks: &'a FxHashMap<ChunkId, ChunkMask>,
     keys: Vec<ChunkId>,
-    skipped: Vec<bool>,
     remaining: usize,
     level: usize,
     level_end: usize,
@@ -272,17 +271,16 @@ impl<'a> CellWalk<'a> {
 
         keys.sort_unstable();
 
-        let skipped: Vec<bool> = keys
-            .iter()
-            .map(|key| skip.is_some_and(|skip| skip.contains(&key.origin())))
-            .collect();
+        if let Some(skip) = skip {
+            keys.retain(|key| !skip.contains(&key.origin()));
+        }
+
         let level_end = level_extent(&keys, 0);
         let row_end = row_extent(&keys, 0);
 
         let mut walk = Self {
             chunks: &masks.chunks,
             keys,
-            skipped,
             remaining: masks.cells,
             level: 0,
             level_end,
@@ -304,11 +302,6 @@ impl<'a> CellWalk<'a> {
         let Some(key) = self.keys.get(self.chunk) else {
             return 0;
         };
-
-        if self.skipped.get(self.chunk).copied().unwrap_or(true) {
-            return 0;
-        }
-
         let Some(mask) = self.chunks.get(key) else {
             return 0;
         };
@@ -524,13 +517,35 @@ impl UpdateQueue {
         self.ready.origins()
     }
 
-    /// Whether the queue holds every cell `mask` marks. A grain this tick does
-    /// not serve would not move, so a chunk holding one is served cell by cell.
+    /// Whether the queue holds every cell `mask` marks, which is what a chunk
+    /// that translates whole needs: a grain this tick does not serve would not
+    /// move. A cell the queue holds and the mask does not is a wake on a cell a
+    /// move vacated, which the tick serves as the empty cell it is.
     pub(in crate::sim) fn holds_all(&self, origin: IVec3, mask: &[u8; MICRO_BYTES]) -> bool {
+        let Some(held) = self.ready.chunks.get(&ChunkId::of(origin)) else {
+            return false;
+        };
+
+        let wanted = transpose(mask);
+
+        held.bytes
+            .iter()
+            .zip(&wanted)
+            .all(|(held, wanted)| held & wanted == *wanted)
+    }
+
+    /// The cells the queue holds in the chunk, which a translated chunk serves
+    /// all of.
+    pub(in crate::sim) fn held(&self, origin: IVec3) -> usize {
         self.ready
             .chunks
             .get(&ChunkId::of(origin))
-            .is_some_and(|held| held.bytes == transpose(mask))
+            .map_or(0, |mask| {
+                mask.bytes
+                    .iter()
+                    .map(|byte| byte.count_ones() as usize)
+                    .sum()
+            })
     }
 
     /// Queues a translated chunk's cells where it leaves them: its cells one row
@@ -773,12 +788,13 @@ mod tests {
         queue.seed(&World::default(), &table(), Some(&cells));
 
         assert!(queue.holds_all(IVec3::new(0, 0, 0), &mask));
+        assert_eq!(queue.held(IVec3::new(0, 0, 0)), 3);
 
         let partial = store_mask(&[IVec3::new(0, 0, 0), IVec3::new(5, 3, 6)]);
 
         assert!(
-            !queue.holds_all(IVec3::new(0, 0, 0), &partial),
-            "a mask holding fewer cells than the queue does is not held all"
+            queue.holds_all(IVec3::new(0, 0, 0), &partial),
+            "a queue holding more than the mask asks for still holds every cell of it: the rest are wakes on cells a move vacated"
         );
 
         let more = store_mask(&[
