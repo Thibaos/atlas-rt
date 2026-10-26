@@ -31,7 +31,6 @@ pub enum DrainPolicy {
 pub(in crate::sim) struct Drained {
     pub(in crate::sim) edits: Vec<VoxelEdit>,
     pub(in crate::sim) processed: usize,
-    #[allow(dead_code, reason = "the commit reads it, and ticket 05 lands it")]
     pub(in crate::sim) overlay: Overlay,
 }
 

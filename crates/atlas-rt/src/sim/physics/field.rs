@@ -75,10 +75,6 @@ impl ChunkHeld {
         self.moves
     }
 
-    pub(in crate::sim) const fn is_empty(&self) -> bool {
-        self.occupied == 0
-    }
-
     fn vacate(&mut self, cell: usize) {
         if !micro::occupied_cell(&self.mask, cell) {
             return;
@@ -181,9 +177,7 @@ impl Overlay {
 }
 
 /// What the commit reads to write a touched chunk whole, in no particular
-/// order. A chunk the tick has not touched answers an absent mask, no moves and
-/// empty.
-#[allow(dead_code, reason = "the commit reads these, and ticket 05 lands it")]
+/// order. A chunk the tick has not touched answers an absent mask.
 impl Overlay {
     pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> {
         self.entries.iter().map(|(origin, state)| (*origin, state))
@@ -195,14 +189,6 @@ impl Overlay {
 
     pub(in crate::sim) fn material_at(&self, origin: IVec3, cell: usize) -> Option<u8> {
         self.entries.get(&origin)?.material(cell)
-    }
-
-    pub(in crate::sim) fn moves(&self, origin: IVec3) -> usize {
-        self.entries.get(&origin).map_or(0, ChunkHeld::moves)
-    }
-
-    pub(in crate::sim) fn is_empty(&self, origin: IVec3) -> bool {
-        self.entries.get(&origin).is_none_or(ChunkHeld::is_empty)
     }
 }
 
@@ -438,9 +424,17 @@ mod tests {
             "a second material materializes the per-cell array"
         );
         assert!(state.uniform.is_none(), "the uniform marker is dropped");
-        assert_eq!(overlay.moves(chunk), 0, "the chunk served no move");
-        assert_eq!(overlay.moves(source), 1, "the source's chunk served it");
-        assert!(overlay.is_empty(source), "the source's chunk is left empty");
+        assert_eq!(state.moves(), 0, "the chunk served no move");
+        assert_eq!(
+            overlay.entries.get(&source).map_or(0, ChunkHeld::moves),
+            1,
+            "the source's chunk served it"
+        );
+        assert_eq!(
+            overlay.mask(source),
+            Some(&[0u8; MICRO_BYTES]),
+            "the source's chunk is left empty"
+        );
     }
 
     #[test]
@@ -499,6 +493,10 @@ mod tests {
             Some(&[0u8; MICRO_BYTES]),
             "a chunk the World keeps no entry for starts as a zero mask"
         );
-        assert!(overlay.is_empty(absent));
+        assert_eq!(
+            overlay.entries.get(&absent).map_or(0, ChunkHeld::moves),
+            0,
+            "a seeded chunk served no move"
+        );
     }
 }

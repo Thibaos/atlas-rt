@@ -2,17 +2,24 @@
 //! through the real drain and commit under one policy, compared after every
 //! tick. `Runs` aliases the per-cell pass until the run translation lands, so
 //! the cases prove the harness itself before they prove a fast path.
+//!
+//! The commit is compared the same way: one scene drains the same way twice,
+//! once with every move applied as a per-cell edit and once with every touched
+//! chunk written whole from the overlay.
 
 use glam::IVec3;
 
 use crate::world::World;
 use crate::world::diff::batch::TrackedCoords;
-use crate::world::diff::edit::{VoxelChange, VoxelEdit, edit_world};
+use crate::world::diff::edit::{VoxelChange, VoxelEdit};
+use crate::world::diff::snapshot::MicroChunkSnapshot;
 use crate::world::grid::{MICRO_CHUNK_LENGTH, grid_origin};
 use crate::world::load::progress::Progress;
 use crate::world::material::{PhysicalMaterialTable, parse_override};
 use crate::world::sand_ball;
 
+use super::commit::{REWRITE_THRESHOLD, commit};
+use super::physics::field::Overlay;
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::{DrainPolicy, Drained, ParityPolicy, drain};
 
@@ -83,26 +90,28 @@ impl Scene {
                 table,
                 queue,
                 tracked: TrackedCoords::default(),
+                snapshots: Vec::new(),
                 processed: 0,
             }
         })
     }
 }
 
-/// One policy's run of a scene: its own World, queue, tracked set and the cell
-/// count the last drain reported.
+/// One policy's run of a scene: its own World, queue, tracked set, the snapshot
+/// list the last commit planned, and the cell count the last drain reported.
 struct Side {
     world: World,
     table: PhysicalMaterialTable,
     queue: UpdateQueue,
     tracked: TrackedCoords,
+    snapshots: Vec<MicroChunkSnapshot>,
     processed: usize,
 }
 
 impl Side {
-    /// One tick in the shape `bench::commit_tick` drives: drain, then apply the
-    /// edits with the tracked set the last batch carried forward.
-    fn serve(&mut self, policy: DrainPolicy) -> Drained {
+    /// One tick in the shape `Runtime::commit` drives: drain, then commit the
+    /// drain's moves with the tracked set the last batch carried forward.
+    fn serve(&mut self, policy: DrainPolicy, threshold: usize) -> Drained {
         let drained = drain(
             &self.world,
             &self.table,
@@ -112,20 +121,23 @@ impl Side {
         );
 
         self.processed = drained.processed;
-        self.commit(&drained.edits);
+        self.commit(&drained.edits, &drained.overlay, threshold);
 
         drained
     }
 
-    fn commit(&mut self, edits: &[VoxelEdit]) {
+    fn commit(&mut self, edits: &[VoxelEdit], overlay: &Overlay, threshold: usize) {
         if edits.is_empty() {
+            self.snapshots = Vec::new();
+
             return;
         }
 
-        let batch = edit_world(&mut self.world, edits, &self.tracked)
+        let batch = commit(&mut self.world, edits, overlay, threshold, &self.tracked)
             .unwrap_or_else(|error| panic!("the tick's edits must apply: {error}"));
 
         self.tracked = batch.tracked;
+        self.snapshots = batch.snapshots;
     }
 
     fn cells(&self) -> Vec<(IVec3, u8)> {
@@ -139,15 +151,31 @@ impl Side {
     fn queued(&self) -> Vec<IVec3> {
         self.queue.iter().collect()
     }
+
+    fn tracking(&self) -> Vec<IVec3> {
+        let mut tracking: Vec<IVec3> = self.tracked.iter().copied().collect();
+
+        tracking.sort_unstable_by_key(IVec3::to_array);
+
+        tracking
+    }
+
+    fn snapshot_origins(&self) -> Vec<IVec3> {
+        self.snapshots
+            .iter()
+            .map(|snapshot| snapshot.global_coords)
+            .collect()
+    }
 }
 
-/// Drives both policies over one scene and compares them after every tick.
+/// Drives both drain policies over one scene and compares them after every
+/// tick.
 fn run(scene: Scene, ticks: usize) -> Result<(), String> {
     let [mut per_cell, mut runs] = scene.sides();
 
     for tick in 1..=ticks {
-        per_cell.serve(DrainPolicy::PerCell);
-        runs.serve(DrainPolicy::Runs);
+        per_cell.serve(DrainPolicy::PerCell, REWRITE_THRESHOLD);
+        runs.serve(DrainPolicy::Runs, REWRITE_THRESHOLD);
         compare(tick, &per_cell, &runs)?;
     }
 
@@ -160,8 +188,30 @@ fn assert_same(scene: Scene, ticks: usize) {
     }
 }
 
+/// Drives one scene's drain twice under one policy, once with a threshold that
+/// rewrites no chunk and once with a threshold that rewrites every touched
+/// chunk, and compares them after every tick.
+fn run_commits(scene: Scene, ticks: usize) -> Result<(), String> {
+    let [mut per_cell, mut rewrite] = scene.sides();
+
+    for tick in 1..=ticks {
+        per_cell.serve(DrainPolicy::PerCell, usize::MAX);
+        rewrite.serve(DrainPolicy::PerCell, 0);
+        compare(tick, &per_cell, &rewrite)?;
+    }
+
+    Ok(())
+}
+
+fn assert_same_commit(scene: Scene, ticks: usize) {
+    if let Err(difference) = run_commits(scene, ticks) {
+        panic!("the rewrite commit diverged from the per-cell commit: {difference}");
+    }
+}
+
 /// One tick of both sides: the World's cells and their count, the queue's cells
-/// in drain order, and the cells the drain evaluated.
+/// in drain order, the cells the drain evaluated, the tracked set, and the
+/// snapshot list in the order the commit planned it.
 fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
     let cells = per_cell.cells();
     let translated = runs.cells();
@@ -196,6 +246,37 @@ fn compare(tick: usize, per_cell: &Side, runs: &Side) -> Result<(), String> {
             "tick {tick}: the drained cell count differs: {} against {}",
             per_cell.processed, runs.processed
         ));
+    }
+
+    let tracking = per_cell.tracking();
+    let translated = runs.tracking();
+
+    if tracking != translated {
+        return Err(format!(
+            "tick {tick}: the tracked set differs at {}",
+            first_disagreement(&tracking, &translated)
+        ));
+    }
+
+    let origins = per_cell.snapshot_origins();
+    let translated = runs.snapshot_origins();
+
+    if origins != translated {
+        return Err(format!(
+            "tick {tick}: the snapshot list's order differs at {}",
+            first_disagreement(&origins, &translated)
+        ));
+    }
+
+    for (expected, actual) in per_cell.snapshots.iter().zip(&runs.snapshots) {
+        if expected != actual {
+            return Err(format!(
+                "tick {tick}: the snapshot content at {} differs: {:?} against {:?}",
+                expected.global_coords,
+                expected.chunk.mask(),
+                actual.chunk.mask()
+            ));
+        }
     }
 
     Ok(())
@@ -361,6 +442,34 @@ fn lowest_grain(world: &World) -> IVec3 {
         .expect("the scene holds grains")
 }
 
+/// The moves each of a scene's touched chunks serves on its first drain, which
+/// is what the commit's threshold reads.
+fn served_moves(build: impl Fn() -> World, table: PhysicalMaterialTable) -> Vec<usize> {
+    let world = build();
+    let mut queue = UpdateQueue::default();
+
+    queue.seed(&world, &table, None);
+
+    let drained = drain(
+        &world,
+        &table,
+        &mut queue,
+        ParityPolicy::Alternate,
+        DrainPolicy::PerCell,
+    );
+
+    let mut served: Vec<usize> = drained
+        .overlay
+        .chunks()
+        .map(|(_, held)| held.moves())
+        .filter(|moves| *moves > 0)
+        .collect();
+
+    served.sort_unstable();
+
+    served
+}
+
 #[test]
 fn a_row_falls_the_same_under_both_policies() {
     assert_same(Scene::new(row, table()), 6);
@@ -450,10 +559,62 @@ fn the_sand_ball_falls_the_same_under_both_policies() {
 }
 
 #[test]
+fn a_dense_block_commits_the_same_with_and_without_chunk_rewrites() {
+    let served = served_moves(dense_block, table());
+
+    assert!(!served.is_empty(), "the block's tick moves cells");
+
+    assert!(
+        served.iter().all(|moves| *moves > REWRITE_THRESHOLD),
+        "every chunk of the block crosses the threshold: {served:?}"
+    );
+
+    assert_same_commit(Scene::new(dense_block, table()), 3);
+}
+
+#[test]
+fn a_scattered_world_commits_the_same_with_and_without_chunk_rewrites() {
+    let served = served_moves(scattered, table());
+
+    assert!(!served.is_empty(), "the scattered tick moves cells");
+
+    assert!(
+        served.iter().all(|moves| *moves <= REWRITE_THRESHOLD),
+        "no chunk of the scattered world crosses the threshold: {served:?}"
+    );
+
+    assert_same_commit(Scene::new(scattered, table()), 4);
+}
+
+#[test]
+fn two_granular_materials_commit_the_same_with_and_without_chunk_rewrites() {
+    assert_same_commit(Scene::new(two_materials, two_grain_table()), 4);
+}
+
+#[test]
+fn a_sphere_falling_and_landing_commits_the_same_with_and_without_chunk_rewrites() {
+    assert_same_commit(Scene::new(|| sphere(3, 8, FLOOR_Y), table()), 14);
+}
+
+#[test]
+#[cfg_attr(
+    not(debug_assertions),
+    ignore = "the full ball belongs to the standing bench"
+)]
+fn the_sand_ball_commits_the_same_with_and_without_chunk_rewrites() {
+    let first = sand_ball::build(&Progress::generate_path());
+    let second = sand_ball::build(&Progress::generate_path());
+    let scene =
+        Scene::of([first.world, second.world], first.materials).seeded(first.granular_cells);
+
+    assert_same_commit(scene, 4);
+}
+
+#[test]
 fn a_dropped_edit_fails_the_comparison() {
     let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
 
-    per_cell.serve(DrainPolicy::PerCell);
+    per_cell.serve(DrainPolicy::PerCell, REWRITE_THRESHOLD);
 
     let drained = drain(
         &runs.world,
@@ -475,7 +636,7 @@ fn a_dropped_edit_fails_the_comparison() {
     );
 
     runs.processed = drained.processed;
-    runs.commit(&edits);
+    runs.commit(&edits, &Overlay::default(), REWRITE_THRESHOLD);
 
     let difference = compare(1, &per_cell, &runs)
         .expect_err("a dropped destination must leave the two sides different");
@@ -498,8 +659,8 @@ fn a_dropped_edit_fails_the_comparison() {
 fn a_queue_the_sides_do_not_share_fails_the_comparison() {
     let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
 
-    per_cell.serve(DrainPolicy::PerCell);
-    runs.serve(DrainPolicy::Runs);
+    per_cell.serve(DrainPolicy::PerCell, REWRITE_THRESHOLD);
+    runs.serve(DrainPolicy::Runs, REWRITE_THRESHOLD);
 
     runs.queue.wake(IVec3::new(9, 9, 9));
 
@@ -520,8 +681,8 @@ fn a_queue_the_sides_do_not_share_fails_the_comparison() {
 fn a_drained_cell_count_the_sides_do_not_share_fails_the_comparison() {
     let [mut per_cell, mut runs] = Scene::new(row, table()).sides();
 
-    per_cell.serve(DrainPolicy::PerCell);
-    runs.serve(DrainPolicy::Runs);
+    per_cell.serve(DrainPolicy::PerCell, REWRITE_THRESHOLD);
+    runs.serve(DrainPolicy::Runs, REWRITE_THRESHOLD);
 
     runs.processed = per_cell.processed.saturating_add(1);
 
@@ -531,5 +692,51 @@ fn a_drained_cell_count_the_sides_do_not_share_fails_the_comparison() {
     assert!(
         difference.contains("the drained cell count differs"),
         "the difference names the drained cell count: {difference}"
+    );
+}
+
+#[test]
+fn a_rewritten_chunk_whose_content_the_sides_do_not_share_fails_the_comparison() {
+    let [mut per_cell, mut rewrite] = Scene::new(dense_block, table()).sides();
+
+    per_cell.serve(DrainPolicy::PerCell, usize::MAX);
+    rewrite.serve(DrainPolicy::PerCell, 0);
+
+    let first = rewrite.snapshots.first_mut();
+
+    assert!(first.is_some(), "the dense block's tick rewrites a chunk");
+
+    if let Some(snapshot) = first {
+        snapshot.chunk = crate::world::micro::MicroChunk::empty();
+    }
+
+    let difference = compare(1, &per_cell, &rewrite)
+        .expect_err("a chunk the two sides hold differently must fail the comparison");
+
+    assert!(
+        difference.contains("the snapshot content at"),
+        "the difference names the snapshot content: {difference}"
+    );
+}
+
+#[test]
+fn a_tracked_set_the_sides_do_not_share_fails_the_comparison() {
+    let [mut per_cell, mut rewrite] = Scene::new(row, table()).sides();
+
+    per_cell.serve(DrainPolicy::PerCell, usize::MAX);
+    rewrite.serve(DrainPolicy::PerCell, 0);
+
+    rewrite.tracked.insert(IVec3::new(9, 9, 9));
+
+    let difference = compare(1, &per_cell, &rewrite)
+        .expect_err("a tracked chunk only one side holds must fail the comparison");
+
+    assert!(
+        difference.contains("the tracked set differs at"),
+        "the difference names the tracked set: {difference}"
+    );
+    assert!(
+        difference.contains("IVec3(9, 9, 9)"),
+        "the difference names the chunk only one side tracked: {difference}"
     );
 }
