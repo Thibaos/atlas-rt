@@ -89,15 +89,19 @@ The scene exists to watch the Falling granular rules at scale. The ball falls as
 a body: every grain moves on every tick, its vertical span stays at 128, and the
 bottom reaches the floor at tick 128. A tick serves the queue a Micro-chunk at a
 time and the commit writes a dense Micro-chunk whole, so the per-cell
-bookkeeping no longer dominates the tick. In release the pile's tick p95 is
-230 ms, and the free fall's tick p95, the fall's wall time at the profile's
-30 Hz and the input worker's pack for one tick's batch are the figures the
-ball's bench prints. The frame rate is unaffected, because the
-renderer and the host's ordinary frame path take no World lock. The sand then
-settles on the floor under the ball, so the ball and the pile stay in one view,
-and the pile's creasing continues at a shrinking cost as the queue empties, so a
-queue that keeps running is not a fault. The binary logs the frame rate, the
-queued grain count and the rate the rules process grains once a second.
+bookkeeping no longer dominates the tick.
+
+The ball's bench prints one row per window over 190 ticks. The fall, ticks 1 to
+128, holds its tick p95 to 8.7 ms against a 10 ms gate. The pile, ticks 129 to
+190, holds its tick p95 to 92.5 ms against a 360 ms gate. The same bench feeds
+the largest free-fall tick's batch, 2,722 Micro-chunk snapshots, to the input
+worker and prints the pack it takes for them: 2.0 ms, recorded rather than
+asserted. At the fixed 30 Hz tick the fall's 128 ticks are 128 / 30 = 4.3
+seconds of wall time.
+
+The sand settles on the floor under the ball, so the ball and the pile stay in
+one view. The binary logs the frame rate, the queued grain count and the rate
+the rules process grains once a second.
 
 ### The rain
 
@@ -111,9 +115,9 @@ The holes are an emitter rather than a shape: every tick the simulation plants
 128 grains in the holes that are empty, and a hole fires at most every second
 tick, so no column ever holds two grains one cell apart. A grain falls from
 -1024 to the pile 1,023 cells below it, so the queue fills to about 131,000
-grains over the first 1,023 ticks and then holds there, and a tick costs about
-120 ms. A grain changing its Micro-chunk every tick is most of that cost, since a
-falling grain is usually alone in its chunk.
+grains over the first 1,023 ticks and then holds there, and a tick's p95 over
+the plateau is about 150 ms. A grain changing its Micro-chunk every tick is most
+of that cost, since a falling grain is usually alone in its chunk.
 
 The player spawns on the floor at the centre column, under a hole, so the rain
 falls on it and the pile grows at its feet. The pile is a grain deep over the
