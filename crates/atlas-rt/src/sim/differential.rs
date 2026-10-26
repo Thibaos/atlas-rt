@@ -7,7 +7,7 @@
 //! once with every move applied as a per-cell edit and once with every touched
 //! chunk written whole from the overlay.
 //!
-//! Both comparisons drive `commit::commit`, because a translated chunk emits no
+//! Both comparisons drive `commit::commit_drain`, because a translated chunk emits no
 //! per-cell edit and would never reach the World through `edit_world`. The two
 //! policies' snapshot lists are compared as content per Micro-chunk: a run pass
 //! drops its chunks' edits, so it has no first-touch position for them, and the
@@ -25,7 +25,7 @@ use crate::world::load::progress::Progress;
 use crate::world::material::{PhysicalMaterialTable, parse_override};
 use crate::world::sand_ball;
 
-use super::commit::{REWRITE_THRESHOLD, commit};
+use super::commit::{REWRITE_THRESHOLD, commit_drain};
 use super::physics::field::Overlay;
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::{DrainPolicy, Drained, ParityPolicy, drain};
@@ -128,13 +128,13 @@ impl Side {
         );
 
         self.processed = drained.processed;
-        self.commit(&drained.edits, &drained.overlay, threshold);
+        self.commit_drain(&drained.edits, &drained.overlay, threshold);
 
         drained
     }
 
-    fn commit(&mut self, edits: &[VoxelEdit], overlay: &Overlay, threshold: usize) {
-        let batch = commit(&mut self.world, edits, overlay, threshold, &self.tracked)
+    fn commit_drain(&mut self, edits: &[VoxelEdit], overlay: &Overlay, threshold: usize) {
+        let batch = commit_drain(&mut self.world, edits, overlay, threshold, &self.tracked)
             .unwrap_or_else(|error| panic!("the tick's edits must apply: {error}"));
 
         self.tracked = batch.tracked;
@@ -769,7 +769,7 @@ fn a_dropped_edit_fails_the_comparison() {
     );
 
     rewrite.processed = drained.processed;
-    rewrite.commit(&edits, &drained.overlay, REWRITE_THRESHOLD);
+    rewrite.commit_drain(&edits, &drained.overlay, REWRITE_THRESHOLD);
 
     let difference = compare(1, &per_cell, &rewrite)
         .expect_err("a dropped destination must leave the two sides different");

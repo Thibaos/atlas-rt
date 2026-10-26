@@ -34,7 +34,7 @@ use crate::world::material::PhysicalMaterialTable;
 use crate::world::micro::MicroChunk;
 
 use super::ParityPolicy;
-use super::commit::{REWRITE_THRESHOLD, commit};
+use super::commit::{REWRITE_THRESHOLD, commit_drain};
 use super::physics::queue::UpdateQueue;
 use super::physics::rules::{DrainPolicy, drain};
 use super::runtime::SnapshotFold;
@@ -150,7 +150,7 @@ fn commit_tick(
         return 0;
     }
 
-    let batch = commit(
+    let batch = commit_drain(
         world,
         &drained.edits,
         &drained.overlay,

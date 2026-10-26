@@ -456,7 +456,7 @@ impl<'a> Runs<'a> {
             above: above.map(|above| micro::row(above.entry.mask, 0)),
         });
 
-        self.queue.held(origin)
+        self.queue.held_cells(origin)
     }
 
     /// The chunk at `origin`, or nothing outside the lattice, where the World

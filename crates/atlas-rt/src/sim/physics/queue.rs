@@ -256,7 +256,7 @@ type Slot<'a> = (ChunkId, &'a ChunkMask);
 /// The cells a half holds, in drain order: ascending y, then x, then z, and
 /// none of the chunks a run pass translates for itself.
 struct CellWalk<'a> {
-    keys: Vec<Slot<'a>>,
+    slots: Vec<Slot<'a>>,
     remaining: usize,
     level: usize,
     level_end: usize,
@@ -272,23 +272,23 @@ struct CellWalk<'a> {
 
 impl<'a> CellWalk<'a> {
     fn new(masks: &'a ChunkMasks, skip: Option<&FxHashSet<IVec3>>) -> Self {
-        let mut keys: Vec<Slot<'a>> = masks
+        let mut slots: Vec<Slot<'a>> = masks
             .chunks
             .iter()
             .map(|(key, mask)| (*key, mask))
             .collect();
 
-        keys.sort_unstable_by_key(|(key, _)| *key);
+        slots.sort_unstable_by_key(|(key, _)| *key);
 
         if let Some(skip) = skip {
-            keys.retain(|(key, _)| !skip.contains(&key.origin()));
+            slots.retain(|(key, _)| !skip.contains(&key.origin()));
         }
 
-        let level_end = level_extent(&keys, 0);
-        let row_end = row_extent(&keys, 0);
+        let level_end = level_extent(&slots, 0);
+        let row_end = row_extent(&slots, 0);
 
         let mut walk = Self {
-            keys,
+            slots,
             remaining: masks.cells,
             level: 0,
             level_end,
@@ -311,7 +311,7 @@ impl<'a> CellWalk<'a> {
     /// all 64 pairs in a row, so its mask is held across them.
     fn byte(&mut self) -> u8 {
         if self.cached != self.chunk {
-            self.mask = self.keys.get(self.chunk).map(|(_, mask)| *mask);
+            self.mask = self.slots.get(self.chunk).map(|(_, mask)| *mask);
             self.cached = self.chunk;
         }
 
@@ -326,7 +326,7 @@ impl<'a> CellWalk<'a> {
     }
 
     fn cell(&self, z: usize) -> Option<IVec3> {
-        let (key, _) = self.keys.get(self.chunk)?;
+        let (key, _) = self.slots.get(self.chunk)?;
 
         Some(IVec3::new(
             key.x
@@ -344,7 +344,7 @@ impl Iterator for CellWalk<'_> {
     type Item = IVec3;
 
     fn next(&mut self) -> Option<IVec3> {
-        if self.remaining == 0 || self.level >= self.keys.len() {
+        if self.remaining == 0 || self.level >= self.slots.len() {
             return None;
         }
 
@@ -377,7 +377,7 @@ impl Iterator for CellWalk<'_> {
 
             self.x = 0;
             self.row = self.row_end;
-            self.row_end = row_extent(&self.keys, self.row);
+            self.row_end = row_extent(&self.slots, self.row);
             self.chunk = self.row;
 
             if self.row < self.level_end {
@@ -388,7 +388,7 @@ impl Iterator for CellWalk<'_> {
 
             self.y = self.y.saturating_add(1);
             self.row = self.level;
-            self.row_end = row_extent(&self.keys, self.level);
+            self.row_end = row_extent(&self.slots, self.level);
             self.chunk = self.row;
 
             if self.y < EDGE {
@@ -399,13 +399,13 @@ impl Iterator for CellWalk<'_> {
 
             self.y = 0;
             self.level = self.level_end;
-            self.level_end = level_extent(&self.keys, self.level);
+            self.level_end = level_extent(&self.slots, self.level);
             self.row = self.level;
-            self.row_end = row_extent(&self.keys, self.level);
+            self.row_end = row_extent(&self.slots, self.level);
             self.chunk = self.row;
             self.bits = self.byte();
 
-            if self.level >= self.keys.len() {
+            if self.level >= self.slots.len() {
                 return None;
             }
         }
@@ -420,13 +420,13 @@ fn offset(local: usize) -> i32 {
     i32::try_from(local).unwrap_or(0)
 }
 
-/// One past the last key sharing the first key's chunk y.
-fn level_extent(keys: &[Slot<'_>], start: usize) -> usize {
-    let Some((first, _)) = keys.get(start) else {
+/// One past the last slot sharing the first slot's chunk y.
+fn level_extent(slots: &[Slot<'_>], start: usize) -> usize {
+    let Some((first, _)) = slots.get(start) else {
         return start;
     };
 
-    let run = keys
+    let run = slots
         .get(start..)
         .unwrap_or_default()
         .iter()
@@ -436,13 +436,13 @@ fn level_extent(keys: &[Slot<'_>], start: usize) -> usize {
     start.saturating_add(run)
 }
 
-/// One past the last key sharing the first key's chunk y and x.
-fn row_extent(keys: &[Slot<'_>], start: usize) -> usize {
-    let Some((first, _)) = keys.get(start) else {
+/// One past the last slot sharing the first slot's chunk y and x.
+fn row_extent(slots: &[Slot<'_>], start: usize) -> usize {
+    let Some((first, _)) = slots.get(start) else {
         return start;
     };
 
-    let run = keys
+    let run = slots
         .get(start..)
         .unwrap_or_default()
         .iter()
@@ -547,9 +547,9 @@ impl UpdateQueue {
             .all(|(held, wanted)| held & wanted == *wanted)
     }
 
-    /// The cells the queue holds in the chunk, which a translated chunk serves
-    /// all of.
-    pub(in crate::sim) fn held(&self, origin: IVec3) -> usize {
+    /// The number of cells the queue holds in the chunk, which a translated
+    /// chunk serves all of.
+    pub(in crate::sim) fn held_cells(&self, origin: IVec3) -> usize {
         self.ready
             .chunks
             .get(&ChunkId::of(origin))
@@ -801,7 +801,7 @@ mod tests {
         queue.seed(&World::default(), &table(), Some(&cells));
 
         assert!(queue.holds_all(IVec3::new(0, 0, 0), &mask));
-        assert_eq!(queue.held(IVec3::new(0, 0, 0)), 3);
+        assert_eq!(queue.held_cells(IVec3::new(0, 0, 0)), 3);
 
         let partial = store_mask(&[IVec3::new(0, 0, 0), IVec3::new(5, 3, 6)]);
 
