@@ -12,9 +12,8 @@ use crate::world::{
 
 use super::queue::UpdateQueue;
 
-/// One touched chunk's state after this tick's moves so far: its mask in the
-/// store's layout, the one material it holds while every cell agrees, the
-/// per-cell array a divergence allocates, and the moves it served.
+/// A chunk the tick has touched, holding its post-tick mask in the store's
+/// layout and the materials its cells hold.
 pub(in crate::sim) struct ChunkHeld {
     mask: [u8; MICRO_BYTES],
     uniform: Option<u8>,
@@ -236,8 +235,8 @@ impl Overlay {
     }
 }
 
-/// What the commit reads to write a touched chunk whole, in no particular
-/// order. A chunk the tick has not touched answers an absent mask.
+/// What the commit writes a touched chunk whole from: the chunks this tick's
+/// moves have touched, in no particular order.
 impl Overlay {
     pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> + '_ {
         self.origins.iter().copied().zip(self.states.iter())

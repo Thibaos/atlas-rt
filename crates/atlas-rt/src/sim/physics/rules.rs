@@ -29,9 +29,8 @@ pub enum DrainPolicy {
     Runs,
 }
 
-/// One drain's outcome: the edits it would commit, the queued cells it
-/// evaluated, whether they moved, settled, or were never grains, and the
-/// overlay the commit reads.
+/// One drain's outcome: what it would commit, how many queued cells it
+/// evaluated, and the post-tick state the commit writes.
 pub(in crate::sim) struct Drained {
     pub(in crate::sim) edits: Vec<VoxelEdit>,
     pub(in crate::sim) processed: usize,
@@ -224,8 +223,8 @@ fn serve_runs(
     processed
 }
 
-/// One tick's run translation: the chunks that move as one, their pre-tick
-/// entries, and the column verdicts the row-0 test has already settled.
+/// One tick's run translation, decided before anything is served: which chunks
+/// move as one, and the pre-tick evidence that decision rests on.
 struct Runs<'a> {
     world: &'a World,
     table: &'a PhysicalMaterialTable,
