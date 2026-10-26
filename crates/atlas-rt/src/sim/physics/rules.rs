@@ -75,16 +75,22 @@ pub(in crate::sim) fn drain(
 
         let processed = match policy {
             DrainPolicy::PerCell => {
-                let served: Vec<IVec3> = field.queued_cells().collect();
+                let mut processed = 0usize;
 
-                serve(
-                    &mut field,
-                    parity,
-                    &served,
-                    &mut edits,
-                    &mut destinations,
-                    &mut woken,
-                )
+                for cell in queue.unserved() {
+                    processed = processed.saturating_add(1);
+
+                    serve_cell(
+                        &mut field,
+                        parity,
+                        cell,
+                        &mut edits,
+                        &mut destinations,
+                        &mut woken,
+                    );
+                }
+
+                processed
             }
             DrainPolicy::Runs => serve_runs(
                 &mut field,
@@ -126,27 +132,6 @@ pub(in crate::sim) fn drain(
         processed,
         overlay,
     }
-}
-
-/// Serves every cell in drain order, one cell at a time, and returns how many
-/// it evaluated.
-fn serve(
-    field: &mut Field,
-    parity: ParityPolicy,
-    served: &[IVec3],
-    edits: &mut Vec<VoxelEdit>,
-    destinations: &mut Vec<IVec3>,
-    woken: &mut Vec<IVec3>,
-) -> usize {
-    let mut processed = 0usize;
-
-    for src in served {
-        processed = processed.saturating_add(1);
-
-        serve_cell(field, parity, *src, edits, destinations, woken);
-    }
-
-    processed
 }
 
 /// Serves one queued cell: its grain falls straight down while the cell below is

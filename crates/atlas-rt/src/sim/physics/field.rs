@@ -1,3 +1,5 @@
+use std::cell::Cell;
+
 use glam::IVec3;
 use rustc_hash::FxHashMap;
 
@@ -127,15 +129,58 @@ impl ChunkHeld {
 /// touch and carried out of the drain as the post-tick truth for that chunk.
 #[derive(Default)]
 pub(in crate::sim) struct Overlay {
-    entries: FxHashMap<IVec3, ChunkHeld>,
+    origins: Vec<IVec3>,
+    states: Vec<ChunkHeld>,
+    slots: FxHashMap<IVec3, usize>,
+    recent: Cell<Option<(IVec3, usize)>>,
     most_moves: usize,
 }
 
 impl Overlay {
+    /// A drain reads and writes a handful of neighbouring chunks in a row, so
+    /// the last one resolved answers for the cells beside it.
+    fn slot(&self, origin: IVec3) -> Option<usize> {
+        if let Some((recent, slot)) = self.recent.get()
+            && recent == origin
+        {
+            return Some(slot);
+        }
+
+        let slot = self.slots.get(&origin).copied()?;
+
+        self.recent.set(Some((origin, slot)));
+
+        Some(slot)
+    }
+
+    fn slot_of_move(&mut self, world: &World, origin: IVec3) -> usize {
+        if let Some((recent, slot)) = self.recent.get()
+            && recent == origin
+        {
+            return slot;
+        }
+
+        let slot = if let Some(slot) = self.slots.get(&origin).copied() {
+            slot
+        } else {
+            let slot = self.states.len();
+
+            self.origins.push(origin);
+            self.states.push(ChunkHeld::seed(world, origin));
+            self.slots.insert(origin, slot);
+
+            slot
+        };
+
+        self.recent.set(Some((origin, slot)));
+
+        slot
+    }
+
     fn held(&self, cell: IVec3) -> Held {
         let origin = chunk_origin(cell);
 
-        let Some(state) = self.entries.get(&origin) else {
+        let Some(state) = self.slot(origin).and_then(|slot| self.states.get(slot)) else {
             return Held::Unchanged;
         };
 
@@ -152,28 +197,21 @@ impl Overlay {
 
     fn apply_move(&mut self, world: &World, src: IVec3, dst: IVec3, material: u8) {
         let src_origin = chunk_origin(src);
+        let src_slot = self.slot_of_move(world, src_origin);
 
-        let served = {
-            let state = self.touch(world, src_origin);
-
+        if let Some(state) = self.states.get_mut(src_slot) {
             state.vacate(chunk_cell(src, src_origin));
             state.served();
 
-            state.moves()
-        };
-
-        self.most_moves = self.most_moves.max(served);
+            self.most_moves = self.most_moves.max(state.moves());
+        }
 
         let dst_origin = chunk_origin(dst);
+        let dst_slot = self.slot_of_move(world, dst_origin);
 
-        self.touch(world, dst_origin)
-            .occupy(chunk_cell(dst, dst_origin), material);
-    }
-
-    fn touch(&mut self, world: &World, origin: IVec3) -> &mut ChunkHeld {
-        self.entries
-            .entry(origin)
-            .or_insert_with(|| ChunkHeld::seed(world, origin))
+        if let Some(state) = self.states.get_mut(dst_slot) {
+            state.occupy(chunk_cell(dst, dst_origin), material);
+        }
     }
 
     /// Puts a chunk's whole state in, replacing whatever this tick had put
@@ -181,21 +219,34 @@ impl Overlay {
     fn install(&mut self, origin: IVec3, state: ChunkHeld) {
         self.most_moves = self.most_moves.max(state.moves());
 
-        self.entries.insert(origin, state);
+        if let Some(slot) = self.slots.get(&origin).copied() {
+            if let Some(existing) = self.states.get_mut(slot) {
+                *existing = state;
+            }
+
+            return;
+        }
+
+        let slot = self.states.len();
+
+        self.origins.push(origin);
+        self.states.push(state);
+        self.slots.insert(origin, slot);
+        self.recent.set(Some((origin, slot)));
     }
 }
 
 /// What the commit reads to write a touched chunk whole, in no particular
 /// order. A chunk the tick has not touched answers an absent mask.
 impl Overlay {
-    pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> {
-        self.entries.iter().map(|(origin, state)| (*origin, state))
+    pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> + '_ {
+        self.origins.iter().copied().zip(self.states.iter())
     }
 
     /// Whether this tick's moves have touched no chunk, so the commit has
     /// nothing to write.
-    pub(in crate::sim) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+    pub(in crate::sim) const fn is_empty(&self) -> bool {
+        self.states.is_empty()
     }
 
     /// The most moves any touched chunk served, which is what decides whether
@@ -208,17 +259,19 @@ impl Overlay {
     /// from and the one the overlay tests read.
     #[cfg(test)]
     pub(in crate::sim) fn chunk(&self, origin: IVec3) -> Option<&ChunkHeld> {
-        self.entries.get(&origin)
+        self.slots
+            .get(&origin)
+            .and_then(|slot| self.states.get(*slot))
     }
 
     #[cfg(test)]
     pub(in crate::sim) fn mask(&self, origin: IVec3) -> Option<&[u8; MICRO_BYTES]> {
-        self.entries.get(&origin).map(ChunkHeld::mask)
+        self.chunk(origin).map(ChunkHeld::mask)
     }
 
     #[cfg(test)]
     pub(in crate::sim) fn material_at(&self, origin: IVec3, cell: usize) -> Option<u8> {
-        self.entries.get(&origin)?.material(cell)
+        self.chunk(origin)?.material(cell)
     }
 }
 
@@ -271,11 +324,6 @@ impl<'a> Field<'a> {
             queued,
             overlay: Overlay::default(),
         }
-    }
-
-    /// The coordinates this tick serves, in the order a tick drains them.
-    pub(in crate::sim) fn queued_cells(&self) -> impl Iterator<Item = IVec3> + '_ {
-        self.queued.unserved()
     }
 
     /// The material at the cell, this tick's moves first, or nothing outside
@@ -546,7 +594,7 @@ mod tests {
         let mut overlay = Overlay::default();
 
         for origin in chunks {
-            overlay.touch(world, *origin);
+            overlay.slot_of_move(world, *origin);
         }
 
         overlay
@@ -643,7 +691,7 @@ mod tests {
             "the mask puts x 0 and x 7 in the byte for y 0 and z 0, as the store does"
         );
 
-        let state = overlay.entries.get(&chunk).expect("the move touched it");
+        let state = overlay.chunk(chunk).expect("the move touched it");
 
         assert!(
             state.per_cell.is_some(),
@@ -652,7 +700,7 @@ mod tests {
         assert!(state.uniform.is_none(), "the uniform marker is dropped");
         assert_eq!(state.moves(), 0, "the chunk served no move");
         assert_eq!(
-            overlay.entries.get(&source).map_or(0, ChunkHeld::moves),
+            overlay.chunk(source).map_or(0, ChunkHeld::moves),
             1,
             "the source's chunk served it"
         );
@@ -687,7 +735,7 @@ mod tests {
         );
         assert_eq!(overlay.material_at(mixed, 1), None);
 
-        let mixed_state = overlay.entries.get(&mixed).expect("the chunk is seeded");
+        let mixed_state = overlay.chunk(mixed).expect("the chunk is seeded");
 
         assert!(
             mixed_state.per_cell.is_some(),
@@ -702,7 +750,7 @@ mod tests {
         assert_eq!(overlay.material_at(uniform, 9), Some(GRAIN));
         assert_eq!(overlay.material_at(uniform, 504), Some(GRAIN));
 
-        let uniform_state = overlay.entries.get(&uniform).expect("the chunk is seeded");
+        let uniform_state = overlay.chunk(uniform).expect("the chunk is seeded");
 
         assert!(
             uniform_state.per_cell.is_none(),
@@ -720,7 +768,7 @@ mod tests {
             "a chunk the World keeps no entry for starts as a zero mask"
         );
         assert_eq!(
-            overlay.entries.get(&absent).map_or(0, ChunkHeld::moves),
+            overlay.chunk(absent).map_or(0, ChunkHeld::moves),
             0,
             "a seeded chunk served no move"
         );
