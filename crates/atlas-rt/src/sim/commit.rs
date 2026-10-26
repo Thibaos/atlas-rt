@@ -31,6 +31,10 @@ pub(in crate::sim) const REWRITE_THRESHOLD: usize = 4;
 /// The two snapshot lists fold into one, and the tracked set is planned once
 /// over the folded list.
 ///
+/// The snapshots follow the edits' first-touch order, and a rewritten chunk no
+/// edit reached follows them in origin order, which is where a translated chunk
+/// lands: it emits no edit for the tick to touch it by.
+///
 /// # Errors
 ///
 /// Returns an [`EditError`] when the batch would carry the World past its cell
@@ -68,13 +72,11 @@ pub(in crate::sim) fn commit(
         }
     }
 
-    // A translated chunk emits no edit, so the first-touch order above never
-    // reaches it. Its entry is its own change, and last in the list.
-    let mut translated: Vec<IVec3> = rewrites.keys().copied().collect();
+    let mut unreached: Vec<IVec3> = rewrites.keys().copied().collect();
 
-    translated.sort_unstable_by_key(IVec3::to_array);
+    unreached.sort_unstable_by_key(IVec3::to_array);
 
-    for origin in translated {
+    for origin in unreached {
         if let Some(snapshot) = rewrites.remove(&origin) {
             ordered.push(snapshot);
         }
