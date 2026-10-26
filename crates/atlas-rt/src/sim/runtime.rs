@@ -587,7 +587,11 @@ impl Runtime {
     /// The measured window starts before the lock is taken, so it carries any
     /// wait for a host reader.
     fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>, Emission) {
-        if self.rule_edits.is_empty() && self.commands.is_empty() && self.emitter.is_none() {
+        if self.rule_edits.is_empty()
+            && self.rule_overlay.is_empty()
+            && self.commands.is_empty()
+            && self.emitter.is_none()
+        {
             return (Duration::ZERO, None, Emission::default());
         }
 
@@ -601,7 +605,7 @@ impl Runtime {
             let rules = mem::take(&mut self.rule_edits);
             let overlay = mem::take(&mut self.rule_overlay);
 
-            if !rules.is_empty() {
+            if !rules.is_empty() || !overlay.is_empty() {
                 let outcome = commit::commit(
                     &mut guard,
                     &rules,

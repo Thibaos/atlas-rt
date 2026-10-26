@@ -5,7 +5,7 @@ use crate::world::{
     World,
     grid::{MICRO_CHUNK_LENGTH, grid_origin, in_lattice},
     material::{PhysicalMaterialTable, Rule},
-    micro::{self, MICRO_BYTES, MICRO_CELLS},
+    micro::{self, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, MicroChunkRef},
 };
 
 use super::queue::UpdateQueue;
@@ -39,11 +39,7 @@ impl ChunkHeld {
 
         let mask = *entry.mask;
         let occupied = micro::occupied_count(&mask);
-        let uniform = entry
-            .materials
-            .first()
-            .copied()
-            .filter(|first| entry.materials.iter().all(|material| material == first));
+        let uniform = uniform(entry.materials);
         let per_cell = (uniform.is_none() && occupied > 0).then(|| scatter(&mask, entry.materials));
 
         Self {
@@ -174,6 +170,12 @@ impl Overlay {
             .entry(origin)
             .or_insert_with(|| ChunkHeld::seed(world, origin))
     }
+
+    /// Puts a chunk's whole state in, replacing whatever this tick had put
+    /// there, which is what a translated chunk needs.
+    fn install(&mut self, origin: IVec3, state: ChunkHeld) {
+        self.entries.insert(origin, state);
+    }
 }
 
 /// What the commit reads to write a touched chunk whole, in no particular
@@ -183,10 +185,25 @@ impl Overlay {
         self.entries.iter().map(|(origin, state)| (*origin, state))
     }
 
+    /// Whether this tick's moves have touched no chunk, so the commit has
+    /// nothing to write.
+    pub(in crate::sim) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The whole state of `origin`'s chunk, the form the commit writes one entry
+    /// from and the one the overlay tests read.
+    #[cfg(test)]
+    pub(in crate::sim) fn chunk(&self, origin: IVec3) -> Option<&ChunkHeld> {
+        self.entries.get(&origin)
+    }
+
+    #[cfg(test)]
     pub(in crate::sim) fn mask(&self, origin: IVec3) -> Option<&[u8; MICRO_BYTES]> {
         self.entries.get(&origin).map(ChunkHeld::mask)
     }
 
+    #[cfg(test)]
     pub(in crate::sim) fn material_at(&self, origin: IVec3, cell: usize) -> Option<u8> {
         self.entries.get(&origin)?.material(cell)
     }
@@ -198,6 +215,24 @@ enum Held {
     Unchanged,
     Empty,
     Material(u8),
+}
+
+/// A chunk as the tick found it, before moving it: its entry, and the one
+/// material its cells all hold when they hold one. A translation reads both, and
+/// the material costs a pass over the entry, so it is found once.
+#[derive(Clone, Copy)]
+pub(in crate::sim) struct ChunkSource<'a> {
+    pub(in crate::sim) entry: MicroChunkRef<'a>,
+    pub(in crate::sim) uniform: Option<u8>,
+}
+
+impl<'a> ChunkSource<'a> {
+    pub(in crate::sim) fn read(entry: MicroChunkRef<'a>) -> Self {
+        Self {
+            entry,
+            uniform: uniform(entry.materials),
+        }
+    }
 }
 
 /// The World one evaluation reads through: the World, the material table, the
@@ -306,6 +341,58 @@ impl<'a> Field<'a> {
         self.overlay
     }
 
+    /// Translates `origin`'s chunk one cell down as one entry: rows 0 to 6 from
+    /// its rows 1 to 7, and row 7 from `above`'s row 0 when the run continues
+    /// into it. Every cell of the source counts as a served move, so the commit
+    /// writes the chunk whole.
+    pub(in crate::sim) fn translate(
+        &mut self,
+        origin: IVec3,
+        source: ChunkSource<'_>,
+        above: Option<ChunkSource<'_>>,
+    ) {
+        let entry = source.entry;
+        let raised = above.map(|above| above.entry);
+        let mut mask = [0u8; MICRO_BYTES];
+
+        for z in 0..MICRO_EDGE {
+            let base = z.strict_mul(MICRO_EDGE);
+
+            for y in 1..MICRO_EDGE {
+                let from = base.strict_add(y);
+                let to = base.strict_add(y.saturating_sub(1));
+
+                if let (Some(slot), Some(byte)) = (mask.get_mut(to), entry.mask.get(from)) {
+                    *slot = *byte;
+                }
+            }
+
+            if let Some(above) = raised
+                && let (Some(slot), Some(byte)) = (
+                    mask.get_mut(base.strict_add(MICRO_EDGE.saturating_sub(1))),
+                    above.mask.get(base),
+                )
+            {
+                *slot = *byte;
+            }
+        }
+
+        let (uniform, per_cell) = translated_materials(&mask, source, above);
+        let occupied = micro::occupied_count(&mask);
+        let moves = micro::occupied_count(entry.mask);
+
+        self.overlay.install(
+            origin,
+            ChunkHeld {
+                mask,
+                uniform,
+                per_cell,
+                occupied,
+                moves,
+            },
+        );
+    }
+
     fn in_flight(&self, cell: IVec3) -> bool {
         self.queued.contains(cell) || self.overlay.arrived(self.world, cell)
     }
@@ -338,6 +425,82 @@ fn scatter(mask: &[u8; MICRO_BYTES], materials: &[u8]) -> Box<[u8; MICRO_CELLS]>
     }
 
     per_cell
+}
+
+/// The one material a chunk's cells all hold, or `None` when they disagree.
+pub(in crate::sim) fn uniform(materials: &[u8]) -> Option<u8> {
+    let first = materials.first().copied()?;
+
+    materials
+        .iter()
+        .all(|material| *material == first)
+        .then_some(first)
+}
+
+/// The materials a translated chunk's entry carries: the source's one row down,
+/// with the chunk above's row 0 where the source had its row 7, as the uniform
+/// marker its cells agree on, or as the per-cell array they do not.
+fn translated_materials(
+    mask: &[u8; MICRO_BYTES],
+    source: ChunkSource<'_>,
+    above: Option<ChunkSource<'_>>,
+) -> (Option<u8>, Option<Box<[u8; MICRO_CELLS]>>) {
+    let entry = source.entry;
+    let raised = above.filter(|above| micro::row0(above.entry.mask).iter().any(|byte| *byte != 0));
+
+    if let Some(material) = source.uniform
+        && raised.is_none_or(|above| above.uniform == Some(material))
+    {
+        return (Some(material), None);
+    }
+
+    let lowered = scatter(entry.mask, entry.materials);
+    let raised = raised.map(|above| scatter(above.entry.mask, above.entry.materials));
+    let row = MICRO_CELLS.saturating_sub(MICRO_AREA);
+    let mut per_cell = Box::new([0u8; MICRO_CELLS]);
+
+    for (cell, slot) in per_cell.iter_mut().enumerate() {
+        if let Some(top) = cell.checked_sub(row) {
+            *slot = raised
+                .as_ref()
+                .and_then(|raised| raised.get(top).copied())
+                .unwrap_or(0);
+
+            continue;
+        }
+
+        *slot = lowered
+            .get(cell.strict_add(MICRO_EDGE))
+            .copied()
+            .unwrap_or(0);
+    }
+
+    let mut material = None;
+    let mut mixed = false;
+
+    for cell in 0..MICRO_CELLS {
+        if !micro::occupied_cell(mask, cell) {
+            continue;
+        }
+
+        let held = per_cell.get(cell).copied().unwrap_or(0);
+
+        match material {
+            None => material = Some(held),
+            Some(current) if current == held => {}
+            Some(_) => {
+                mixed = true;
+
+                break;
+            }
+        }
+    }
+
+    if mixed {
+        return (None, Some(per_cell));
+    }
+
+    (material, None)
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use crate::world::diff::snapshot::MicroChunkSnapshot;
 use crate::world::grid::{MICRO_CHUNK_LENGTH, grid_origin};
 use crate::world::micro::{self, MICRO_BYTES, MICRO_CELLS};
 
-use super::physics::field::Overlay;
+use super::physics::field::{ChunkHeld, Overlay};
 use super::runtime::SnapshotFold;
 
 /// The moves a chunk serves above which the commit writes it whole: about
@@ -30,6 +30,10 @@ pub(in crate::sim) const REWRITE_THRESHOLD: usize = 4;
 /// already holds that move. A chunk at or under the threshold keeps its edits.
 /// The two snapshot lists fold into one, and the tracked set is planned once
 /// over the folded list.
+///
+/// The snapshots follow the edits' first-touch order, and a rewritten chunk no
+/// edit reached follows them in origin order, which is where a translated chunk
+/// lands: it emits no edit for the tick to touch it by.
 ///
 /// # Errors
 ///
@@ -58,8 +62,7 @@ pub(in crate::sim) fn commit(
     }
 
     let mut edited = apply_edits(world, &remaining)?.into_iter();
-    let touched_chunks = touched.len();
-    let mut ordered = Vec::with_capacity(touched_chunks);
+    let mut ordered = Vec::with_capacity(touched.len().saturating_add(rewrites.len()));
 
     for origin in touched {
         if let Some(snapshot) = rewrites.remove(&origin) {
@@ -69,9 +72,19 @@ pub(in crate::sim) fn commit(
         }
     }
 
+    let mut unreached: Vec<IVec3> = rewrites.keys().copied().collect();
+
+    unreached.sort_unstable_by_key(IVec3::to_array);
+
+    for origin in unreached {
+        if let Some(snapshot) = rewrites.remove(&origin) {
+            ordered.push(snapshot);
+        }
+    }
+
     debug_assert!(
-        ordered.len() == touched_chunks,
-        "every touched chunk reaches the batch"
+        rewrites.is_empty(),
+        "every rewritten chunk reaches the batch"
     );
 
     let mut folded = SnapshotFold::default();
@@ -91,33 +104,29 @@ fn rewritten(overlay: &Overlay, threshold: usize) -> FxHashMap<IVec3, MicroChunk
             continue;
         }
 
-        if let Some(snapshot) = snapshot(overlay, origin) {
-            rewrites.insert(origin, snapshot);
-        }
+        rewrites.insert(origin, snapshot(origin, held));
     }
 
     rewrites
 }
 
-/// The chunk `origin` as the entry the commit writes: the overlay's mask and
-/// the material of each occupied cell in ascending cell order, which is the
-/// order the store's entry keeps them in.
-fn snapshot(overlay: &Overlay, origin: IVec3) -> Option<MicroChunkSnapshot> {
-    let mask: [u8; MICRO_BYTES] = *overlay.mask(origin)?;
+/// A chunk as the entry the commit writes: its mask and the material of each
+/// occupied cell in ascending cell order, which is the order the store's entry
+/// keeps them in.
+fn snapshot(origin: IVec3, held: &ChunkHeld) -> MicroChunkSnapshot {
+    let mask: [u8; MICRO_BYTES] = *held.mask();
     let mut materials = Vec::with_capacity(micro::occupied_count(&mask));
 
     for cell in 0..MICRO_CELLS {
-        if let Some(material) = overlay.material_at(origin, cell) {
+        if let Some(material) = held.material(cell) {
             materials.push(material);
         }
     }
 
-    let chunk = micro::owned_chunk(origin, mask, materials);
-
-    Some(MicroChunkSnapshot {
+    MicroChunkSnapshot {
         global_coords: origin,
-        chunk,
-    })
+        chunk: micro::owned_chunk(origin, mask, materials),
+    }
 }
 
 /// The first-touch order of the chunks the edits touch, and the edits outside
@@ -261,6 +270,13 @@ mod tests {
             .map_or(0, |(_, held)| held.moves())
     }
 
+    /// The state the tick left in `origin`'s chunk.
+    fn touched(overlay: &Overlay, origin: IVec3) -> &ChunkHeld {
+        overlay
+            .chunk(origin)
+            .expect("the tick has to touch the chunk the fixture names")
+    }
+
     #[test]
     fn only_a_chunk_that_serves_more_moves_than_the_threshold_is_rewritten() {
         let world = dense_and_sparse();
@@ -306,7 +322,7 @@ mod tests {
         let drained = drained(&world);
         let chunk = IVec3::new(0, 0, 0);
 
-        let rewritten = snapshot(&drained.overlay, chunk).expect("the tick touched the chunk");
+        let rewritten = snapshot(chunk, touched(&drained.overlay, chunk));
 
         assert_eq!(
             rewritten.chunk.materials(),
@@ -330,7 +346,7 @@ mod tests {
         let drained = drained(&world);
         let chunk = IVec3::new(0, 0, 0);
 
-        let rewritten = snapshot(&drained.overlay, chunk).expect("the tick touched the chunk");
+        let rewritten = snapshot(chunk, touched(&drained.overlay, chunk));
 
         assert_eq!(
             rewritten.chunk.materials(),

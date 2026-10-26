@@ -1,7 +1,7 @@
 use std::mem;
 
 use glam::IVec3;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::world::World;
 use crate::world::grid::MICRO_CHUNK_LENGTH;
@@ -49,6 +49,76 @@ impl ChunkMask {
 
         was_clear
     }
+
+    /// The mask one row down: rows 0 to 6 from rows 1 to 7, and row 7 from
+    /// `above`'s row 0 when the chunk above translates with this one.
+    fn translated(&self, above: Option<[u8; EDGE]>) -> Self {
+        let mut bytes = [0u8; MICRO_BYTES];
+
+        for (index, byte) in bytes.iter_mut().take(MICRO_BYTES - EDGE).enumerate() {
+            if let Some(source) = self.bytes.get(index.strict_add(EDGE)) {
+                *byte = *source;
+            }
+        }
+
+        if let Some(above) = above
+            && let Some(top) = bytes.get_mut(MICRO_BYTES - EDGE..)
+        {
+            top.copy_from_slice(&transposed_row(above));
+        }
+
+        Self { bytes }
+    }
+}
+
+/// The same mask in this layout: byte `y * 8 + x` holding the z bits of that
+/// (y, x), where `mask` keeps byte `y + 8z` holding the x bits of that (y, z).
+fn transpose(mask: &[u8; MICRO_BYTES]) -> [u8; MICRO_BYTES] {
+    let mut out = [0u8; MICRO_BYTES];
+
+    for y in 0..EDGE {
+        let mut column = 0u64;
+
+        for z in 0..EDGE {
+            let byte = mask.get(z.strict_mul(EDGE).strict_add(y)).copied();
+            let byte = u64::from(byte.unwrap_or(0));
+
+            column |= byte << z.strict_mul(EDGE);
+        }
+
+        if let Some(slice) = out.get_mut(y.strict_mul(EDGE)..) {
+            let transposed = transpose8(column).to_le_bytes();
+
+            if let Some(slice) = slice.get_mut(..EDGE) {
+                slice.copy_from_slice(&transposed);
+            }
+        }
+    }
+
+    out
+}
+
+/// A chunk row 0 in the store's layout as this layout's bytes for that row.
+const fn transposed_row(row: [u8; EDGE]) -> [u8; EDGE] {
+    transpose8(u64::from_le_bytes(row)).to_le_bytes()
+}
+
+/// The 8 by 8 bit transpose: bit `row * 8 + bit` of the answer is bit
+/// `bit * 8 + row` of the input.
+const fn transpose8(mut bits: u64) -> u64 {
+    let swapped = (bits ^ (bits >> 7)) & 0x00AA_00AA_00AA_00AA;
+
+    bits ^= swapped ^ (swapped << 7);
+
+    let swapped = (bits ^ (bits >> 14)) & 0x0000_CCCC_0000_CCCC;
+
+    bits ^= swapped ^ (swapped << 14);
+
+    let swapped = (bits ^ (bits >> 28)) & 0x0000_0000_F0F0_F0F0;
+
+    bits ^= swapped ^ (swapped << 28);
+
+    bits
 }
 
 /// A cell's bit in its chunk's mask: the byte that holds its z row and the bit
@@ -88,6 +158,14 @@ impl ChunkId {
             x: cell.x.div_euclid(EDGE_I32),
             z: cell.z.div_euclid(EDGE_I32),
         }
+    }
+
+    const fn origin(self) -> IVec3 {
+        IVec3::new(
+            self.x.saturating_mul(EDGE_I32),
+            self.y.saturating_mul(EDGE_I32),
+            self.z.saturating_mul(EDGE_I32),
+        )
     }
 }
 
@@ -132,12 +210,47 @@ impl ChunkMasks {
         self.cells = 0;
     }
 
+    /// Sets every bit `bytes` sets in the chunk's mask, counting only the ones
+    /// that were clear.
+    fn merge(&mut self, id: ChunkId, bytes: &[u8; MICRO_BYTES]) {
+        let target = self.chunks.entry(id).or_default();
+        let mut added = 0usize;
+
+        for (index, byte) in bytes.iter().copied().enumerate() {
+            let Some(slot) = target.bytes.get_mut(index) else {
+                continue;
+            };
+
+            let fresh = !*slot & byte;
+
+            *slot |= byte;
+            added = added.saturating_add(fresh.count_ones() as usize);
+        }
+
+        self.cells = self.cells.saturating_add(added);
+    }
+
+    /// The chunks this half holds, in drain order: ascending chunk y, then x,
+    /// then z.
+    fn origins(&self) -> Vec<IVec3> {
+        let mut keys: Vec<ChunkId> = self.chunks.keys().copied().collect();
+
+        keys.sort_unstable();
+
+        keys.into_iter().map(ChunkId::origin).collect()
+    }
+
     fn walk(&self) -> CellWalk<'_> {
-        CellWalk::new(self)
+        CellWalk::new(self, None)
+    }
+
+    fn walk_except(&self, skip: &FxHashSet<IVec3>) -> CellWalk<'_> {
+        CellWalk::new(self, Some(skip))
     }
 }
 
-/// The cells a half holds, in drain order: ascending y, then x, then z.
+/// The cells a half holds, in drain order: ascending y, then x, then z, and
+/// none of the chunks a run pass translates for itself.
 struct CellWalk<'a> {
     chunks: &'a FxHashMap<ChunkId, ChunkMask>,
     keys: Vec<ChunkId>,
@@ -153,10 +266,14 @@ struct CellWalk<'a> {
 }
 
 impl<'a> CellWalk<'a> {
-    fn new(masks: &'a ChunkMasks) -> Self {
+    fn new(masks: &'a ChunkMasks, skip: Option<&FxHashSet<IVec3>>) -> Self {
         let mut keys: Vec<ChunkId> = masks.chunks.keys().copied().collect();
 
         keys.sort_unstable();
+
+        if let Some(skip) = skip {
+            keys.retain(|key| !skip.contains(&key.origin()));
+        }
 
         let level_end = level_extent(&keys, 0);
         let row_end = row_extent(&keys, 0);
@@ -386,6 +503,76 @@ impl UpdateQueue {
         self.ready.walk()
     }
 
+    /// The cells this tick serves that no run translates for itself, in drain
+    /// order.
+    pub(in crate::sim) fn unserved_except(
+        &self,
+        skip: &FxHashSet<IVec3>,
+    ) -> impl Iterator<Item = IVec3> + '_ {
+        self.ready.walk_except(skip)
+    }
+
+    /// The chunks this tick serves, in ascending chunk y.
+    pub(in crate::sim) fn ready_chunks(&self) -> Vec<IVec3> {
+        self.ready.origins()
+    }
+
+    /// Whether the queue holds every cell `mask` marks, which is what a chunk
+    /// that translates whole needs: a grain this tick does not serve would not
+    /// move. A cell the queue holds and the mask does not is a wake on a cell a
+    /// move vacated, which the tick serves as the empty cell it is.
+    pub(in crate::sim) fn holds_all(&self, origin: IVec3, mask: &[u8; MICRO_BYTES]) -> bool {
+        let Some(held) = self.ready.chunks.get(&ChunkId::of(origin)) else {
+            return false;
+        };
+
+        let wanted = transpose(mask);
+
+        held.bytes
+            .iter()
+            .zip(&wanted)
+            .all(|(held, wanted)| held & wanted == *wanted)
+    }
+
+    /// The cells the queue holds in the chunk, which a translated chunk serves
+    /// all of.
+    pub(in crate::sim) fn held(&self, origin: IVec3) -> usize {
+        self.ready
+            .chunks
+            .get(&ChunkId::of(origin))
+            .map_or(0, |mask| {
+                mask.bytes
+                    .iter()
+                    .map(|byte| byte.count_ones() as usize)
+                    .sum()
+            })
+    }
+
+    /// Queues a translated chunk's cells where it leaves them: its cells one row
+    /// down, with `above`'s row 0 as the new top row, counting only the bits the
+    /// queue did not hold already.
+    pub(in crate::sim) fn translate(&mut self, origin: IVec3, above: Option<[u8; MICRO_EDGE]>) {
+        let id = ChunkId::of(origin);
+
+        let Some(mask) = self
+            .ready
+            .chunks
+            .get(&id)
+            .map(|held| held.translated(above))
+        else {
+            return;
+        };
+
+        self.next.merge(id, &mask.bytes);
+    }
+
+    /// Queues every cell `mask` marks for the next tick, counting only the bits
+    /// the queue did not hold already. `mask` is in the store's layout, which is
+    /// the one a shift of rows is written in.
+    pub(in crate::sim) fn queue_mask(&mut self, origin: IVec3, mask: &[u8; MICRO_BYTES]) {
+        self.next.merge(ChunkId::of(origin), &transpose(mask));
+    }
+
     /// Makes the cells the last tick queued this tick's own. A tick ends once
     /// its ready half is served, so the swap waits only for the first tick
     /// after a seed, which already holds its cells.
@@ -449,6 +636,252 @@ mod tests {
 
     fn unserved(queue: &UpdateQueue) -> Vec<IVec3> {
         queue.unserved().collect()
+    }
+
+    /// The store's mask for the cells, in the layout byte `y + 8z`, bit `x`.
+    fn store_mask(cells: &[IVec3]) -> [u8; MICRO_BYTES] {
+        let mut mask = [0u8; MICRO_BYTES];
+
+        for cell in cells {
+            let index = crate::world::micro::mask_index(*cell);
+
+            if let Some(byte) = mask.get_mut(index.strict_div(EDGE)) {
+                *byte |= 1u8 << index.strict_rem(EDGE);
+            }
+        }
+
+        mask
+    }
+
+    /// The same mask gathered a bit at a time, which is the oracle the word
+    /// transpose has to match.
+    fn gathered(mask: &[u8; MICRO_BYTES]) -> [u8; MICRO_BYTES] {
+        let mut out = [0u8; MICRO_BYTES];
+
+        for index in 0..MICRO_BYTES {
+            let y = index.strict_rem(EDGE);
+            let z = index.strict_div(EDGE);
+
+            for x in 0..EDGE {
+                let set = mask.get(index).is_some_and(|byte| byte & (1u8 << x) != 0);
+
+                if !set {
+                    continue;
+                }
+
+                if let Some(slot) = out.get_mut(y.strict_mul(EDGE).strict_add(x)) {
+                    *slot |= 1u8 << z;
+                }
+            }
+        }
+
+        out
+    }
+
+    fn queue_mask(cells: &[IVec3]) -> ChunkMask {
+        let mut mask = ChunkMask::default();
+
+        for cell in cells {
+            mask.insert(MaskBit::of(*cell));
+        }
+
+        mask
+    }
+
+    #[test]
+    fn the_transposed_mask_matches_a_bit_at_a_time_gather() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+
+        for case in 0..64 {
+            let mut mask = [0u8; MICRO_BYTES];
+
+            for byte in &mut mask {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                *byte = u8::try_from(state & 0xFF).unwrap_or(0);
+            }
+
+            assert_eq!(transpose(&mask), gathered(&mask), "case {case}");
+        }
+    }
+
+    #[test]
+    fn a_transposed_row_turns_each_z_byte_into_an_x_byte() {
+        let mut row = [0u8; EDGE];
+
+        if let Some(byte) = row.get_mut(0) {
+            *byte = 0b0000_0010;
+        }
+
+        if let Some(byte) = row.get_mut(5) {
+            *byte = 0b0000_0100;
+        }
+
+        let transposed = transposed_row(row);
+
+        assert_eq!(
+            transposed.first().copied(),
+            Some(0),
+            "column 0 is not marked"
+        );
+        assert_eq!(
+            transposed.get(1).copied(),
+            Some(0b0000_0001),
+            "byte `x` holds the z bits of that column"
+        );
+        assert_eq!(transposed.get(2).copied(), Some(0b0010_0000));
+    }
+
+    #[test]
+    fn a_translated_mask_moves_every_row_down_and_takes_its_top_from_above() {
+        let mask = queue_mask(&[
+            IVec3::new(0, 0, 0),
+            IVec3::new(3, 1, 2),
+            IVec3::new(7, 7, 7),
+        ]);
+        let mut above = [0u8; EDGE];
+
+        if let Some(byte) = above.get_mut(0) {
+            *byte = 0b0000_0010;
+        }
+
+        let shifted = mask.translated(Some(above));
+
+        assert!(
+            !shifted.holds(MaskBit::of(IVec3::new(0, 0, 0))),
+            "row 0 of the source falls into the chunk below"
+        );
+        assert!(shifted.holds(MaskBit::of(IVec3::new(7, 6, 7))));
+        assert!(
+            shifted.holds(MaskBit::of(IVec3::new(1, 7, 0))),
+            "the top row is the chunk above's row 0"
+        );
+        assert_eq!(
+            shifted
+                .bytes
+                .iter()
+                .map(|byte| byte.count_ones())
+                .sum::<u32>(),
+            3,
+            "three cells in, three cells out"
+        );
+
+        let orphaned = mask.translated(None);
+
+        assert!(
+            !orphaned.holds(MaskBit::of(IVec3::new(1, 7, 0))),
+            "a run's top row stays empty when no chunk above translates into it"
+        );
+    }
+
+    #[test]
+    fn a_chunk_the_queue_holds_every_cell_of_is_held_all() {
+        let cells = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(5, 3, 6),
+            IVec3::new(7, 7, 7),
+        ];
+        let mask = store_mask(&cells);
+        let mut queue = UpdateQueue::default();
+
+        queue.seed(&World::default(), &table(), Some(&cells));
+
+        assert!(queue.holds_all(IVec3::new(0, 0, 0), &mask));
+        assert_eq!(queue.held(IVec3::new(0, 0, 0)), 3);
+
+        let partial = store_mask(&[IVec3::new(0, 0, 0), IVec3::new(5, 3, 6)]);
+
+        assert!(
+            queue.holds_all(IVec3::new(0, 0, 0), &partial),
+            "a queue holding more than the mask asks for still holds every cell of it: the rest are wakes on cells a move vacated"
+        );
+
+        let more = store_mask(&[
+            IVec3::new(0, 0, 0),
+            IVec3::new(5, 3, 6),
+            IVec3::new(7, 7, 7),
+            IVec3::new(1, 2, 3),
+        ]);
+
+        assert!(
+            !queue.holds_all(IVec3::new(0, 0, 0), &more),
+            "a mask holding a cell the queue does not is not held all"
+        );
+    }
+
+    #[test]
+    fn a_walk_skipping_a_chunk_leaves_none_of_its_cells() {
+        let mut queue = UpdateQueue::default();
+        let cells = [
+            IVec3::new(0, 1, 0),
+            IVec3::new(8, 1, 0),
+            IVec3::new(0, 2, 0),
+            IVec3::new(9, 0, 3),
+        ];
+
+        queue.seed(&World::default(), &table(), Some(&cells));
+        queue.begin_tick();
+
+        let skip: FxHashSet<IVec3> = [IVec3::new(8, 0, 0)].into_iter().collect();
+
+        assert_eq!(
+            queue.unserved_except(&skip).collect::<Vec<_>>(),
+            vec![IVec3::new(0, 1, 0), IVec3::new(0, 2, 0)],
+            "the skipped chunk's two cells are gone and the rest keep their order"
+        );
+        assert_eq!(unserved(&queue).len(), 4, "the walk itself is unchanged");
+    }
+
+    #[test]
+    fn a_translated_chunk_queues_its_cells_where_it_leaves_them() {
+        let mut queue = UpdateQueue::default();
+        let cells = [
+            IVec3::new(0, 0, 0),
+            IVec3::new(1, 1, 0),
+            IVec3::new(2, 2, 0),
+        ];
+
+        queue.seed(&World::default(), &table(), Some(&cells));
+        queue.begin_tick();
+
+        let mut above = [0u8; EDGE];
+
+        if let Some(byte) = above.get_mut(0) {
+            *byte = 0b0000_0001;
+        }
+
+        queue.translate(IVec3::new(0, 0, 0), Some(above));
+        queue.end_tick();
+        queue.begin_tick();
+
+        assert_eq!(
+            unserved(&queue),
+            vec![
+                IVec3::new(1, 0, 0),
+                IVec3::new(2, 1, 0),
+                IVec3::new(0, 7, 0),
+            ],
+            "every cell is one row down and the top row is the chunk above's"
+        );
+    }
+
+    #[test]
+    fn a_translation_the_queue_already_holds_some_of_does_not_count_twice() {
+        let mut queue = UpdateQueue::default();
+        let cells = [IVec3::new(0, 1, 0), IVec3::new(1, 2, 0)];
+
+        queue.seed(&World::default(), &table(), Some(&cells));
+        queue.begin_tick();
+        queue.mark_moved(IVec3::new(0, 0, 0));
+        queue.translate(IVec3::new(0, 0, 0), None);
+        queue.end_tick();
+
+        assert_eq!(
+            queue.len(),
+            2,
+            "the destination the wake already queued is the one the translation moves into"
+        );
     }
 
     #[test]

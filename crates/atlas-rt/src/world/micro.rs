@@ -263,6 +263,26 @@ pub(crate) fn rank(mask: &[u8], cell: usize) -> usize {
     below.saturating_add(partial.count_ones() as usize)
 }
 
+/// One row of the store's mask: the bytes that hold row `y`, one per z.
+#[must_use]
+pub(crate) fn row(mask: &[u8; MICRO_BYTES], y: usize) -> [u8; MICRO_EDGE] {
+    let mut row = [0u8; MICRO_EDGE];
+
+    for (z, byte) in row.iter_mut().enumerate() {
+        if let Some(source) = mask.get(y.strict_add(z.strict_mul(MICRO_EDGE))) {
+            *byte = *source;
+        }
+    }
+
+    row
+}
+
+/// The chunk's row 0, which is the row a translation takes from the chunk below.
+#[must_use]
+pub(crate) fn row0(mask: &[u8; MICRO_BYTES]) -> [u8; MICRO_EDGE] {
+    row(mask, 0)
+}
+
 /// The exact occupied bounds of `mask` as a Micro-chunk-local range, or `None`
 /// for a zero mask.
 ///

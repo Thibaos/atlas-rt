@@ -28,10 +28,9 @@
 //! `sand_ball_tick_timings` and `raining_tick_timings` measure the two scenes
 //! that hurt. Each prints one row per window: the p95 queued, processed and
 //! touched-chunk counts, the p95 whole tick with its evaluation and commit, and
-//! a verdict that reads `ok` or names the whole tick as the miss. The ball's
-//! free-fall and pile gates are reported until the run translation lands; the
-//! rain's plateau gate is asserted. The ball's bench also records one tick's
-//! frame path: its largest free-fall batch through `RendererInput`.
+//! a verdict that reads `ok` or names the whole tick as the miss. Every window's
+//! gate is asserted. The ball's bench also records one tick's frame path: its
+//! largest free-fall batch through `RendererInput`.
 
 use std::{
     collections::HashSet,
@@ -845,9 +844,8 @@ fn generated_surface_tick_timings() {
 }
 
 /// One measured tick range and the p95 whole tick it is held to. `asserted`
-/// separates a gate that fails the run from one that only reports: the ball's
-/// two gates stay reported until the run translation lands, and ticket 06
-/// flips them.
+/// separates a gate that fails the run from one that only reports, which the
+/// ball's two gates were until the run translation landed.
 #[derive(Clone, Copy)]
 struct Window {
     name: &'static str,
@@ -886,14 +884,14 @@ const BALL_WINDOWS: [Window; 2] = [
         first: 1,
         last: FREE_FALL_TICKS,
         gate: FREE_FALL_GATE,
-        asserted: false,
+        asserted: true,
     },
     Window {
         name: "pile",
         first: FREE_FALL_TICKS.saturating_add(1),
         last: BALL_TICKS,
         gate: PILE_GATE,
-        asserted: false,
+        asserted: true,
     },
 ];
 
@@ -989,7 +987,7 @@ fn print_frame_path(batch: &[MicroChunkSnapshot]) {
 fn sand_ball_tick_timings() {
     println!("clock         frames at 60 fps, tick fixed at 30 Hz, {BALL_TICKS} measured ticks");
     println!(
-        "gate          p95 whole tick, {FREE_FALL_GATE:?} for the fall and {PILE_GATE:?} for the pile, reported rather than asserted until the run translation lands"
+        "gate          p95 whole tick, {FREE_FALL_GATE:?} for the fall and {PILE_GATE:?} for the pile, asserted"
     );
 
     let generated = sand_ball::build(&Progress::generate_path());
@@ -1344,13 +1342,7 @@ fn a_window_p95_holds_only_its_own_ticks() {
 
 #[test]
 fn a_window_reads_ok_or_the_name_of_its_miss() {
-    let window = Window {
-        name: "free fall",
-        first: 1,
-        last: FREE_FALL_TICKS,
-        gate: FREE_FALL_GATE,
-        asserted: false,
-    };
+    let window = BALL_WINDOWS[0];
     let met = TickTimings {
         tick_p95: FREE_FALL_GATE,
         ..TickTimings::default()
@@ -1366,9 +1358,26 @@ fn a_window_reads_ok_or_the_name_of_its_miss() {
         "TICK",
         "the whole tick is the only metric the gate holds, so the miss is named for it"
     );
+    assert!(window.gate_check(&met).is_ok());
+}
+
+#[test]
+fn a_window_only_reports_while_it_is_not_asserted() {
+    let window = Window {
+        name: "free fall",
+        first: 1,
+        last: FREE_FALL_TICKS,
+        gate: FREE_FALL_GATE,
+        asserted: false,
+    };
+    let missed = TickTimings {
+        tick_p95: FREE_FALL_GATE.saturating_add(Duration::from_micros(1)),
+        ..TickTimings::default()
+    };
+
     assert!(
         window.gate_check(&missed).is_ok(),
-        "the ball's gate is reported, not asserted, until ticket 06 flips it"
+        "a gate that is not asserted reports its miss rather than failing the run"
     );
 }
 
