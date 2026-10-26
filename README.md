@@ -41,6 +41,11 @@ refused. There is no `--help`: it is unrecognized, so it starts an ordinary run.
 | `--extent <integer>` | Bounds a generated World's ground to a square of `extent` by `extent` cells from the Lattice's negative corner. The fill spans the full Lattice depth, so y is ignored. Defaults to the full Lattice. |
 | `--fly` | Frees the camera from the simulated player and leaves the simulation running, so a World can be watched settle. |
 | `--no-sim` | Runs no simulation thread, so no voxel rule runs and the World changes only where the host edits it. The camera flies free either way, because there is no player pose to follow. |
+| `--capture <path>` | Renders one frame offscreen and writes it to a PNG, then exits. No window and no surface, so the run needs no desktop. |
+| `--size <width>x<height>` | The extent a capture renders. Defaults to 1280x720. |
+| `--ticks <n>` | The simulation ticks a capture advances before it draws its frame. Defaults to 0. |
+| `--eye <x,y,z>` | The camera a capture draws from. Needs `--target`, and replaces the camera the run would use. |
+| `--target <x,y,z>` | The point a capture's camera looks at. |
 
 A run with no `--world`, no `--seed` and no `--world-type` generates terrain from
 a random Seed and logs that Seed, so a logged Seed repeats a World:
@@ -68,12 +73,61 @@ How the flags combine:
 - `--world-type raining` ignores `--seed` and `--extent` for the same reason.
 - An unrecognized `--world-type` value is refused rather than quietly building
   terrain.
+- `--size`, `--ticks`, `--eye` and `--target` act on a capture, so a run
+  without `--capture` refuses them. `--eye` and `--target` name a camera
+  together, so one without the other is refused, and so is a camera whose eye
+  and target are the same point.
+- `--no-sim` runs no simulation, so a capture's `--ticks` has nothing to
+  advance and the pair is refused.
 
 Each refusal names its reason, and prints before any window opens:
 
     Error: the world type bogus is not terrain, sand-ball or raining
     Error: --world loads a file, so --world-type has nothing to select
     Error: --world loads a file, so --extent has nothing to bound
+
+### Captures
+
+`--capture` saves one render image instead of opening a window. It builds the
+same World the flags name, runs the same simulation, and draws through the
+embedded pipeline the Godot example renders with, on a device with no surface.
+The readback hands the frame to the host and writes it as a PNG.
+
+The image is the frame's linear radiance through the ACES fit and gamma 2.2
+that the Godot example's composite shader applies. The shader's 8-bit dither is
+left out: it exists to hide banding in a moving picture, and in a still image
+its one-level spread reads as a moiré over every flat surface. Standalone's own
+window has no display encoding at all, so a capture is a graded image rather
+than a copy of that window's clipped linear output.
+
+    # a generated World, as the app would open on it
+    cargo run -p atlas-rt -- --capture .scratch/captures/seed42.png --seed 42 --extent 512
+
+    # the sand ball after it lands, from a camera pointed at it
+    cargo run -p atlas-rt -- --capture .scratch/captures/ball.png \
+        --world-type sand-ball --ticks 150 --eye 0,-1780,320 --target 0,-1880,0
+
+    # a per-checkout World, which `--world` resolves under crates/atlas-rt/assets/
+    cargo run -p atlas-rt -- --capture .scratch/captures/castle.png --world castle.vox
+
+A run without `--eye` and `--target` draws from the camera it would open on:
+the simulated player's eye unless `--fly` or `--no-sim` leaves the camera
+free. The fixed scenes build at the bottom of the lattice, far below the free
+camera's default pose, so a capture of one names its own eye.
+
+Two captures with the same flags write the same bytes, ticks included, so a
+change to the renderer shows up as a pixel diff and a capture can stand in for
+a check.
+
+`scripts/capture-standalone.ps1` wraps the flags above, builds first, and
+prints the image path on its last line. Without `-Out` it names the file after
+the scene it captured:
+
+    ./scripts/capture-standalone.ps1 -WorldType sand-ball -Ticks 150 -Eye 0,-1780,320 -Target 0,-1880,0
+
+Its Godot sibling, `scripts/capture-godot.ps1`, saves the Godot example's frame
+the same way. See
+[crates/atlas-rt-godot/examples/project/README.md](crates/atlas-rt-godot/examples/project/README.md).
 
 ### The sand ball
 

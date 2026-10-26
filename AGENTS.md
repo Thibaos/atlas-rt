@@ -24,14 +24,26 @@ a line here when the unslop pass removes a tell that keeps coming back.
 Do not launch it windowed to verify something unless you have asked first and been
 told yes. Each run opens a window, brings it to the front, and takes input focus for as
 long as it runs, so a loop of runs takes the desktop repeatedly. The user said so after
-five in a row. If what you need to check is node state or appearance, ask for a
-screenshot instead: it answers that without a window, and the user supplies them
-readily.
+five in a row.
 
-`--headless` cannot run the example past the API. With no window there is no Vulkan
-device, so `VulkanHooksBridge` logs `no Vulkan device captured during engine device
-creation`, the init probe fails, no frame is delivered, and every load stalls at 0.999.
-Headless is still the right way to parse-check a script:
+A render image needs no window now. Save one headlessly and look at it instead of
+asking for a screenshot:
+
+    ./scripts/capture-godot.ps1 -World sand-ball -Eye 0,-1780,320 -Target 0,-1880,0
+
+The script prints the PNG path on its last line. `-World` takes `castle`, `bistro`,
+`sponza`, `nuke`, `sand-ball` or `generated`; `-Eye` and `-Target` aim the scene
+camera, which the fixed World types need because they build at the bottom of the
+lattice. The standalone app has the same pair of commands, `--capture` on the binary
+and `scripts/capture-standalone.ps1`, which take `-Seed`, `-WorldType` and `-Ticks`.
+
+`--headless` alone still cannot run the example: the engine draws no frame with the
+headless display server, and the zero-copy probe finds no Vulkan device. The capture
+driver covers both by registering an additional output, which is what makes the engine
+draw, and the view then renders on atlas-rt's own device. The probe failure is
+expected in that log and appears once.
+
+`--headless` also remains the right way to parse-check a script:
 
     <godot-fork>\bin\godot.windows.editor.x86_64.exe --headless --path <project> \
         --check-only --script res://<script>

@@ -3,6 +3,10 @@ extends Node2D
 
 const TARGET_LINEAR := false
 
+## The World a run opens on, so a capture that asks for the same one does not
+## read it twice.
+const STARTUP_WORLD := "castle"
+
 const COMPOSITE_SHADER := preload("res://atlas_composite.gdshader")
 const OVERLAY := preload("res://scripts/loading_overlay.gd")
 
@@ -36,7 +40,7 @@ func _ready() -> void:
 
 	var cam: Camera3D = get_node("/root/main/player/pivot/camera")
 	node.set_camera(cam)
-	node.load_world("res://worlds/castle.vox")
+	node.load_world("res://worlds/%s.vox" % STARTUP_WORLD)
 
 	set_mouse_captured(true)
 

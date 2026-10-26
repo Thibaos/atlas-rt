@@ -91,3 +91,42 @@ the project's 2D color space. Leave it false under the default SDR canvas
 a mismatch, and getting it wrong double-encodes or skips the sRGB encode.
 Enabling that project setting also converts every other 2D draw in the
 viewport to linear, so scope it deliberately.
+
+## Headless captures
+
+`scripts/capture-godot.ps1` at the repository root saves one frame of this
+project to a PNG and quits, with no window. It builds the extension, copies it
+into `lib/`, and runs:
+
+    <godot> --headless --path <project> -- --capture <png> [--world <name>]
+        [--frames <n>] [--size <width>x<height>] [--eye x,y,z --target x,y,z]
+
+`--world` takes `castle`, `bistro`, `sponza` or `nuke` for the files under
+`worlds/`, `sand-ball`, or `generated`; naming none leaves the startup World.
+`--frames` is how long the settled World is left alone before the image is
+taken, `--size` defaults to 1280x720, and `--eye` with `--target` aims the
+scene camera, which the fixed World types need.
+
+The driver is `scripts/capture.gd`, a node in `main.tscn` that does nothing
+unless `--capture` names a path. It is a node rather than a scene of its own
+because the autoload `Main` starts the example either way; this way the capture
+waits on the view a run builds instead of standing up a second one.
+
+A headless run draws no frame at all by itself. `DisplayServerHeadless` reports
+`can_any_window_draw` as false, so `Main::iteration` skips
+`RenderingServer::draw` unless something registers as an additional output. The
+driver registers itself with `DisplayServer.register_additional_output`, which
+keeps `draw` running, and with it the `frame_post_draw` signal the view renders
+on. The viewport is 64 by 64 in headless mode until something sets the root
+window size, which the driver does from `--size`.
+
+The init probe still fails, and logs that once: with no engine Vulkan device
+there is nothing to import the delivery image into, so the view records the
+failure and stops handing frames to Godot. Nothing else needs the engine's
+device. The frame the capture saves is read back on atlas-rt's own device, with
+the same ACES fit and gamma the composite shader applies, less the shader's
+8-bit dither, which reads as a moiré in a still image.
+
+Two captures with the same flags write the same bytes, so a change to the
+renderer shows up as a pixel diff.
+

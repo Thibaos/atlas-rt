@@ -10,6 +10,8 @@ vulkano-shaders = { git = "https://github.com/vulkano-rs/vulkano" }
 vulkano-taskgraph = { git = "https://github.com/vulkano-rs/vulkano" }
 winit = "0.30"
 dot_vox = "*"
+half = "2"
+png = "0.18"
 glam = { workspace = true }
 anyhow = "1.0.104"
 rayon = "1.12"

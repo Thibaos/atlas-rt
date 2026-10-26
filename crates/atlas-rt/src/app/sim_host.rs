@@ -6,7 +6,7 @@
 mod bench;
 
 use std::mem;
-use std::sync::mpsc::TryRecvError;
+use std::sync::mpsc::{RecvTimeoutError, TryRecvError};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
@@ -28,6 +28,11 @@ use atlas_rt::world::rain::Emitter;
 /// The readiness wait the first frame makes, and how often it re-asks.
 const READY_WAIT: Duration = Duration::from_secs(5);
 const READY_POLL: Duration = Duration::from_millis(50);
+
+/// How long an advanced tick may take before the host gives up on the
+/// simulation. The sand ball's pile ticks take about 90 ms and the rain's
+/// plateau about 150 ms, so this only catches a stopped thread.
+const TICK_WAIT: Duration = Duration::from_secs(120);
 
 /// The ticks the sim reported since the last read, the grains they served, the
 /// grains an emitter planted and the ones it skipped, and the wall time they
@@ -66,6 +71,7 @@ struct Handover {
 /// Nothing on this side waits for the renderer.
 pub struct SimHost {
     handle: Handle,
+    period: Duration,
     handover: Option<Handover>,
     view: ViewInterpolation,
     ready: bool,
@@ -97,6 +103,7 @@ impl SimHost {
 
         Ok(Self {
             handle,
+            period,
             handover: Some(Handover {
                 snapshots,
                 tracked,
@@ -186,6 +193,43 @@ impl SimHost {
         }
 
         self.wait_ready(forward)
+    }
+
+    /// Advances the simulation exactly `ticks` ticks and waits for each tick's
+    /// push before framing again, so a caller with no wall time to spend reaches
+    /// a settled World. `forward` takes each tick's batch, as `drive` does.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a tick does not report within `TICK_WAIT` or the
+    /// simulation thread has stopped.
+    pub fn advance(
+        &mut self,
+        ticks: u64,
+        forward: &mut impl FnMut(Vec<MicroChunkSnapshot>) -> Result<()>,
+    ) -> Result<()> {
+        for _ in 0..ticks {
+            self.frame(self.period, InputSample::default());
+
+            loop {
+                match self.handle.recv_timeout(TICK_WAIT) {
+                    Ok(push @ Push::Tick(_)) => {
+                        self.apply(push, forward);
+
+                        break;
+                    }
+                    Ok(push) => self.apply(push, forward),
+                    Err(RecvTimeoutError::Timeout) => {
+                        bail!("a tick did not report within {TICK_WAIT:?}");
+                    }
+                    Err(RecvTimeoutError::Disconnected) => {
+                        bail!("the simulation thread stopped");
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Waits, bounded, for the activation's readiness reply, forwarding the

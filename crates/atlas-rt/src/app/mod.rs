@@ -1,7 +1,9 @@
+pub mod capture;
 mod input;
 pub mod launch;
 mod player;
 mod sim_host;
+mod startup;
 mod timers;
 
 use std::{
@@ -12,7 +14,7 @@ use std::{
 use anyhow::Context;
 use glam::{Mat4, Vec4, camera::lh::proj::vulkan::perspective};
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
@@ -28,18 +30,12 @@ use atlas_rt::{
         context::RenderContext,
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR, task::RenderMode},
     },
-    sim::{Command, DrainPolicy, PlayerProfile},
+    sim::{Command, PlayerProfile},
     world::{
         World,
-        budget::cell_budget,
         diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
-        },
-        grid::LATTICE_HALF_EXTENT,
-        load::{
-            progress::Progress,
-            supply::{self, FileWorldSource, SuppliedWorld},
         },
         raycast::{VoxelHit, screen_center_ray},
     },
@@ -49,6 +45,7 @@ use input::{Input, InputButton, InputKey};
 use launch::WorldRequest;
 use player::PlayerController;
 use sim_host::{SimHost, Tally};
+use startup::{Startup, supply_world};
 use timers::ScheduleController;
 
 #[allow(clippy::struct_excessive_bools)]
@@ -91,59 +88,23 @@ impl App {
     /// cannot be supplied.
     pub fn new(
         event_loop: &EventLoop<()>,
-        request: WorldRequest,
+        request: &WorldRequest,
         free_camera: bool,
         no_sim: bool,
     ) -> anyhow::Result<Self> {
         let gpu = RenderContext::new(event_loop)?;
 
-        let SuppliedWorld {
+        let Startup {
             world,
             snapshots,
+            tracked,
             palette,
             materials,
             granular_cells,
             emitter,
-            clipped,
-        } = match request {
-            WorldRequest::Load(world_path) => {
-                let source = FileWorldSource::new(
-                    format!("crates/atlas-rt/assets/{world_path}"),
-                    world_path,
-                );
-
-                supply::load(&source, cell_budget(), &Progress::load_path())?
-            }
-            WorldRequest::Generate(params) => {
-                info!("generating a World from seed {}", params.seed);
-
-                supply::generate(params, &Progress::generate_path())?
-            }
-            WorldRequest::SandBall => {
-                info!("building the sand ball");
-
-                supply::sand_ball(&Progress::generate_path())?
-            }
-            WorldRequest::Raining => {
-                info!("building the raining world");
-
-                supply::raining(&Progress::generate_path())?
-            }
-        };
-
-        if clipped > 0 {
-            warn!("clipped {clipped} voxels outside the ±{LATTICE_HALF_EXTENT} lattice");
-        }
-
-        let world = Arc::new(RwLock::new(world));
-
-        let tracked: TrackedCoords = snapshots
-            .iter()
-            .filter(|snapshot| snapshot.occupied_count() > 0)
-            .map(|snapshot| snapshot.global_coords)
-            .collect();
-
-        let profile = PlayerProfile::default();
+            profile,
+            policy,
+        } = supply_world(request)?;
 
         let sim = if no_sim {
             info!("no-sim: the World runs no voxel rules");
@@ -152,7 +113,7 @@ impl App {
             Some(SimHost::spawn(
                 Arc::clone(&world),
                 profile,
-                DrainPolicy::default(),
+                policy,
                 snapshots,
                 tracked.clone(),
                 granular_cells,

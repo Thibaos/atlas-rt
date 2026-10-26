@@ -22,13 +22,21 @@
 //! The free camera flies on the keys the character controller reads, so under
 //! `--fly` those keys also drive the simulated player. `--no-sim` has no
 //! character controller to drive, so the camera flies free there too.
+//!
+//! `--capture` saves one render image to a PNG instead of opening a window, on
+//! a device with no surface, so an agent can look at a frame without a desktop.
+//! `--size` sets the extent it renders, `--ticks` advances the simulation
+//! before the frame is drawn, so a World that only looks right after settling
+//! can be captured settled, and `--eye` with `--target` places the camera,
+//! which the fixed scenes need because they build at the bottom of the lattice.
+//! These name nothing on their own, so a run without `--capture` refuses them.
 
 use std::{
     collections::hash_map::RandomState,
     hash::{BuildHasher, Hasher},
 };
 
-use glam::IVec3;
+use glam::{IVec3, Vec3};
 
 use atlas_rt::world::generation::GenerationParams;
 
@@ -52,16 +60,39 @@ enum WorldType {
 }
 
 /// A parsed command line: the World to build, whether the camera flies free of
-/// the simulated player, and whether to run without the simulation.
+/// the simulated player, whether to run without the simulation, and the capture
+/// a run saves instead of opening a window.
 ///
 /// Without a simulation there is no player pose to follow, so the camera flies
 /// free whether or not `free_camera` is set.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Launch {
     pub request: WorldRequest,
     pub free_camera: bool,
     pub no_sim: bool,
+    pub capture: Option<CaptureRequest>,
 }
+
+/// One render image written to `path` instead of opening a window: the extent
+/// to render, the simulation ticks to advance before the frame is drawn, and
+/// the camera a host that knows where to look names.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CaptureRequest {
+    pub path: String,
+    pub extent: [u32; 2],
+    pub ticks: u64,
+    pub camera: Option<CaptureCamera>,
+}
+
+/// The eye and the point it looks at, in voxel coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CaptureCamera {
+    pub eye: Vec3,
+    pub target: Vec3,
+}
+
+/// The extent a capture renders when `--size` names none.
+pub const DEFAULT_CAPTURE_EXTENT: [u32; 2] = [1280, 720];
 
 /// Parses the binary's arguments. Unrecognized flags are ignored, as before.
 ///
@@ -75,6 +106,11 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
     let mut world_type = None;
     let mut seed = None;
     let mut extent = None;
+    let mut capture = None;
+    let mut size = None;
+    let mut ticks = None;
+    let mut eye = None;
+    let mut target = None;
     let free_camera = args.iter().any(|arg| arg == "--fly");
     let no_sim = args.iter().any(|arg| arg == "--no-sim");
 
@@ -96,6 +132,26 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
             }
             "--extent" => {
                 extent = Some(parse_extent(value_after(args, index)?)?);
+                index = index.strict_add(2);
+            }
+            "--capture" => {
+                capture = Some(value_after(args, index)?.to_owned());
+                index = index.strict_add(2);
+            }
+            "--size" => {
+                size = Some(parse_size(value_after(args, index)?)?);
+                index = index.strict_add(2);
+            }
+            "--ticks" => {
+                ticks = Some(parse_ticks(value_after(args, index)?)?);
+                index = index.strict_add(2);
+            }
+            "--eye" => {
+                eye = Some(parse_point(value_after(args, index)?, "--eye")?);
+                index = index.strict_add(2);
+            }
+            "--target" => {
+                target = Some(parse_point(value_after(args, index)?, "--target")?);
                 index = index.strict_add(2);
             }
             _ => index = index.strict_add(1),
@@ -124,7 +180,66 @@ pub fn parse(args: &[String]) -> Result<Launch, String> {
         request,
         free_camera,
         no_sim,
+        capture: capture_request(capture, size, ticks, eye, target, no_sim)?,
     })
+}
+
+/// The capture the flags name, or nothing for a run that opens a window.
+fn capture_request(
+    path: Option<String>,
+    size: Option<[u32; 2]>,
+    ticks: Option<u64>,
+    eye: Option<Vec3>,
+    target: Option<Vec3>,
+    no_sim: bool,
+) -> Result<Option<CaptureRequest>, String> {
+    let Some(path) = path else {
+        for (named, what) in [
+            (size.is_some(), "--size sizes a capture"),
+            (ticks.is_some(), "--ticks advances a capture's simulation"),
+            (eye.is_some(), "--eye places a capture's camera"),
+            (target.is_some(), "--target aims a capture's camera"),
+        ] {
+            if named {
+                return Err(format!(
+                    "{what}, so a run without --capture has nothing to do with it"
+                ));
+            }
+        }
+
+        return Ok(None);
+    };
+
+    if no_sim && ticks.is_some_and(|ticks| ticks > 0) {
+        return Err(String::from(
+            "--no-sim runs no simulation, so --ticks has nothing to advance",
+        ));
+    }
+
+    let camera = match (eye, target) {
+        (Some(eye), Some(target)) => {
+            if eye == target {
+                return Err(String::from(
+                    "--eye and --target name the same point, which has no view",
+                ));
+            }
+
+            Some(CaptureCamera { eye, target })
+        }
+        (None, None) => None,
+        _ => {
+            return Err(String::from(
+                "--eye and --target place a camera together, so one without the other is refused",
+            ));
+        }
+    };
+
+    Ok(Some(CaptureRequest {
+        path,
+        extent: size.unwrap_or(DEFAULT_CAPTURE_EXTENT),
+        ticks: ticks.unwrap_or(0),
+        camera,
+    }))
 }
 
 /// A Seed for a run that names none, drawn from the random hash keys the
@@ -162,6 +277,47 @@ fn parse_extent(value: &str) -> Result<i32, String> {
     value
         .parse::<i32>()
         .map_err(|_| format!("the extent {value} is not an integer"))
+}
+
+/// The capture extent as width by height, both non-zero.
+fn parse_size(value: &str) -> Result<[u32; 2], String> {
+    let refused = || format!("the size {value} is not WIDTHxHEIGHT");
+
+    let (width, height) = value.split_once('x').ok_or_else(refused)?;
+    let width = width.parse::<u32>().map_err(|_| refused())?;
+    let height = height.parse::<u32>().map_err(|_| refused())?;
+
+    if width == 0 || height == 0 {
+        return Err(format!("the size {value} has no pixels"));
+    }
+
+    Ok([width, height])
+}
+
+fn parse_ticks(value: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| format!("the tick count {value} is not an integer"))
+}
+
+/// A point as `x,y,z`, for the camera flags.
+fn parse_point(value: &str, flag: &str) -> Result<Vec3, String> {
+    let refused = || format!("{flag} {value} is not X,Y,Z");
+
+    let mut parts = value.split(',');
+    let mut number = || parts.next()?.trim().parse::<f32>().ok();
+
+    let (Some(x), Some(y), Some(z)) = (number(), number(), number()) else {
+        return Err(refused());
+    };
+
+    let point = Vec3::new(x, y, z);
+
+    if parts.next().is_some() || !point.is_finite() {
+        return Err(refused());
+    }
+
+    Ok(point)
 }
 
 /// The World type a `--world-type` value names.
@@ -366,5 +522,151 @@ mod tests {
     fn a_non_integer_seed_or_extent_is_refused() {
         assert!(parse(&args(&["--seed", "soon"])).is_err());
         assert!(parse(&args(&["--seed", "1", "--extent", "wide"])).is_err());
+    }
+
+    #[test]
+    fn a_run_with_no_capture_flag_opens_a_window() {
+        assert!(launch(&[]).capture.is_none());
+    }
+
+    #[test]
+    fn a_capture_flag_saves_to_that_path_with_the_defaults() {
+        let capture = launch(&["--capture", "shot.png"]).capture;
+        let Some(capture) = capture else {
+            panic!("--capture saves a capture");
+        };
+
+        assert_eq!(capture.path, "shot.png");
+        assert_eq!(capture.extent, DEFAULT_CAPTURE_EXTENT);
+        assert_eq!(capture.ticks, 0);
+        assert!(capture.camera.is_none());
+    }
+
+    #[test]
+    fn the_capture_flags_reach_the_request() {
+        let capture = launch(&[
+            "--capture",
+            "shot.png",
+            "--size",
+            "640x360",
+            "--ticks",
+            "130",
+            "--eye",
+            "1,2,3",
+            "--target",
+            "-4,5,6",
+        ])
+        .capture;
+        let Some(capture) = capture else {
+            panic!("--capture saves a capture");
+        };
+
+        assert_eq!(capture.extent, [640, 360]);
+        assert_eq!(capture.ticks, 130);
+        assert_eq!(
+            capture.camera,
+            Some(CaptureCamera {
+                eye: Vec3::new(1.0, 2.0, 3.0),
+                target: Vec3::new(-4.0, 5.0, 6.0),
+            })
+        );
+    }
+
+    #[test]
+    fn a_capture_takes_the_same_world_flags_as_a_windowed_run() {
+        let launch = launch(&[
+            "--capture",
+            "shot.png",
+            "--world-type",
+            "sand-ball",
+            "--fly",
+        ]);
+
+        assert_eq!(launch.request, WorldRequest::SandBall);
+        assert!(launch.free_camera);
+    }
+
+    #[test]
+    fn a_capture_only_flag_without_a_capture_is_refused() {
+        for flag in ["--size", "--ticks", "--eye", "--target"] {
+            assert!(
+                parse(&args(&[flag, "1"])).is_err(),
+                "{flag} names nothing on a run that opens a window"
+            );
+        }
+    }
+
+    #[test]
+    fn an_eye_without_a_target_is_refused() {
+        assert!(parse(&args(&["--capture", "shot.png", "--eye", "1,2,3"])).is_err());
+        assert!(parse(&args(&["--capture", "shot.png", "--target", "1,2,3"])).is_err());
+    }
+
+    #[test]
+    fn a_camera_looking_at_its_own_eye_is_refused() {
+        assert!(
+            parse(&args(&[
+                "--capture",
+                "shot.png",
+                "--eye",
+                "1,2,3",
+                "--target",
+                "1,2,3",
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn ticks_beside_no_sim_are_refused() {
+        assert!(
+            parse(&args(&[
+                "--capture",
+                "shot.png",
+                "--no-sim",
+                "--ticks",
+                "5"
+            ]))
+            .is_err()
+        );
+        assert!(
+            parse(&args(&[
+                "--capture",
+                "shot.png",
+                "--no-sim",
+                "--ticks",
+                "0"
+            ]))
+            .is_ok(),
+            "a tick count of zero asks for nothing to advance"
+        );
+    }
+
+    #[test]
+    fn a_point_that_is_not_three_numbers_is_refused() {
+        for point in ["1,2", "1,2,3,4", "1,2,wide", "1;2;3", ""] {
+            assert!(
+                parse(&args(&[
+                    "--capture",
+                    "shot.png",
+                    "--eye",
+                    point,
+                    "--target",
+                    "0,0,0"
+                ]))
+                .is_err(),
+                "the point {point} is not X,Y,Z"
+            );
+        }
+    }
+
+    #[test]
+    fn a_size_that_is_not_width_by_height_is_refused() {
+        for size in ["640", "640x", "x360", "widex360", "0x360", "640x0"] {
+            assert!(
+                parse(&args(&["--capture", "shot.png", "--size", size])).is_err(),
+                "the size {size} names no extent"
+            );
+        }
     }
 }

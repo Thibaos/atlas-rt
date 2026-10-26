@@ -1,6 +1,6 @@
 mod app;
 
-use app::{App, launch};
+use app::{App, capture, launch};
 use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
@@ -9,11 +9,15 @@ fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let launch = launch::parse(&args).map_err(anyhow::Error::msg)?;
 
+    if let Some(request) = &launch.capture {
+        return capture::run(&launch, request);
+    }
+
     let event_loop = EventLoop::new()?;
 
     let mut app = App::new(
         &event_loop,
-        launch.request,
+        &launch.request,
         launch.free_camera,
         launch.no_sim,
     )?;

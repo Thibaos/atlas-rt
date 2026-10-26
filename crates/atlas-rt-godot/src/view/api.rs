@@ -1,8 +1,12 @@
-use std::sync::{Arc, Mutex, mpsc};
+use std::{
+    path::Path,
+    sync::{Arc, Mutex, mpsc},
+};
 
 use atlas_rt::{
     host::display_gate::DisplayGate,
     render::{
+        capture,
         context::RenderContext,
         embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
         output::delivery::SLOT_COUNT,
@@ -39,8 +43,10 @@ pub struct AtlasRtView {
     pub(super) display: DisplayGate,
     pub(super) composite_material: Option<Gd<Material>>,
     pub(super) material_detached: bool,
+    pub(super) zero_copy: bool,
     pub(super) wrapped_texture: Option<Gd<Texture2Drd>>,
     wrapped_at: [Option<u64>; SLOT_COUNT],
+    published_slot: Option<usize>,
     wrap_tick: u64,
     pub(super) world_chunks: TrackedCoords,
     pub(super) world: Option<World>,
@@ -66,8 +72,10 @@ impl IControl for AtlasRtView {
             display: DisplayGate::new(),
             composite_material: None,
             material_detached: false,
+            zero_copy: false,
             wrapped_texture: None,
             wrapped_at: [None; SLOT_COUNT],
+            published_slot: None,
             wrap_tick: 0,
             world_chunks: TrackedCoords::default(),
             world: None,
@@ -120,9 +128,14 @@ impl IControl for AtlasRtView {
                         self.worker_publish_in = Some(published_rx);
                         self.job = Some(job);
 
-                        if let Err(probe) = Self::probe_backend(&gpu, &shared_pipeline) {
-                            godot_error!("atlas_rt: init probe failed: {}", probe);
-                        }
+                        self.zero_copy = match Self::probe_backend(&gpu, &shared_pipeline) {
+                            Ok(()) => true,
+                            Err(probe) => {
+                                godot_error!("atlas_rt: init probe failed: {}", probe);
+
+                                false
+                            }
+                        };
 
                         Signal::from_object_signal(
                             &RenderingServer::singleton(),
@@ -230,11 +243,60 @@ impl AtlasRtView {
 
         *entry = Some(self.tick);
 
+        self.published_slot = Some(slot);
+
         self.wrap_tick = self.tick + 1;
 
-        self.hand_off_zero_copy(slot);
+        if self.zero_copy {
+            self.hand_off_zero_copy(slot);
+        }
+
         self.settle_job(version, generation);
         self.to_gd().queue_redraw();
+    }
+
+    /// Writes the last frame the view drew to `path` as a PNG, in the same
+    /// display encoding the composite shader applies, so a saved frame is the
+    /// picture on screen. Reads the delivery image back on the renderer's own
+    /// device, which needs no RenderingDevice from the engine: a headless run
+    /// saves frames as well as a windowed one.
+    ///
+    /// Returns false when no frame has been published yet or the write failed.
+    #[func]
+    pub fn save_capture(&mut self, path: GString) -> bool {
+        let Some(slot) = self.published_slot else {
+            godot_error!("atlas_rt: no frame has been published to save");
+
+            return false;
+        };
+
+        let (Some(gpu), Some(pipeline)) = (&self.gpu, &self.pipeline) else {
+            godot_error!("atlas_rt: no pipeline is initialized to save a frame from");
+
+            return false;
+        };
+
+        let saved = {
+            let gpu = lock(gpu);
+            let pipeline = lock(pipeline);
+
+            pipeline
+                .capture(&gpu, slot, self.render_mode())
+                .and_then(|frame| capture::save_png(Path::new(&path.to_string()), &frame))
+        };
+
+        match saved {
+            Ok(()) => {
+                godot_print!("atlas_rt: saved the frame to {path}");
+
+                true
+            }
+            Err(error) => {
+                godot_error!("atlas_rt: saving the frame failed: {error:#}");
+
+                false
+            }
+        }
     }
 
     /// Status for the loading overlay and load buttons. Reports empty and idle,

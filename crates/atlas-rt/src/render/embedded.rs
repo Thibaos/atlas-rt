@@ -14,6 +14,7 @@ use vulkano::memory::DeviceMemory;
 use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
+    capture::FrameCapture,
     context::RenderContext,
     output::delivery::{DELIVERY_FORMAT, DeliveryRing, SLOT_COUNT, delivery_memory},
     pipeline::{
@@ -624,6 +625,22 @@ impl EmbeddedPipeline {
         let image = self.slot_image(gpu, slot)?;
 
         Ok(image.handle().as_raw())
+    }
+
+    /// Reads the last frame written to `slot` back as the host shows it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the slot has no image or the copy back failed
+    pub fn capture(
+        &self,
+        gpu: &RenderContext,
+        slot: usize,
+        mode: RenderMode,
+    ) -> anyhow::Result<FrameCapture> {
+        let physical = self.delivery.physical_id(slot)?;
+
+        crate::render::capture::read_frame(gpu, physical, self.delivery.extent(), mode)
     }
 
     /// # Errors
