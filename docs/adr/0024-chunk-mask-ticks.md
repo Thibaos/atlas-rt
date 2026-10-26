@@ -23,8 +23,13 @@ the World moved in this tick, so it does not support a grain above it.
 A tick may translate a maximal run of chunks as one mask write per chunk. A
 chunk translates when every grain in it falls straight down: for rows 1 to 7 the
 cell below falls inside the chunk, and for row 0 the cell below is open or held
-by a grain that moves. Runs are decided per chunk per tick, bottom-up from the
-pre-tick masks, and never cached.
+by a grain that moves. Two conditions narrow that rule. A chunk must hold more
+cells than `REWRITE_THRESHOLD`: at or under it, writing the chunk whole costs
+more than its edits, so it stays on the per-cell path. The queue must hold every
+cell of it, because the translation moves the whole chunk while a tick serves
+only the queue's cells, so a grain the tick does not serve would move anyway.
+Runs are decided per chunk per tick, bottom-up from the pre-tick masks, and
+never cached.
 
 The boundary rule keeps the translation exact for a body whose bottom row is
 occupied. A translating chunk's row 0 falls into the chunk below and its row 7
@@ -64,9 +69,10 @@ rigid translation, so the per-cell path repeats the same decision 1.1 million
 times.
 
 A dense chunk is cheaper to write whole. A whole-entry write measured about
-250 ns for a ball chunk against about 106 ns a move as an edit, so a chunk that
-moves 4 cells costs about 424 ns as edits and about 250 ns as an entry. Below
-that the edit is cheaper, and above it the entry is.
+250 ns for a ball chunk against about 106 ns a move as an edit, so the crossover
+sits near four moves: four moves cost about 424 ns as edits against about 250 ns
+as an entry. The commit compares strictly, with `moves > threshold`, so a
+four-move chunk keeps its edits and five moves and up are written whole.
 
 Stage A changes the representation and emits the same edits, so the existing
 suite proves it and a differential test proves it again against the unmodified
@@ -84,7 +90,7 @@ gated per chunk per tick rather than switched on for a scene.
 
 - The serve order is unchanged, so a contested destination resolves as it did
   and the order stays part of the result.
-- The three tests in `sim/physics/rules.rs` that compare a `Vec<VoxelEdit>`
+- The tests in `sim/physics/rules.rs` that compare a `Vec<VoxelEdit>`
   exactly stay written against the per-cell policy, because stage A emits the
   same edits.
 - The per-cell path remains the oracle and the fallback. `DrainPolicy` selects

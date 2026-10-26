@@ -12,9 +12,8 @@ use crate::world::{
 
 use super::queue::UpdateQueue;
 
-/// One touched chunk's state after this tick's moves so far: its mask in the
-/// store's layout, the one material it holds while every cell agrees, the
-/// per-cell array a divergence allocates, and the moves it served.
+/// A chunk the tick has touched, holding its post-tick mask in the store's
+/// layout and the materials its cells hold.
 pub(in crate::sim) struct ChunkHeld {
     mask: [u8; MICRO_BYTES],
     uniform: Option<u8>,
@@ -101,9 +100,7 @@ impl ChunkHeld {
 
     fn write(&mut self, cell: usize, material: u8) {
         if let Some(per_cell) = self.per_cell.as_mut() {
-            if let Some(slot) = per_cell.get_mut(cell) {
-                *slot = material;
-            }
+            set_material(per_cell, cell, material);
 
             return;
         }
@@ -113,9 +110,7 @@ impl ChunkHeld {
             Some(uniform) => {
                 let mut per_cell = Box::new([uniform; MICRO_CELLS]);
 
-                if let Some(slot) = per_cell.get_mut(cell) {
-                    *slot = material;
-                }
+                set_material(&mut per_cell, cell, material);
 
                 self.per_cell = Some(per_cell);
                 self.uniform = None;
@@ -137,12 +132,17 @@ pub(in crate::sim) struct Overlay {
 }
 
 impl Overlay {
-    /// A drain reads and writes a handful of neighbouring chunks in a row, so
-    /// the last one resolved answers for the cells beside it.
+    /// The chunk a drain last resolved, which answers for the cells beside it
+    /// because a drain reads and writes a handful of neighbouring chunks in a
+    /// row.
+    fn cached(&self, origin: IVec3) -> Option<usize> {
+        let (recent, slot) = self.recent.get()?;
+
+        (recent == origin).then_some(slot)
+    }
+
     fn slot(&self, origin: IVec3) -> Option<usize> {
-        if let Some((recent, slot)) = self.recent.get()
-            && recent == origin
-        {
+        if let Some(slot) = self.cached(origin) {
             return Some(slot);
         }
 
@@ -154,9 +154,7 @@ impl Overlay {
     }
 
     fn slot_of_move(&mut self, world: &World, origin: IVec3) -> usize {
-        if let Some((recent, slot)) = self.recent.get()
-            && recent == origin
-        {
+        if let Some(slot) = self.cached(origin) {
             return slot;
         }
 
@@ -219,14 +217,21 @@ impl Overlay {
     fn install(&mut self, origin: IVec3, state: ChunkHeld) {
         self.most_moves = self.most_moves.max(state.moves());
 
-        if let Some(slot) = self.slots.get(&origin).copied() {
-            if let Some(existing) = self.states.get_mut(slot) {
-                *existing = state;
-            }
-
-            return;
+        match self.slots.get(&origin).copied() {
+            Some(slot) => self.replace(slot, state),
+            None => self.append(origin, state),
         }
+    }
 
+    /// Replaces the state of a chunk the overlay already holds.
+    fn replace(&mut self, slot: usize, state: ChunkHeld) {
+        if let Some(existing) = self.states.get_mut(slot) {
+            *existing = state;
+        }
+    }
+
+    /// Adds a chunk the overlay did not hold before.
+    fn append(&mut self, origin: IVec3, state: ChunkHeld) {
         let slot = self.states.len();
 
         self.origins.push(origin);
@@ -236,8 +241,8 @@ impl Overlay {
     }
 }
 
-/// What the commit reads to write a touched chunk whole, in no particular
-/// order. A chunk the tick has not touched answers an absent mask.
+/// What the commit writes a touched chunk whole from: the chunks this tick's
+/// moves have touched, in no particular order.
 impl Overlay {
     pub(in crate::sim) fn chunks(&self) -> impl Iterator<Item = (IVec3, &ChunkHeld)> + '_ {
         self.origins.iter().copied().zip(self.states.iter())
@@ -468,6 +473,14 @@ fn chunk_origin(cell: IVec3) -> IVec3 {
 /// in the mask byte `y + 8z`.
 fn chunk_cell(cell: IVec3, origin: IVec3) -> usize {
     micro::mask_index(cell.saturating_sub(origin))
+}
+
+/// Sets one cell's material in a per-cell array, and leaves a cell outside the
+/// array's walk alone.
+fn set_material(per_cell: &mut [u8; MICRO_CELLS], cell: usize, material: u8) {
+    if let Some(slot) = per_cell.get_mut(cell) {
+        *slot = material;
+    }
 }
 
 /// A chunk's materials spread over its mask's set bits in ascending cell order.

@@ -40,7 +40,7 @@ pub(in crate::sim) const REWRITE_THRESHOLD: usize = 4;
 /// Returns an [`EditError`] when the batch would carry the World past its cell
 /// budget, before anything is written, and when an edit or an entry lies
 /// outside the lattice.
-pub(in crate::sim) fn commit(
+pub(in crate::sim) fn commit_drain(
     world: &mut World,
     edits: &[VoxelEdit],
     overlay: &Overlay,
@@ -162,7 +162,9 @@ fn refuse_over_budget(
     remaining: &[VoxelEdit],
     rewrites: &FxHashMap<IVec3, MicroChunkSnapshot>,
 ) -> Result<(), EditError> {
-    if cell_budget() == usize::MAX {
+    let limit = cell_budget();
+
+    if limit == usize::MAX {
         return Ok(());
     }
 
@@ -182,7 +184,7 @@ fn refuse_over_budget(
         .saturating_add(added)
         .saturating_sub(removed);
 
-    check_cell_budget(projected)
+    check_cell_budget(projected, limit)
 }
 
 #[cfg(test)]
@@ -338,7 +340,7 @@ mod tests {
 
         let mut committed = dense_and_sparse();
 
-        commit(
+        commit_drain(
             &mut committed,
             &drained.edits,
             &drained.overlay,
@@ -382,7 +384,7 @@ mod tests {
         let expected = edit_world(&mut reference, &drained.edits, &TrackedCoords::default())
             .expect("the per-cell path applies the fixture's moves");
         let mut committed = scattered();
-        let actual = commit(
+        let actual = commit_drain(
             &mut committed,
             &drained.edits,
             &drained.overlay,
@@ -502,7 +504,7 @@ mod tests {
         );
 
         let restore = set_cell_budget(budget);
-        let outcome = commit(
+        let outcome = commit_drain(
             &mut world,
             &drained.edits,
             &drained.overlay,

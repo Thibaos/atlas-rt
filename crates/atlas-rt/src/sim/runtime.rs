@@ -606,7 +606,7 @@ impl Runtime {
             let overlay = mem::take(&mut self.rule_overlay);
 
             if !rules.is_empty() || !overlay.is_empty() {
-                let outcome = commit::commit(
+                let outcome = commit::commit_drain(
                     &mut guard,
                     &rules,
                     &overlay,

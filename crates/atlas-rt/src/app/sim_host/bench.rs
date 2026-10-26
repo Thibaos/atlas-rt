@@ -851,16 +851,13 @@ fn generated_surface_tick_timings() {
     failures.assert_empty();
 }
 
-/// One measured tick range and the p95 whole tick it is held to. `asserted`
-/// separates a gate that fails the run from one that only reports, which the
-/// ball's two gates were until the run translation landed.
+/// One measured tick range and the p95 whole tick it is held to.
 #[derive(Clone, Copy)]
 struct Window {
     name: &'static str,
     first: usize,
     last: usize,
     gate: Duration,
-    asserted: bool,
 }
 
 impl Window {
@@ -875,7 +872,7 @@ impl Window {
     }
 
     fn gate_check(&self, timings: &TickTimings) -> Result<(), String> {
-        if self.asserted && !self.met(timings) {
+        if !self.met(timings) {
             return Err(format!(
                 "{}: p95 whole tick {:.3?} over the {:.3?} gate",
                 self.name, timings.tick_p95, self.gate
@@ -892,14 +889,12 @@ const BALL_WINDOWS: [Window; 2] = [
         first: 1,
         last: FREE_FALL_TICKS,
         gate: FREE_FALL_GATE,
-        asserted: true,
     },
     Window {
         name: "pile",
         first: FREE_FALL_TICKS.saturating_add(1),
         last: BALL_TICKS,
         gate: PILE_GATE,
-        asserted: true,
     },
 ];
 
@@ -908,7 +903,6 @@ const RAIN_WINDOWS: [Window; 1] = [Window {
     first: PLATEAU_FIRST,
     last: RAIN_TICKS,
     gate: PLATEAU_GATE,
-    asserted: true,
 }];
 
 struct WindowReport {
@@ -1366,37 +1360,16 @@ fn a_window_reads_ok_or_the_name_of_its_miss() {
         "TICK",
         "the whole tick is the only metric the gate holds, so the miss is named for it"
     );
-    assert!(window.gate_check(&met).is_ok());
+    assert!(window.gate_check(&met).is_ok(), "a gate met is not a miss");
 }
 
 #[test]
-fn a_window_only_reports_while_it_is_not_asserted() {
-    let window = Window {
-        name: "free fall",
-        first: 1,
-        last: FREE_FALL_TICKS,
-        gate: FREE_FALL_GATE,
-        asserted: false,
-    };
-    let missed = TickTimings {
-        tick_p95: FREE_FALL_GATE.saturating_add(Duration::from_micros(1)),
-        ..TickTimings::default()
-    };
-
-    assert!(
-        window.gate_check(&missed).is_ok(),
-        "a gate that is not asserted reports its miss rather than failing the run"
-    );
-}
-
-#[test]
-fn only_an_asserted_window_records_a_miss() {
+fn a_tick_over_its_gate_records_a_miss() {
     let window = Window {
         name: "plateau",
         first: PLATEAU_FIRST,
         last: RAIN_TICKS,
         gate: PLATEAU_GATE,
-        asserted: true,
     };
     let over = TickTimings {
         tick_p95: PLATEAU_GATE.saturating_add(Duration::from_millis(1)),

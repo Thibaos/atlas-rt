@@ -29,9 +29,8 @@ pub enum DrainPolicy {
     Runs,
 }
 
-/// One drain's outcome: the edits it would commit, the queued cells it
-/// evaluated, whether they moved, settled, or were never grains, and the
-/// overlay the commit reads.
+/// One drain's outcome: what it would commit, how many queued cells it
+/// evaluated, and the post-tick state the commit writes.
 pub(in crate::sim) struct Drained {
     pub(in crate::sim) edits: Vec<VoxelEdit>,
     pub(in crate::sim) processed: usize,
@@ -190,26 +189,53 @@ fn serve_runs(
     let mut served = 0usize;
 
     for cell in queue.unserved_except(&skip) {
-        while let Some(origin) = runs.translating.get(served).copied()
-            && origin.y <= cell.y
-        {
-            processed = processed.saturating_add(runs.translate_chunk(
-                field,
-                origin,
-                edits,
-                destinations,
-                translations,
-                wakes,
-            ));
-            served = served.saturating_add(1);
-        }
+        processed = processed.saturating_add(translate_through(
+            &runs,
+            field,
+            &mut served,
+            cell.y,
+            edits,
+            destinations,
+            translations,
+            wakes,
+        ));
 
         processed = processed.saturating_add(1);
 
         serve_cell(field, parity, cell, edits, destinations, woken);
     }
 
-    while let Some(origin) = runs.translating.get(served).copied() {
+    processed = processed.saturating_add(translate_through(
+        &runs,
+        field,
+        &mut served,
+        i32::MAX,
+        edits,
+        destinations,
+        translations,
+        wakes,
+    ));
+
+    processed
+}
+
+/// Translates every run whose first row the scan has reached by `upto`, in
+/// order, and returns the cells they served.
+fn translate_through(
+    runs: &Runs<'_>,
+    field: &mut Field<'_>,
+    served: &mut usize,
+    upto: i32,
+    edits: &mut Vec<VoxelEdit>,
+    destinations: &mut Vec<IVec3>,
+    translations: &mut Vec<Translation>,
+    wakes: &mut Vec<(IVec3, [u8; MICRO_BYTES])>,
+) -> usize {
+    let mut processed = 0usize;
+
+    while let Some(origin) = runs.translating.get(*served).copied()
+        && origin.y <= upto
+    {
         processed = processed.saturating_add(runs.translate_chunk(
             field,
             origin,
@@ -218,14 +244,14 @@ fn serve_runs(
             translations,
             wakes,
         ));
-        served = served.saturating_add(1);
+        *served = served.saturating_add(1);
     }
 
     processed
 }
 
-/// One tick's run translation: the chunks that move as one, their pre-tick
-/// entries, and the column verdicts the row-0 test has already settled.
+/// One tick's run translation, decided before anything is served: which chunks
+/// move as one, and the pre-tick evidence that decision rests on.
 struct Runs<'a> {
     world: &'a World,
     table: &'a PhysicalMaterialTable,
@@ -457,7 +483,7 @@ impl<'a> Runs<'a> {
             above: above.map(|above| micro::row(above.entry.mask, 0)),
         });
 
-        self.queue.held(origin)
+        self.queue.held_cells(origin)
     }
 
     /// The chunk at `origin`, or nothing outside the lattice, where the World
