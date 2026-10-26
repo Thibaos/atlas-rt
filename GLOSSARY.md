@@ -266,8 +266,8 @@ analytic), sky
 
 **Sky ambient**:
 The light a surface takes from the Procedural sky: the cosine-weighted mean of
-`sky_radiance` over the hemisphere around the Normal, measured by Occlusion
-samples and added to the binary Sun term, so a hit's radiance is
+the Procedural sky's radiance over the hemisphere around the Normal, measured by
+Occlusion samples and added to the binary Sun term, so a hit's radiance is
 `albedo * (sun_visible + ambient)`. The fraction of samples that reach the sky
 is the occlusion, which makes the term a measurement, not a strength factor.
 Voxel mode only.
@@ -276,13 +276,13 @@ sky visibility (the fraction, not the radiance)
 
 **Occlusion sample**:
 One secondary ray from a hit toward the sky, drawn cosine-weighted over the
-hemisphere around the Normal and traced at most `ao_radius` Voxels against the
-opaque-only shadow group, so a transparent surface never occludes. A sample
-that hits nothing contributes the Procedural sky along its direction, one that
-hits inside that reach contributes `ao_floor * sky_radiance(normal)`, and one
-at or below the tangent plane contributes nothing at all. The Sky ambient is
-the mean over all `ao_samples` (0 to 16, default 4), so the denominator stays
-that count rather than the number of samples that passed.
+hemisphere around the Normal and traced at most 8 Voxels against the opaque-only
+shadow group, so a transparent surface never occludes. A sample that hits
+nothing contributes the Procedural sky along its direction, one that hits inside
+that reach contributes a tenth of the sky radiance at the Normal, and one at or
+below the tangent plane is dropped and contributes nothing at all. The Sky
+ambient is the mean over the sample count (0 to 16, default 4), so the
+denominator stays that count rather than the number of samples that passed.
 _Avoid_: AO ray, ambient ray, shadow ray (that is the Sun trace)
 
 **Background**:

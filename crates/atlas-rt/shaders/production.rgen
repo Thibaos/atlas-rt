@@ -13,6 +13,7 @@
 
 const float PI = 3.14159265359;
 const float AO_ORIGIN_OFFSET = 1e-3;
+const float SHADOWED_ALBEDO_SCALE = 0.25;
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 layout(location = 1) rayPayloadEXT MainPassPayload shadow_payload;
@@ -78,20 +79,20 @@ void shade_hit(vec3 origin, vec3 direction) {
     shadow_payload.t = FLT_MAX;
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
 
-    // Zero samples keeps the flat multiply, the acceptance baseline.
+    bool sun_visible = shadow_payload.t >= FLT_MAX;
+
     if (scene.ao_samples == 0u) {
-        if (shadow_payload.t < FLT_MAX) {
-            payload.color.rgb *= 0.25;
+        if (!sun_visible) {
+            payload.color.rgb *= SHADOWED_ALBEDO_SCALE;
         }
 
         return;
     }
 
-    float sun_visible = (shadow_payload.t < FLT_MAX) ? 0.0 : 1.0;
     vec3 normal = payload.normal;
     vec3 sample_origin = hit_position + normal * AO_ORIGIN_OFFSET;
 
-    payload.color.rgb = albedo * (sun_visible + sky_ambient(sample_origin, normal));
+    payload.color.rgb = albedo * (float(sun_visible) + sky_ambient(sample_origin, normal));
 }
 
 void main() {
