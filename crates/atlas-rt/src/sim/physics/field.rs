@@ -128,6 +128,7 @@ impl ChunkHeld {
 #[derive(Default)]
 pub(in crate::sim) struct Overlay {
     entries: FxHashMap<IVec3, ChunkHeld>,
+    most_moves: usize,
 }
 
 impl Overlay {
@@ -152,12 +153,16 @@ impl Overlay {
     fn apply_move(&mut self, world: &World, src: IVec3, dst: IVec3, material: u8) {
         let src_origin = chunk_origin(src);
 
-        {
+        let served = {
             let state = self.touch(world, src_origin);
 
             state.vacate(chunk_cell(src, src_origin));
             state.served();
-        }
+
+            state.moves()
+        };
+
+        self.most_moves = self.most_moves.max(served);
 
         let dst_origin = chunk_origin(dst);
 
@@ -174,6 +179,8 @@ impl Overlay {
     /// Puts a chunk's whole state in, replacing whatever this tick had put
     /// there, which is what a translated chunk needs.
     fn install(&mut self, origin: IVec3, state: ChunkHeld) {
+        self.most_moves = self.most_moves.max(state.moves());
+
         self.entries.insert(origin, state);
     }
 }
@@ -189,6 +196,12 @@ impl Overlay {
     /// nothing to write.
     pub(in crate::sim) fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The most moves any touched chunk served, which is what decides whether
+    /// the commit has a chunk to write whole.
+    pub(in crate::sim) const fn most_moves(&self) -> usize {
+        self.most_moves
     }
 
     /// The whole state of `origin`'s chunk, the form the commit writes one entry
@@ -537,6 +550,56 @@ mod tests {
         }
 
         overlay
+    }
+
+    #[test]
+    fn the_overlay_answers_the_most_moves_one_chunk_served() {
+        let world = world_of(&[
+            (IVec3::new(0, 2, 0), GRAIN),
+            (IVec3::new(1, 2, 0), GRAIN),
+            (IVec3::new(8, 2, 0), GRAIN),
+        ]);
+        let table = table();
+        let queue = UpdateQueue::default();
+        let mut field = Field::new(&world, &table, &queue);
+
+        field.apply_move(IVec3::new(0, 2, 0), IVec3::new(0, 1, 0), GRAIN);
+
+        assert_eq!(
+            field.material(IVec3::new(0, 1, 0)),
+            Some(GRAIN),
+            "one move through the overlay"
+        );
+
+        field.apply_move(IVec3::new(1, 2, 0), IVec3::new(1, 1, 0), GRAIN);
+        field.apply_move(IVec3::new(8, 2, 0), IVec3::new(8, 1, 0), GRAIN);
+
+        assert_eq!(
+            field.into_overlay().most_moves(),
+            2,
+            "the first chunk served two moves and the second served one"
+        );
+    }
+
+    #[test]
+    fn a_translated_chunk_counts_as_the_moves_it_served() {
+        let cells: Vec<(IVec3, u8)> = (0..5).map(|x| (IVec3::new(x, 4, 0), GRAIN)).collect();
+        let world = world_of(&cells);
+        let table = table();
+        let queue = UpdateQueue::default();
+        let origin = IVec3::new(0, 0, 0);
+        let entry = world
+            .chunk_entry(origin)
+            .expect("the fixture holds the chunk");
+        let mut field = Field::new(&world, &table, &queue);
+
+        field.translate(origin, ChunkSource::read(entry), None);
+
+        assert_eq!(
+            field.into_overlay().most_moves(),
+            5,
+            "a translated chunk serves one move per grain it moves"
+        );
     }
 
     #[test]

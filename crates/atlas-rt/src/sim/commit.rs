@@ -47,11 +47,11 @@ pub(in crate::sim) fn commit(
     threshold: usize,
     tracked: &TrackedCoords,
 ) -> Result<Batch, EditError> {
-    let mut rewrites = rewritten(overlay, threshold);
-
-    if rewrites.is_empty() {
+    if overlay.most_moves() <= threshold {
         return edit_world(world, edits, tracked);
     }
+
+    let mut rewrites = rewritten(overlay, threshold);
 
     let (touched, remaining) = split(edits, &rewrites);
 
@@ -270,11 +270,132 @@ mod tests {
             .map_or(0, |(_, held)| held.moves())
     }
 
+    /// Grains one to a Micro-chunk, so no chunk serves more moves than the
+    /// threshold and the commit keeps every edit.
+    fn scattered() -> World {
+        let cells: Vec<(IVec3, u8)> = (0..6)
+            .map(|index| (IVec3::new(index * 16, 1, 0), GRAIN))
+            .collect();
+
+        world_of(&cells)
+    }
+
+    /// The chunk that holds `cell`, which is the origin the filter compares.
+    fn origin_of(cell: IVec3) -> IVec3 {
+        grid_origin(cell, MICRO_CHUNK_LENGTH)
+    }
+
     /// The state the tick left in `origin`'s chunk.
     fn touched(overlay: &Overlay, origin: IVec3) -> &ChunkHeld {
         overlay
             .chunk(origin)
             .expect("the tick has to touch the chunk the fixture names")
+    }
+
+    #[test]
+    fn an_edit_inside_a_rewritten_chunk_is_dropped_and_the_world_matches_the_per_cell_path() {
+        let drained = drained(&dense_and_sparse());
+        let rewrites = rewritten(&drained.overlay, REWRITE_THRESHOLD);
+        let dense = IVec3::new(0, 0, 0);
+
+        assert_eq!(
+            rewrites.keys().copied().collect::<Vec<IVec3>>(),
+            vec![dense],
+            "the fixture's dense chunk is the one written whole"
+        );
+
+        let (_, remaining) = split(&drained.edits, &rewrites);
+        let dropped = drained.edits.len().saturating_sub(remaining.len());
+
+        assert!(dropped > 0, "the dense chunk's moves reach it as edits");
+        assert!(
+            drained
+                .edits
+                .iter()
+                .filter(|edit| origin_of(edit.position) == dense)
+                .all(|edit| !remaining.contains(edit)),
+            "both the Clear and the Set of a move inside a rewritten chunk are dropped"
+        );
+        assert!(
+            remaining
+                .iter()
+                .all(|edit| !rewrites.contains_key(&origin_of(edit.position))),
+            "no remaining edit lies in a rewritten chunk"
+        );
+        assert_eq!(
+            remaining
+                .iter()
+                .filter(|edit| origin_of(edit.position) == IVec3::new(16, 0, 0))
+                .count(),
+            2,
+            "the chunk under the threshold keeps both of its edits"
+        );
+
+        let mut reference = dense_and_sparse();
+
+        edit_world(&mut reference, &drained.edits, &TrackedCoords::default())
+            .expect("the per-cell path applies the fixture's moves");
+
+        let mut committed = dense_and_sparse();
+
+        commit(
+            &mut committed,
+            &drained.edits,
+            &drained.overlay,
+            REWRITE_THRESHOLD,
+            &TrackedCoords::default(),
+        )
+        .expect("the rewrite path applies the fixture's moves");
+
+        assert_eq!(
+            cells(&committed),
+            cells(&reference),
+            "writing the dense chunk whole leaves the World the per-cell path leaves"
+        );
+    }
+
+    #[test]
+    fn a_scattered_scene_keeps_every_edit_and_commits_through_edit_world() {
+        let drained = drained(&scattered());
+
+        assert!(
+            drained.overlay.most_moves() <= REWRITE_THRESHOLD,
+            "no chunk serves more than {} moves",
+            REWRITE_THRESHOLD
+        );
+
+        let rewrites = rewritten(&drained.overlay, REWRITE_THRESHOLD);
+
+        assert!(
+            rewrites.is_empty(),
+            "a scattered scene has no chunk to write whole"
+        );
+
+        let (_, remaining) = split(&drained.edits, &rewrites);
+
+        assert_eq!(
+            remaining, drained.edits,
+            "the filter drops nothing, so every edit keeps its place"
+        );
+
+        let mut reference = scattered();
+        let expected = edit_world(&mut reference, &drained.edits, &TrackedCoords::default())
+            .expect("the per-cell path applies the fixture's moves");
+        let mut committed = scattered();
+        let actual = commit(
+            &mut committed,
+            &drained.edits,
+            &drained.overlay,
+            REWRITE_THRESHOLD,
+            &TrackedCoords::default(),
+        )
+        .expect("the commit applies the fixture's moves");
+
+        assert_eq!(
+            actual, expected,
+            "with nothing to rewrite the commit is the per-cell path, batch and all"
+        );
+        assert_eq!(cells(&committed), cells(&reference));
     }
 
     #[test]
