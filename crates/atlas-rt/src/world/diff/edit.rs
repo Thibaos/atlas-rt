@@ -210,6 +210,26 @@ pub fn edit_world(
     edits: &[VoxelEdit],
     tracked: &TrackedCoords,
 ) -> Result<Batch, EditError> {
+    Ok(plan_edit(apply_edits(world, edits)?, tracked))
+}
+
+/// Mutates `world` and compiles every Micro-chunk the edits touch, without
+/// planning the tracked set, so a caller that merges several lists plans the
+/// one merged list against its own tracked set.
+///
+/// The edits are validated, and the batch is checked against the World's cell
+/// budget, from the starting world before any of them is applied, so a refused
+/// batch leaves the world exactly as it was.
+///
+/// # Errors
+///
+/// Returns an [`EditError`] naming the position when an edit lies outside the
+/// voxel lattice or its Micro-chunk lies outside the renderer lattice, and
+/// naming the count when the batch would carry the World past its cell budget.
+pub(crate) fn apply_edits(
+    world: &mut World,
+    edits: &[VoxelEdit],
+) -> Result<Vec<MicroChunkSnapshot>, EditError> {
     for edit in edits {
         validate(edit)?;
     }
@@ -217,11 +237,7 @@ pub fn edit_world(
     let limit = cell_budget();
 
     if limit != usize::MAX {
-        let projected = projected_count(world, edits);
-
-        if projected > limit {
-            return Err(EditError::over_budget(projected, limit));
-        }
+        check_cell_budget(projected_count(world, edits), limit)?;
     }
 
     for edit in edits {
@@ -231,12 +247,23 @@ pub fn edit_world(
         }
     }
 
-    let snapshots: Vec<MicroChunkSnapshot> = chunks_touched(edits)
+    Ok(chunks_touched(edits)
         .iter()
         .map(|origin| compile_chunk(world, *origin))
-        .collect();
+        .collect())
+}
 
-    Ok(plan_edit(snapshots, tracked))
+/// Refuses a batch whose projected cell count passes `limit`.
+///
+/// # Errors
+///
+/// Returns [`EditError`] naming the projected count when it exceeds the budget.
+pub(crate) const fn check_cell_budget(projected: usize, limit: usize) -> Result<(), EditError> {
+    if projected > limit {
+        return Err(EditError::over_budget(projected, limit));
+    }
+
+    Ok(())
 }
 
 /// The World's count after `edits` apply, without mutating it.
@@ -245,7 +272,7 @@ pub fn edit_world(
 /// and the result is the starting count plus the sum of the chunks' popcount
 /// deltas. A repeated position is idempotent against the mask. A chunk the
 /// store keeps no entry for falls back to a per-position overlay.
-pub(in crate::world) fn projected_count(world: &World, edits: &[VoxelEdit]) -> usize {
+pub(crate) fn projected_count(world: &World, edits: &[VoxelEdit]) -> usize {
     let mut projected = world.voxel_count();
     let mut masks: FxHashMap<IVec3, ([u8; MICRO_BYTES], usize)> = FxHashMap::default();
     let mut fallback: FxHashMap<IVec3, bool> = FxHashMap::default();

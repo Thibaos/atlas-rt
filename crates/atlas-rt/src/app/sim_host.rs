@@ -16,8 +16,8 @@ use tracing::{error, warn};
 
 use atlas_rt::host::ViewInterpolation;
 use atlas_rt::sim::{
-    self, Activation, Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState, Push,
-    UpdateReport,
+    self, Activation, Command, DrainPolicy, Handle, InputSample, ParityPolicy, PlayerProfile,
+    PlayerState, Push, UpdateReport,
 };
 use atlas_rt::world::World;
 use atlas_rt::world::diff::batch::TrackedCoords;
@@ -85,6 +85,7 @@ impl SimHost {
     pub fn spawn(
         world: Arc<RwLock<World>>,
         profile: PlayerProfile,
+        policy: DrainPolicy,
         snapshots: Vec<MicroChunkSnapshot>,
         tracked: TrackedCoords,
         granular_cells: Option<Vec<IVec3>>,
@@ -92,7 +93,7 @@ impl SimHost {
         materials: &PhysicalMaterialTable,
     ) -> Result<Self> {
         let period = profile.tick_period();
-        let handle = sim::spawn(world, profile, ParityPolicy::default())?;
+        let handle = sim::spawn(world, profile, ParityPolicy::default(), policy)?;
 
         Ok(Self {
             handle,
@@ -345,6 +346,7 @@ mod tests {
         let host = SimHost::spawn(
             Arc::clone(&world),
             PlayerProfile::default(),
+            DrainPolicy::default(),
             snapshots,
             tracked,
             None,

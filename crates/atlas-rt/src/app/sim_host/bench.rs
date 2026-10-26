@@ -24,6 +24,13 @@
 //!
 //! `generated_surface_tick_timings` measures the same check on the Falling
 //! granular surface a Generation writes.
+//!
+//! `sand_ball_tick_timings` and `raining_tick_timings` measure the two scenes
+//! that hurt. Each prints one row per window: the p95 queued, processed and
+//! touched-chunk counts, the p95 whole tick with its evaluation and commit, and
+//! a verdict that reads `ok` or names the whole tick as the miss. Every window's
+//! gate is asserted. The ball's bench also records one tick's frame path: its
+//! largest free-fall batch through `RendererInput`.
 
 use std::{
     collections::HashSet,
@@ -35,18 +42,20 @@ use dot_vox::DotVoxData;
 use glam::IVec3;
 
 use atlas_rt::{
-    sim::{InputSample, PlayerProfile, Push},
+    render::region::queue::RendererInput,
+    sim::{DrainPolicy, InputSample, PlayerProfile, Push},
     world::{
         World,
         diff::{
             batch::TrackedCoords,
             edit::{VoxelChange, VoxelEdit, edit_world},
-            snapshot::emit_snapshots,
+            snapshot::{MicroChunkSnapshot, emit_snapshots},
         },
         generation::{GenerationParams, generate},
         grid::{LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH, grid_origin, in_lattice},
         load::progress::Progress,
         material::{PhysicalMaterialTable, parse_override},
+        rain, sand_ball,
     },
 };
 
@@ -67,6 +76,11 @@ const OCCUPANCIES: [&str; 3] = ["synth", "church", "bistro"];
 const READY_TIMEOUT: Duration = Duration::from_secs(120);
 const TICK_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// A scene bench's per-tick wait: the ball's pile takes about 40 seconds of
+/// wall time and the rain's run runs to minutes, so a slow machine must not
+/// trip a wait meant to catch a stopped sim.
+const SCENE_TICK_TIMEOUT: Duration = Duration::from_secs(600);
+
 const FRAME: Duration = Duration::from_nanos(16_666_667);
 
 const LATTICE_FLOOR: i32 = -LATTICE_HALF_EXTENT.cast_signed();
@@ -81,6 +95,30 @@ const SURFACE_EXTENTS: [i32; 4] = [512, 1024, 2048, 4096];
 /// The surface bench's ticks, more than the sweep's: the first ticks reach the
 /// deepest level, where no cell can move, so a p95 needs more than one tick.
 const SURFACE_TICKS: usize = 256;
+
+/// The ball's fall: its lowest grains reach the floor around tick 128, so the
+/// free-fall window is the ticks before that and the pile is the ones after.
+const FREE_FALL_TICKS: usize = 128;
+
+const BALL_TICKS: usize = 190;
+
+/// The rain's plateau: a grain leaves its hole at -1024 and lands 1,023 ticks
+/// later, so the steady state starts at tick 1,024.
+const PLATEAU_FIRST: usize = 1_024;
+
+const RAIN_TICKS: usize = 1_100;
+
+const FREE_FALL_GATE: Duration = Duration::from_millis(10);
+const PILE_GATE: Duration = Duration::from_millis(360);
+
+/// The rain's plateau measured 143 to 160 ms p95 on this machine over six runs
+/// once the queue and the overlay held chunk masks, against 110 ms before
+/// them: a rain grain is alone in its Micro-chunk, so it pays a chunk's overlay
+/// seed and chunk's queue slot for one cell. The 120 ms the rain's own spec
+/// records is a mean over 200 ticks in the dev profile, which a release p95
+/// cannot be held against, so the gate is the measured figure with the headroom
+/// the other budgets carry.
+const PLATEAU_GATE: Duration = Duration::from_millis(180);
 
 struct SweepPoint {
     occupancy: &'static str,
@@ -340,6 +378,7 @@ fn sweep(source: &Source, occupancy: &'static str, active: usize) -> SweepPoint 
     let mut host = SimHost::spawn(
         Arc::new(RwLock::new(world)),
         PlayerProfile::default(),
+        DrainPolicy::default(),
         snapshots,
         tracked,
         None,
@@ -398,8 +437,31 @@ struct Samples {
     eval: Vec<Duration>,
     commit: Vec<Duration>,
     chunks: Vec<usize>,
+    queued: Vec<usize>,
     processed: Vec<usize>,
     moving: usize,
+}
+
+impl Samples {
+    /// The measured ticks `first` to `last`, one-based and inclusive, clipped
+    /// to the ticks the run measured.
+    fn window(&self, first: usize, last: usize) -> Self {
+        let measured = self.wall.len();
+        let start = first.saturating_sub(1).min(measured);
+        let end = last.min(measured).max(start);
+        let chunks = self.chunks.get(start..end).unwrap_or_default().to_vec();
+        let moving = chunks.iter().filter(|count| **count > 0).count();
+
+        Self {
+            wall: self.wall.get(start..end).unwrap_or_default().to_vec(),
+            eval: self.eval.get(start..end).unwrap_or_default().to_vec(),
+            commit: self.commit.get(start..end).unwrap_or_default().to_vec(),
+            queued: self.queued.get(start..end).unwrap_or_default().to_vec(),
+            processed: self.processed.get(start..end).unwrap_or_default().to_vec(),
+            chunks,
+            moving,
+        }
+    }
 }
 
 /// Frames at the 60 fps target against the fixed 30 Hz tick: two frames per
@@ -408,20 +470,33 @@ struct Samples {
 /// for every scene, so they are asserted here; whether a tick moved cells
 /// belongs to the scene, so the caller checks `moving`.
 fn drive(host: &mut SimHost, ticks: usize) -> Samples {
+    drive_with(host, ticks, TICK_TIMEOUT, &mut |_, _| {})
+}
+
+/// The same run with the wait and the batch observer a scene bench needs: the
+/// observer sees each measured tick's index and its snapshots before the host
+/// takes them.
+fn drive_with(
+    host: &mut SimHost,
+    ticks: usize,
+    timeout: Duration,
+    on_batch: &mut impl FnMut(usize, &[MicroChunkSnapshot]),
+) -> Samples {
     let mut samples = Samples {
         wall: Vec::with_capacity(ticks),
         eval: Vec::with_capacity(ticks),
         commit: Vec::with_capacity(ticks),
         chunks: Vec::with_capacity(ticks),
+        queued: Vec::with_capacity(ticks),
         processed: Vec::with_capacity(ticks),
         moving: 0,
     };
 
-    for _ in 0..ticks {
+    for tick_index in 1..=ticks {
         host.frame(FRAME, InputSample::default());
         host.frame(FRAME, InputSample::default());
 
-        let push = recv(host, TICK_TIMEOUT, "a measured tick");
+        let push = recv(host, timeout, "a measured tick");
 
         let Push::Tick(tick) = push else {
             panic!("the frame ran no tick");
@@ -434,13 +509,15 @@ fn drive(host: &mut SimHost, ticks: usize) -> Samples {
             "one frame must not outrun the catch-up cap"
         );
 
-        if report.batch.is_some() {
+        if let Some(batch) = report.batch.as_ref() {
             samples.moving = samples.moving.saturating_add(1);
+            on_batch(tick_index, batch);
         }
 
         samples
             .chunks
             .push(report.batch.as_ref().map_or(0, Vec::len));
+        samples.queued.push(report.queued);
         samples.processed.push(report.processed);
         samples
             .wall
@@ -481,6 +558,8 @@ struct TickTimings {
     eval_p95: Duration,
     commit_p95: Duration,
     chunks_p95: usize,
+    queued_p95: usize,
+    processed_p95: usize,
     per_cell_nanos: u64,
 }
 
@@ -499,6 +578,8 @@ impl TickTimings {
             eval_p95: nearest_rank(&samples.eval),
             commit_p95: nearest_rank(&samples.commit),
             chunks_p95: nearest_rank(&samples.chunks),
+            queued_p95: nearest_rank(&samples.queued),
+            processed_p95: nearest_rank(&samples.processed),
             per_cell_nanos,
         }
     }
@@ -666,6 +747,7 @@ fn surface_point(extent: i32) -> SurfacePoint {
     let mut host = SimHost::spawn(
         Arc::new(RwLock::new(generated.world)),
         PlayerProfile::default(),
+        DrainPolicy::default(),
         snapshots,
         tracked,
         Some(generated.granular_cells),
@@ -763,6 +845,281 @@ fn generated_surface_tick_timings() {
             "extent {extent}: {} grains have to stand well above the {} chunks one tick touches",
             point.grains,
             point.timings.chunks_p95
+        );
+    }
+
+    failures.assert_empty();
+}
+
+/// One measured tick range and the p95 whole tick it is held to.
+#[derive(Clone, Copy)]
+struct Window {
+    name: &'static str,
+    first: usize,
+    last: usize,
+    gate: Duration,
+}
+
+impl Window {
+    fn met(&self, timings: &TickTimings) -> bool {
+        timings.tick_p95 <= self.gate
+    }
+
+    /// `ok`, or the name of the miss: the whole tick is the only metric the
+    /// gate holds, so a miss is named for it.
+    fn verdict(&self, timings: &TickTimings) -> &'static str {
+        if self.met(timings) { "ok" } else { "TICK" }
+    }
+
+    fn gate_check(&self, timings: &TickTimings) -> Result<(), String> {
+        if !self.met(timings) {
+            return Err(format!(
+                "{}: p95 whole tick {:.3?} over the {:.3?} gate",
+                self.name, timings.tick_p95, self.gate
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+const BALL_WINDOWS: [Window; 2] = [
+    Window {
+        name: "free fall",
+        first: 1,
+        last: FREE_FALL_TICKS,
+        gate: FREE_FALL_GATE,
+    },
+    Window {
+        name: "pile",
+        first: FREE_FALL_TICKS.saturating_add(1),
+        last: BALL_TICKS,
+        gate: PILE_GATE,
+    },
+];
+
+const RAIN_WINDOWS: [Window; 1] = [Window {
+    name: "plateau",
+    first: PLATEAU_FIRST,
+    last: RAIN_TICKS,
+    gate: PLATEAU_GATE,
+}];
+
+struct WindowReport {
+    window: Window,
+    ticks: usize,
+    timings: TickTimings,
+}
+
+fn window_report(samples: &Samples, window: Window) -> WindowReport {
+    let measured = samples.window(window.first, window.last);
+
+    WindowReport {
+        ticks: measured.wall.len(),
+        timings: TickTimings::of(&measured),
+        window,
+    }
+}
+
+fn print_scene_header() {
+    println!(
+        "{:>11} {:>10} {:>7} {:>10} {:>13} {:>10} {:>11} {:>11} {:>11} {:>8}",
+        "window",
+        "gate",
+        "ticks",
+        "p95 queued",
+        "p95 processed",
+        "p95 chunks",
+        "p95 tick",
+        "p95 eval",
+        "p95 commit",
+        "verdict"
+    );
+}
+
+fn print_window_row(report: &WindowReport) {
+    println!(
+        "{:>11} {:>10.3?} {:>7} {:>10} {:>13} {:>10} {:>11.3?} {:>11.3?} {:>11.3?} {:>8}",
+        report.window.name,
+        report.window.gate,
+        report.ticks,
+        report.timings.queued_p95,
+        report.timings.processed_p95,
+        report.timings.chunks_p95,
+        report.timings.tick_p95,
+        report.timings.eval_p95,
+        report.timings.commit_p95,
+        report.window.verdict(&report.timings)
+    );
+}
+
+/// One tick's snapshots through the input worker: the submit cost, and the
+/// apply and pack the worker does. Recorded, never asserted.
+fn print_frame_path(batch: &[MicroChunkSnapshot]) {
+    let input = RendererInput::new()
+        .unwrap_or_else(|error| panic!("the renderer input must start: {error}"));
+
+    let submitting = Instant::now();
+
+    input
+        .submit_batch(batch.to_vec())
+        .unwrap_or_else(|error| panic!("the batch must submit: {error}"));
+
+    let submit = submitting.elapsed();
+    let packing = Instant::now();
+
+    input
+        .wait_until_idle()
+        .unwrap_or_else(|error| panic!("the input worker must settle: {error}"));
+
+    let pack = packing.elapsed();
+
+    println!(
+        "frame path    {} snapshots, the largest free-fall tick's batch: submit {submit:.3?}, apply and pack {pack:.3?}, recorded rather than asserted",
+        batch.len()
+    );
+}
+
+/// The sand ball's tripwire: about 1.1 million grains falling 128 cells to a
+/// one-cell floor, then the pile that settles on it. The free fall is one rigid
+/// translation, so it repeats one rule decision a million times; the pile is
+/// what the body costs once the grains stop agreeing.
+#[test]
+#[ignore = "bench: cargo test --release sand_ball_tick_timings -- --ignored --nocapture"]
+fn sand_ball_tick_timings() {
+    println!("clock         frames at 60 fps, tick fixed at 30 Hz, {BALL_TICKS} measured ticks");
+    println!(
+        "gate          p95 whole tick, {FREE_FALL_GATE:?} for the fall and {PILE_GATE:?} for the pile, asserted"
+    );
+
+    let generated = sand_ball::build(&Progress::generate_path());
+    let grains = generated.granular_cells.len();
+    let voxels = generated.world.voxel_count();
+    let snapshots = emit_snapshots(&generated.world)
+        .unwrap_or_else(|error| panic!("the sand ball snapshots must emit: {error}"));
+    let tracked: TrackedCoords = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.occupied_count() > 0)
+        .map(|snapshot| snapshot.global_coords)
+        .collect();
+
+    let mut host = SimHost::spawn(
+        Arc::new(RwLock::new(generated.world)),
+        PlayerProfile::default(),
+        DrainPolicy::Runs,
+        snapshots,
+        tracked,
+        Some(generated.granular_cells),
+        None,
+        &generated.materials,
+    )
+    .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
+
+    host.start();
+    wait_ready(&mut host);
+
+    let mut largest: Vec<MicroChunkSnapshot> = Vec::new();
+    let samples = drive_with(
+        &mut host,
+        BALL_TICKS,
+        SCENE_TICK_TIMEOUT,
+        &mut |tick, batch| {
+            if tick <= FREE_FALL_TICKS && batch.len() > largest.len() {
+                largest = batch.to_vec();
+            }
+        },
+    );
+
+    drop(host);
+
+    println!(
+        "scene         sand ball, {grains} grains and {voxels} voxels, activated with the generator's own granular cells"
+    );
+    print_scene_header();
+
+    let mut failures = Failures::default();
+
+    for window in BALL_WINDOWS {
+        let report = window_report(&samples, window);
+
+        print_window_row(&report);
+        failures.record(report.window.gate_check(&report.timings));
+    }
+
+    print_frame_path(&largest);
+
+    assert_eq!(
+        samples.window(1, FREE_FALL_TICKS).moving,
+        FREE_FALL_TICKS,
+        "every tick of the fall has to move the body for a timing to mean anything"
+    );
+
+    failures.assert_empty();
+}
+
+/// The rain's tripwire: grains planted a tick through the plate's holes, each
+/// falling 1,023 cells to the floor. The plateau is the steady state, where the
+/// grains leaving a hole and the ones landing are both in flight, so the tick's
+/// chunk churn is at its own size.
+#[test]
+#[ignore = "bench: cargo test --release raining_tick_timings -- --ignored --nocapture"]
+fn raining_tick_timings() {
+    println!("clock         frames at 60 fps, tick fixed at 30 Hz, {RAIN_TICKS} measured ticks");
+    println!("gate          p95 whole tick, {PLATEAU_GATE:?} over the plateau, asserted");
+
+    let (generated, emitter) = rain::build(&Progress::generate_path());
+    let holes = emitter.cells.len();
+    let per_tick = emitter.per_tick;
+    let voxels = generated.world.voxel_count();
+    let snapshots = emit_snapshots(&generated.world)
+        .unwrap_or_else(|error| panic!("the rain snapshots must emit: {error}"));
+    let tracked: TrackedCoords = snapshots
+        .iter()
+        .filter(|snapshot| snapshot.occupied_count() > 0)
+        .map(|snapshot| snapshot.global_coords)
+        .collect();
+
+    let mut host = SimHost::spawn(
+        Arc::new(RwLock::new(generated.world)),
+        PlayerProfile::default(),
+        DrainPolicy::PerCell,
+        snapshots,
+        tracked,
+        None,
+        Some(emitter),
+        &generated.materials,
+    )
+    .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
+
+    host.start();
+    wait_ready(&mut host);
+
+    let samples = drive_with(&mut host, RAIN_TICKS, SCENE_TICK_TIMEOUT, &mut |_, _| {});
+
+    drop(host);
+
+    println!(
+        "scene         rain plate, {holes} holes and {voxels} voxels, {per_tick} grains a tick, no granular cells seeded"
+    );
+    print_scene_header();
+
+    let mut failures = Failures::default();
+
+    for window in RAIN_WINDOWS {
+        let report = window_report(&samples, window);
+
+        print_window_row(&report);
+        failures.record(report.window.gate_check(&report.timings));
+
+        assert!(
+            report.ticks > 0,
+            "{}: the run has to reach the window for a timing to mean anything",
+            window.name
+        );
+        assert!(
+            samples.window(window.first, window.last).moving > 0,
+            "{}: the scene has to move grains in the window",
+            window.name
         );
     }
 
@@ -882,4 +1239,164 @@ fn the_sand_block_holds_the_active_count() {
     assert_eq!(edits.len(), active);
     assert_eq!(placed.len(), active);
     assert!(placed.iter().all(|cell| in_lattice(*cell)));
+}
+
+/// A run whose tick `n` costs `n` milliseconds, queues `n` cells and processes
+/// ten times `n`, so a window's p95 names the tick it came from.
+fn sample_run(ticks: usize) -> Samples {
+    let mut samples = Samples {
+        wall: Vec::new(),
+        eval: Vec::new(),
+        commit: Vec::new(),
+        chunks: Vec::new(),
+        queued: Vec::new(),
+        processed: Vec::new(),
+        moving: 0,
+    };
+
+    for tick in 1..=ticks {
+        let value = u64::try_from(tick).unwrap_or(u64::MAX);
+
+        samples.wall.push(Duration::from_millis(value));
+        samples
+            .eval
+            .push(Duration::from_millis(value.saturating_mul(2)));
+        samples
+            .commit
+            .push(Duration::from_millis(value.saturating_mul(3)));
+        samples.chunks.push(tick);
+        samples.queued.push(tick);
+        samples.processed.push(tick.saturating_mul(10));
+        samples.moving = samples.moving.saturating_add(1);
+    }
+
+    samples
+}
+
+#[test]
+fn a_window_takes_the_ticks_it_names() {
+    let run = sample_run(BALL_TICKS);
+    let free_fall = run.window(1, FREE_FALL_TICKS);
+    let pile = run.window(FREE_FALL_TICKS.saturating_add(1), BALL_TICKS);
+
+    assert_eq!(free_fall.wall.len(), FREE_FALL_TICKS);
+    assert_eq!(pile.wall.len(), BALL_TICKS.saturating_sub(FREE_FALL_TICKS));
+    assert_eq!(
+        free_fall.wall.first().copied(),
+        Some(Duration::from_millis(1)),
+        "the first window starts at tick one"
+    );
+    assert_eq!(
+        free_fall.wall.last().copied(),
+        Some(Duration::from_millis(128)),
+        "the free fall ends where the pile starts"
+    );
+    assert_eq!(pile.wall.first().copied(), Some(Duration::from_millis(129)));
+    assert_eq!(pile.moving, 62, "a window counts the ticks it holds");
+    assert_eq!(free_fall.processed.first().copied(), Some(10));
+}
+
+#[test]
+fn a_window_past_the_run_clips_to_what_measured() {
+    let run = sample_run(4);
+
+    assert_eq!(run.window(3, 9).wall.len(), 2);
+    assert_eq!(run.window(3, 9).moving, 2);
+    assert_eq!(
+        run.window(9, 12).wall.len(),
+        0,
+        "a window after the last tick holds nothing"
+    );
+    assert_eq!(run.window(9, 12).moving, 0);
+    assert_eq!(
+        run.window(0, 2).wall.len(),
+        2,
+        "a window below the first tick starts at it"
+    );
+}
+
+#[test]
+fn a_window_p95_holds_only_its_own_ticks() {
+    let run = sample_run(BALL_TICKS);
+    let free_fall = TickTimings::of(&run.window(1, FREE_FALL_TICKS));
+    let pile = TickTimings::of(&run.window(FREE_FALL_TICKS.saturating_add(1), BALL_TICKS));
+
+    assert_eq!(
+        free_fall.tick_p95,
+        Duration::from_millis(122),
+        "128 ticks put the nearest rank of 95 percent at the 122nd"
+    );
+    assert_eq!(
+        pile.tick_p95,
+        Duration::from_millis(187),
+        "62 ticks put the nearest rank of 95 percent at the 187th"
+    );
+    assert_eq!(free_fall.eval_p95, Duration::from_millis(244));
+    assert_eq!(free_fall.commit_p95, Duration::from_millis(366));
+    assert_eq!(free_fall.queued_p95, 122);
+    assert_eq!(pile.processed_p95, 1_870);
+    assert_eq!(pile.chunks_p95, 187);
+    assert_eq!(
+        free_fall.per_cell_nanos, 200_000,
+        "the per-cell cost divides the window's own evaluation by its own processed cells"
+    );
+}
+
+#[test]
+fn a_window_reads_ok_or_the_name_of_its_miss() {
+    let window = BALL_WINDOWS[0];
+    let met = TickTimings {
+        tick_p95: FREE_FALL_GATE,
+        ..TickTimings::default()
+    };
+    let missed = TickTimings {
+        tick_p95: FREE_FALL_GATE.saturating_add(Duration::from_micros(1)),
+        ..TickTimings::default()
+    };
+
+    assert_eq!(window.verdict(&met), "ok", "a tick on its gate meets it");
+    assert_eq!(
+        window.verdict(&missed),
+        "TICK",
+        "the whole tick is the only metric the gate holds, so the miss is named for it"
+    );
+    assert!(window.gate_check(&met).is_ok(), "a gate met is not a miss");
+}
+
+#[test]
+fn a_tick_over_its_gate_records_a_miss() {
+    let window = Window {
+        name: "plateau",
+        first: PLATEAU_FIRST,
+        last: RAIN_TICKS,
+        gate: PLATEAU_GATE,
+    };
+    let over = TickTimings {
+        tick_p95: PLATEAU_GATE.saturating_add(Duration::from_millis(1)),
+        ..TickTimings::default()
+    };
+
+    let Err(message) = window.gate_check(&over) else {
+        panic!("a plateau tick over the gate has to record a miss");
+    };
+
+    assert!(
+        message.contains("plateau"),
+        "the miss names its window: {message}"
+    );
+    let gate = PLATEAU_GATE.as_millis().to_string();
+
+    assert!(
+        message.contains(&gate),
+        "the miss names its gate: {message}"
+    );
+    assert!(
+        window
+            .gate_check(&TickTimings {
+                tick_p95: PLATEAU_GATE,
+                ..TickTimings::default()
+            })
+            .is_ok(),
+        "a tick on its gate meets it"
+    );
 }

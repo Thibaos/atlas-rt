@@ -22,11 +22,12 @@ use crate::world::material::PhysicalMaterialTable;
 use crate::world::rain::Emitter;
 use crate::world::vocabulary::Material;
 
+use super::commit::{self, REWRITE_THRESHOLD};
 use super::input::{InputSample, PlayerState};
 use super::physics::controller::Controller;
-use super::physics::field::Field;
+use super::physics::field::{Field, Overlay};
 use super::physics::queue::UpdateQueue;
-use super::physics::rules::{self, ParityPolicy};
+use super::physics::rules::{self, DrainPolicy, ParityPolicy};
 use super::physics::spawn::{floor_pose, pose};
 use super::profile::PlayerProfile;
 use super::rain;
@@ -119,7 +120,7 @@ pub struct UpdateReport {
 /// The sim takes no ticks until an activation arrives.
 ///
 /// The parity policy fixes how a grain breaks a diagonal tie for the life of
-/// the sim.
+/// the sim, and the drain policy fixes how each tick serves the queue.
 ///
 /// # Errors
 ///
@@ -128,13 +129,21 @@ pub fn spawn(
     world: Arc<RwLock<World>>,
     profile: PlayerProfile,
     parity: ParityPolicy,
+    policy: DrainPolicy,
 ) -> Result<Handle> {
     let (host, inbox) = mpsc::channel();
     let (pushes, outbox) = mpsc::channel();
     let shutdown = Arc::new(AtomicBool::new(false));
 
     let shared = Arc::clone(&world);
-    let runtime = Runtime::new(shared, profile, parity, pushes, Arc::clone(&shutdown));
+    let runtime = Runtime::new(
+        shared,
+        profile,
+        parity,
+        policy,
+        pushes,
+        Arc::clone(&shutdown),
+    );
 
     let thread = thread::Builder::new()
         .name(String::from("atlas-sim"))
@@ -253,11 +262,13 @@ struct Runtime {
     world: Arc<RwLock<World>>,
     profile: PlayerProfile,
     parity: ParityPolicy,
+    policy: DrainPolicy,
     materials: PhysicalMaterialTable,
     queue: UpdateQueue,
     tracked: TrackedCoords,
     commands: Vec<Command>,
     rule_edits: Vec<VoxelEdit>,
+    rule_overlay: Overlay,
     emitter: Option<Emitter>,
     tick_count: u64,
     scheduler: Scheduler,
@@ -276,6 +287,7 @@ impl Runtime {
         world: Arc<RwLock<World>>,
         profile: PlayerProfile,
         parity: ParityPolicy,
+        policy: DrainPolicy,
         pushes: mpsc::Sender<Push>,
         shutdown: Arc<AtomicBool>,
     ) -> Self {
@@ -285,11 +297,13 @@ impl Runtime {
             world,
             profile,
             parity,
+            policy,
             materials: PhysicalMaterialTable::default(),
             queue: UpdateQueue::default(),
             tracked: TrackedCoords::default(),
             commands: Vec::new(),
             rule_edits: Vec::new(),
+            rule_overlay: Overlay::default(),
             emitter: None,
             tick_count: 0,
             scheduler,
@@ -543,12 +557,19 @@ impl Runtime {
             );
         }
 
-        let drained = rules::drain(&guard, &self.materials, &mut queue, self.parity);
+        let drained = rules::drain(
+            &guard,
+            &self.materials,
+            &mut queue,
+            self.parity,
+            self.policy,
+        );
 
         drop(guard);
 
         self.queue = queue;
         self.rule_edits = drained.edits;
+        self.rule_overlay = drained.overlay;
 
         (started.elapsed(), drained.processed)
     }
@@ -558,13 +579,19 @@ impl Runtime {
     /// command diffs against the World the earlier ones left. The emitter then
     /// plants its grains against the World those left.
     ///
-    /// The batches of a tick merge into one snapshot list, the last snapshot
-    /// per Micro-chunk winning. A failed rule batch reseeds the queue from the
-    /// World it left behind; a failed command is logged and dropped. The
-    /// measured window starts before the lock is taken, so it carries any
+    /// The rule batch writes whole every chunk the drain moved enough cells in,
+    /// so the snapshot list it hands back is the per-cell path's, chunk for
+    /// chunk. The batches of a tick merge into one snapshot list, the last
+    /// snapshot per Micro-chunk winning. A failed rule batch reseeds the queue
+    /// from the World it left behind; a failed command is logged and dropped.
+    /// The measured window starts before the lock is taken, so it carries any
     /// wait for a host reader.
     fn commit(&mut self) -> (Duration, Option<Vec<MicroChunkSnapshot>>, Emission) {
-        if self.rule_edits.is_empty() && self.commands.is_empty() && self.emitter.is_none() {
+        if self.rule_edits.is_empty()
+            && self.rule_overlay.is_empty()
+            && self.commands.is_empty()
+            && self.emitter.is_none()
+        {
             return (Duration::ZERO, None, Emission::default());
         }
 
@@ -576,9 +603,16 @@ impl Runtime {
         {
             let mut guard = shared.write().unwrap_or_else(PoisonError::into_inner);
             let rules = mem::take(&mut self.rule_edits);
+            let overlay = mem::take(&mut self.rule_overlay);
 
-            if !rules.is_empty() {
-                let outcome = edit_world(&mut guard, &rules, &self.tracked);
+            if !rules.is_empty() || !overlay.is_empty() {
+                let outcome = commit::commit_drain(
+                    &mut guard,
+                    &rules,
+                    &overlay,
+                    REWRITE_THRESHOLD,
+                    &self.tracked,
+                );
 
                 if outcome.is_err() {
                     self.queue.seed(&guard, &self.materials, None);

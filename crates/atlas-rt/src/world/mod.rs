@@ -100,7 +100,7 @@ impl World {
     /// The Micro-chunk entry `origin` names, or `None` for a Micro-chunk with no
     /// entry.
     #[must_use]
-    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<micro::MicroChunkRef<'_>> {
+    pub(crate) fn chunk_entry(&self, origin: IVec3) -> Option<micro::MicroChunkRef<'_>> {
         self.store.chunk_entry(origin)
     }
 
@@ -112,9 +112,10 @@ impl World {
         self.store.entries()
     }
 
-    /// Writes a Micro-chunk's whole entry. The generator fills one entry at a
-    /// time through this, on the thread it owns.
-    pub(in crate::world) fn write_entry(
+    /// Writes a Micro-chunk's whole entry: the generator fills one entry at a
+    /// time through this, on the thread it owns, and a commit writes a chunk it
+    /// moved enough cells in as one entry.
+    pub(crate) fn write_entry(
         &mut self,
         origin: IVec3,
         chunk: micro::MicroChunkRef<'_>,
