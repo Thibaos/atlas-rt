@@ -54,8 +54,9 @@ counts: one primary plus one shadow when occluded from the sun.
   behind the nearest pane never appears: two stacked panes read as one and the
   farther pane's color is dropped.
 - Trace-count baseline (analytical, correctness-only acceptance): opaque pixel 1
-  primary + 0 or 1 shadow; blended pixel 2 primary + 2 shadow; shadow through an
-  alpha-0 gap or a pane 1 trace; Hull and Normal modes unchanged (0 or 1 primary,
-  no blend).
+  primary + 0 or 1 shadow + `N` occlusion, blended pixel 2 primary + 2 shadow +
+  `2N` occlusion, with `N` from `--ao` (0 to 16, default 4) per
+  [0025](0025-sky-ambient-occlusion.md); shadow through an alpha-0 gap or a pane 1
+  trace; Hull and Normal modes unchanged (0 or 1 primary, no blend, no occlusion).
 - The dead `COARSE_SHADOW_SBT_INDEX` record, if ever wired, must adopt the
   skip-alpha intersection shader rather than the opaque default.
