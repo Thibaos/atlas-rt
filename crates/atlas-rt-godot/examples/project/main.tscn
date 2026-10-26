@@ -3,6 +3,7 @@
 [ext_resource type="Script" uid="uid://bqev3vux6274e" path="res://scripts/fly_camera.gd" id="2_0xm2m"]
 [ext_resource type="Script" uid="uid://dkosbip0rdymb" path="res://scripts/sand_ball_button.gd" id="3_sndbl"]
 [ext_resource type="Script" uid="uid://b7vkh8m3x5d5y" path="res://scripts/world_load_button.gd" id="4_1bvp3"]
+[ext_resource type="Script" path="res://scripts/capture.gd" id="5_capture"]
 
 [sub_resource type="BoxShape3D" id="BoxShape3D_hjdlg"]
 
@@ -120,3 +121,6 @@ layout_mode = 2
 text = "nuke"
 script = ExtResource("4_1bvp3")
 UI = NodePath("../..")
+
+[node name="capture" type="Node" parent="." unique_id=1641289375]
+script = ExtResource("5_capture")
