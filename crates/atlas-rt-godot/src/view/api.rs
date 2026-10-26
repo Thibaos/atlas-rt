@@ -10,7 +10,7 @@ use atlas_rt::{
         context::RenderContext,
         embedded::{EmbeddedPipeline, PublishedSlot, WrapTimes},
         output::delivery::SLOT_COUNT,
-        pipeline::{DEFAULT_FOV, FrameInput},
+        pipeline::{DEFAULT_FOV, FrameInput, task::DEFAULT_AO_SAMPLES},
     },
     world::{
         World,
@@ -106,6 +106,7 @@ impl IControl for AtlasRtView {
                         } else {
                             extent
                         },
+                        DEFAULT_AO_SAMPLES,
                     )
                 };
 

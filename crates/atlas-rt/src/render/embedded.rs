@@ -20,7 +20,8 @@ use crate::render::{
     pipeline::{
         FrameInput, PROJ_FAR, PROJ_NEAR,
         task::{
-            RegionRenderContext, RegionRenderTask, RenderMode, default_scene, production_raygen,
+            RegionRenderContext, RegionRenderTask, RenderMode, production_raygen,
+            scene_with_samples,
         },
     },
     region::{
@@ -487,7 +488,7 @@ impl EmbeddedPipeline {
     ///   - Shader loading failed
     ///   - Region render task creation failed
     ///   - Image storage is empty
-    pub fn new(gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<Self> {
+    pub fn new(gpu: &RenderContext, extent: [u32; 2], ao_samples: u32) -> anyhow::Result<Self> {
         let delivery = DeliveryRing::new(gpu, extent)?;
         let store = RegionStore::new_empty(gpu)?;
         let input = RendererInput::new()?;
@@ -544,7 +545,7 @@ impl EmbeddedPipeline {
                 proj_inverse: [[0.0; 4]; 4],
                 view_inverse: [[0.0; 4]; 4],
             },
-            scene: default_scene(),
+            scene: scene_with_samples(ao_samples),
             swapchain_storage_image_ids: Vec::new(),
             color_image_id: storage_ids.first().copied().context("no delivery slots")?,
             delta_time: 0.0,

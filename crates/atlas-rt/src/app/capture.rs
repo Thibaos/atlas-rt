@@ -64,7 +64,7 @@ pub fn run(launch: &Launch, request: &CaptureRequest) -> anyhow::Result<()> {
     let materials = startup.materials;
     let profile = startup.profile;
 
-    let mut pipeline = EmbeddedPipeline::new(&gpu, request.extent)?;
+    let mut pipeline = EmbeddedPipeline::new(&gpu, request.extent, launch.ao_samples)?;
 
     pipeline
         .upload_palette(&gpu, startup.palette.map(|color| color.to_array()))
