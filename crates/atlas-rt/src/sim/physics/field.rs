@@ -136,12 +136,17 @@ pub(in crate::sim) struct Overlay {
 }
 
 impl Overlay {
-    /// A drain reads and writes a handful of neighbouring chunks in a row, so
-    /// the last one resolved answers for the cells beside it.
+    /// The chunk a drain last resolved, which answers for the cells beside it
+    /// because a drain reads and writes a handful of neighbouring chunks in a
+    /// row.
+    fn cached(&self, origin: IVec3) -> Option<usize> {
+        let (recent, slot) = self.recent.get()?;
+
+        (recent == origin).then_some(slot)
+    }
+
     fn slot(&self, origin: IVec3) -> Option<usize> {
-        if let Some((recent, slot)) = self.recent.get()
-            && recent == origin
-        {
+        if let Some(slot) = self.cached(origin) {
             return Some(slot);
         }
 
@@ -153,9 +158,7 @@ impl Overlay {
     }
 
     fn slot_of_move(&mut self, world: &World, origin: IVec3) -> usize {
-        if let Some((recent, slot)) = self.recent.get()
-            && recent == origin
-        {
+        if let Some(slot) = self.cached(origin) {
             return slot;
         }
 
