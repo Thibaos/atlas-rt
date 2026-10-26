@@ -249,11 +249,14 @@ impl ChunkMasks {
     }
 }
 
+/// A queued chunk's coordinates with its mask, so a walk reads the mask by
+/// index instead of looking the chunk up again for each of its (y, x) pairs.
+type Slot<'a> = (ChunkId, &'a ChunkMask);
+
 /// The cells a half holds, in drain order: ascending y, then x, then z, and
 /// none of the chunks a run pass translates for itself.
 struct CellWalk<'a> {
-    chunks: &'a FxHashMap<ChunkId, ChunkMask>,
-    keys: Vec<ChunkId>,
+    keys: Vec<Slot<'a>>,
     remaining: usize,
     level: usize,
     level_end: usize,
@@ -263,23 +266,28 @@ struct CellWalk<'a> {
     y: usize,
     x: usize,
     bits: u8,
+    mask: Option<&'a ChunkMask>,
+    cached: usize,
 }
 
 impl<'a> CellWalk<'a> {
     fn new(masks: &'a ChunkMasks, skip: Option<&FxHashSet<IVec3>>) -> Self {
-        let mut keys: Vec<ChunkId> = masks.chunks.keys().copied().collect();
+        let mut keys: Vec<Slot<'a>> = masks
+            .chunks
+            .iter()
+            .map(|(key, mask)| (*key, mask))
+            .collect();
 
-        keys.sort_unstable();
+        keys.sort_unstable_by_key(|(key, _)| *key);
 
         if let Some(skip) = skip {
-            keys.retain(|key| !skip.contains(&key.origin()));
+            keys.retain(|(key, _)| !skip.contains(&key.origin()));
         }
 
         let level_end = level_extent(&keys, 0);
         let row_end = row_extent(&keys, 0);
 
         let mut walk = Self {
-            chunks: &masks.chunks,
             keys,
             remaining: masks.cells,
             level: 0,
@@ -290,6 +298,8 @@ impl<'a> CellWalk<'a> {
             y: 0,
             x: 0,
             bits: 0,
+            mask: None,
+            cached: usize::MAX,
         };
 
         walk.bits = walk.byte();
@@ -297,12 +307,15 @@ impl<'a> CellWalk<'a> {
         walk
     }
 
-    /// The z bits at the walk's current (y, x) chunk-local pair.
-    fn byte(&self) -> u8 {
-        let Some(key) = self.keys.get(self.chunk) else {
-            return 0;
-        };
-        let Some(mask) = self.chunks.get(key) else {
+    /// The z bits at the walk's current (y, x) chunk-local pair. A chunk serves
+    /// all 64 pairs in a row, so its mask is held across them.
+    fn byte(&mut self) -> u8 {
+        if self.cached != self.chunk {
+            self.mask = self.keys.get(self.chunk).map(|(_, mask)| *mask);
+            self.cached = self.chunk;
+        }
+
+        let Some(mask) = self.mask else {
             return 0;
         };
 
@@ -313,7 +326,7 @@ impl<'a> CellWalk<'a> {
     }
 
     fn cell(&self, z: usize) -> Option<IVec3> {
-        let key = self.keys.get(self.chunk)?;
+        let (key, _) = self.keys.get(self.chunk)?;
 
         Some(IVec3::new(
             key.x
@@ -408,8 +421,8 @@ fn offset(local: usize) -> i32 {
 }
 
 /// One past the last key sharing the first key's chunk y.
-fn level_extent(keys: &[ChunkId], start: usize) -> usize {
-    let Some(first) = keys.get(start) else {
+fn level_extent(keys: &[Slot<'_>], start: usize) -> usize {
+    let Some((first, _)) = keys.get(start) else {
         return start;
     };
 
@@ -417,15 +430,15 @@ fn level_extent(keys: &[ChunkId], start: usize) -> usize {
         .get(start..)
         .unwrap_or_default()
         .iter()
-        .take_while(|key| key.y == first.y)
+        .take_while(|(key, _)| key.y == first.y)
         .count();
 
     start.saturating_add(run)
 }
 
 /// One past the last key sharing the first key's chunk y and x.
-fn row_extent(keys: &[ChunkId], start: usize) -> usize {
-    let Some(first) = keys.get(start) else {
+fn row_extent(keys: &[Slot<'_>], start: usize) -> usize {
+    let Some((first, _)) = keys.get(start) else {
         return start;
     };
 
@@ -433,7 +446,7 @@ fn row_extent(keys: &[ChunkId], start: usize) -> usize {
         .get(start..)
         .unwrap_or_default()
         .iter()
-        .take_while(|key| key.y == first.y && key.x == first.x)
+        .take_while(|(key, _)| key.y == first.y && key.x == first.x)
         .count();
 
     start.saturating_add(run)
