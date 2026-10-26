@@ -234,8 +234,10 @@ pub(crate) fn apply_edits(
         validate(edit)?;
     }
 
-    if cell_budget() != usize::MAX {
-        check_cell_budget(projected_count(world, edits))?;
+    let limit = cell_budget();
+
+    if limit != usize::MAX {
+        check_cell_budget(projected_count(world, edits), limit)?;
     }
 
     for edit in edits {
@@ -251,15 +253,12 @@ pub(crate) fn apply_edits(
         .collect())
 }
 
-/// Refuses a batch whose projected cell count passes the World's budget.
+/// Refuses a batch whose projected cell count passes `limit`.
 ///
 /// # Errors
 ///
 /// Returns [`EditError`] naming the projected count when it exceeds the budget.
-#[allow(clippy::missing_const_for_fn)] // the test build's budget is a thread local
-pub(crate) fn check_cell_budget(projected: usize) -> Result<(), EditError> {
-    let limit = cell_budget();
-
+pub(crate) const fn check_cell_budget(projected: usize, limit: usize) -> Result<(), EditError> {
     if projected > limit {
         return Err(EditError::over_budget(projected, limit));
     }

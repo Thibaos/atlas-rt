@@ -162,7 +162,9 @@ fn refuse_over_budget(
     remaining: &[VoxelEdit],
     rewrites: &FxHashMap<IVec3, MicroChunkSnapshot>,
 ) -> Result<(), EditError> {
-    if cell_budget() == usize::MAX {
+    let limit = cell_budget();
+
+    if limit == usize::MAX {
         return Ok(());
     }
 
@@ -182,7 +184,7 @@ fn refuse_over_budget(
         .saturating_add(added)
         .saturating_sub(removed);
 
-    check_cell_budget(projected)
+    check_cell_budget(projected, limit)
 }
 
 #[cfg(test)]
