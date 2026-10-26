@@ -11,6 +11,7 @@
 
 layout(location = 0) rayPayloadInEXT MainPassPayload incoming_payload;
 layout(location = 1) rayPayloadInEXT MainPassPayload shadow_payload;
+layout(location = 2) rayPayloadInEXT vec4 occlusion_radiance;
 
 void main() {
     incoming_payload.color = vec4(sky_radiance(gl_WorldRayDirectionEXT), 1.0);
@@ -19,4 +20,6 @@ void main() {
     incoming_payload.t = FLT_MAX;
 
     shadow_payload.t = FLT_MAX;
+
+    occlusion_radiance = vec4(sky_radiance(gl_WorldRayDirectionEXT), 1.0);
 }

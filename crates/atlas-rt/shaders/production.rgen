@@ -9,9 +9,14 @@
 #include "common/bindings.glsl"
 #include "common/raygen_common.glsl"
 #include "common/sky.glsl"
+#include "common/noise.glsl"
+
+const float PI = 3.14159265359;
+const float AO_ORIGIN_OFFSET = 1e-3;
 
 layout(location = 0) rayPayloadEXT MainPassPayload payload;
 layout(location = 1) rayPayloadEXT MainPassPayload shadow_payload;
+layout(location = 2) rayPayloadEXT vec4 occlusion_radiance;
 
 void reset_payload() {
     payload.t = FLT_MAX;
@@ -28,20 +33,65 @@ void reset_payload() {
 #define RETRACE_SBT_INDEX 2u
 #define HULL_SBT_INDEX 3u
 
+vec3 cosine_hemisphere(vec2 point, vec3 normal, vec3 tangent, vec3 bitangent) {
+    float r = sqrt(point.x);
+    float phi = 2.0 * PI * point.y;
+    float z = sqrt(1.0 - point.x);
+
+    return tangent * (r * cos(phi)) + bitangent * (r * sin(phi)) + normal * z;
+}
+
+vec3 sky_ambient(vec3 sample_origin, vec3 normal) {
+    vec3 tangent;
+    vec3 bitangent;
+    orthonormal_basis(normal, tangent, bitangent);
+
+    vec2 shift = pixel_shift(gl_LaunchIDEXT.xy);
+    vec3 floor_radiance = scene.ao_floor * sky_radiance(normal);
+    vec3 ambient = vec3(0.0);
+
+    for (uint i = 0u; i < scene.ao_samples; ++i) {
+        vec3 sample_direction = cosine_hemisphere(fract(r2_point(i) + shift), normal, tangent, bitangent);
+
+        if (dot(sample_direction, normal) <= 0.0) {
+            continue;
+        }
+
+        shadow_payload.t = FLT_MAX;
+        traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, sample_origin, RAY_T_MIN, sample_direction, scene.ao_radius, 2);
+
+        ambient += (shadow_payload.t >= FLT_MAX) ? occlusion_radiance.rgb : floor_radiance;
+    }
+
+    return ambient / float(scene.ao_samples);
+}
+
 void shade_hit(vec3 origin, vec3 direction) {
     if (payload.t >= FLT_MAX) {
         return;
     }
 
+    vec3 albedo = payload.color.rgb;
     vec3 sun_direction = normalize(vec3(-0.5, -0.8, 0.5));
     vec3 hit_position = origin + (payload.t - EPSILON) * direction;
 
     shadow_payload.t = FLT_MAX;
     traceRayEXT(vko_accelerationStructureEXT(acceleration_structure_id), gl_RayFlagsOpaqueEXT, 0xFFu, SHADOW_SBT_INDEX, 0u, 0u, hit_position, RAY_T_MIN, -sun_direction, RAY_T_MAX, 1);
 
-    if (shadow_payload.t < FLT_MAX) {
-        payload.color.rgb *= 0.25;
+    // Zero samples keeps the flat multiply, the acceptance baseline.
+    if (scene.ao_samples == 0u) {
+        if (shadow_payload.t < FLT_MAX) {
+            payload.color.rgb *= 0.25;
+        }
+
+        return;
     }
+
+    float sun_visible = (shadow_payload.t < FLT_MAX) ? 0.0 : 1.0;
+    vec3 normal = payload.normal;
+    vec3 sample_origin = hit_position + normal * AO_ORIGIN_OFFSET;
+
+    payload.color.rgb = albedo * (sun_visible + sky_ambient(sample_origin, normal));
 }
 
 void main() {

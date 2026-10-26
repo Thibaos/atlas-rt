@@ -258,9 +258,32 @@ scope), depth pre-pass (implies a raster depth buffer this renderer lacks)
 **Procedural sky**:
 The analytic Background: a piecewise-linear radiance gradient in
 μ = cos(elevation), knots at ground/horizon/zenith (all positive),
-evaluated by the miss shader. No assets, no Sun disk.
+evaluated by the miss shader. No assets, no Sun disk. It also lights surfaces:
+the Sky ambient samples it, so raising a knot brightens what the geometry below
+it receives, not only the Background.
 _Avoid_: skybox, environment map (a sampled asset; the Procedural sky is
 analytic), sky
+
+**Sky ambient**:
+The light a surface takes from the Procedural sky: the cosine-weighted mean of
+`sky_radiance` over the hemisphere around the Normal, measured by Occlusion
+samples and added to the binary Sun term, so a hit's radiance is
+`albedo * (sun_visible + ambient)`. The fraction of samples that reach the sky
+is the occlusion, which makes the term a measurement, not a strength factor.
+Voxel mode only.
+_Avoid_: ambient occlusion (the measurement, not the light), ambient light,
+sky visibility (the fraction, not the radiance)
+
+**Occlusion sample**:
+One secondary ray from a hit toward the sky, drawn cosine-weighted over the
+hemisphere around the Normal and traced at most `ao_radius` Voxels against the
+opaque-only shadow group, so a transparent surface never occludes. A sample
+that hits nothing contributes the Procedural sky along its direction, one that
+hits inside that reach contributes `ao_floor * sky_radiance(normal)`, and one
+at or below the tangent plane contributes nothing at all. The Sky ambient is
+the mean over all `ao_samples` (0 to 16, default 4), so the denominator stays
+that count rather than the number of samples that passed.
+_Avoid_: AO ray, ambient ray, shadow ray (that is the Sun trace)
 
 **Background**:
 The radiance produced where no geometry is hit (the miss shader's output):
@@ -361,10 +384,11 @@ _Avoid_: camera update, render parameters
 What the ray pass paints each pixel with: surface identity (`Voxel`, `Hull`) or
 a diagnostic quantity (the `Normal` heatmap).
 `Voxel` (default): the
-DDA commits the surface voxel, painted with its Palette entry.
+DDA commits the surface voxel, painted with its Palette entry, lit by the Sun
+trace and the Sky ambient.
 `Hull`: each
 Micro-chunk's trimmed AABB is the surface, colored by a coordinate hash, with
-no DDA. The diagnostic modes are debug-build-only.
+no DDA and no Sky ambient. The diagnostic modes are debug-build-only.
 _Avoid_: shading mode, visualization mode
 
 **Normal (Render mode)**:

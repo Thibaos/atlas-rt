@@ -8,6 +8,7 @@
 
 #include "../common/header.glsl"
 #include "../common/bindings.glsl"
+#include "../common/noise.glsl"
 
 struct HullAabb {
     vec3 min;
@@ -17,15 +18,6 @@ struct HullAabb {
 layout(buffer_reference, scalar) readonly buffer HullAabbBuffer {
     HullAabb aabbs[];
 };
-
-uint hash_mix(uint x) {
-    x ^= x >> 16u;
-    x *= 0x7feb352du;
-    x ^= x >> 15u;
-    x *= 0x846ca68bu;
-    x ^= x >> 16u;
-    return x;
-}
 
 bool aabb_slab(vec3 origin, vec3 dir, float tmin, float tmax, vec3 bmin, vec3 bmax, out float t_entry) {
     float t0 = tmin;
