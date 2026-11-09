@@ -30,7 +30,7 @@ use atlas_rt::{
         context::RenderContext,
         pipeline::{DEFAULT_FOV, FrameInput, FramePipeline, PROJ_FAR, PROJ_NEAR, task::RenderMode},
     },
-    sim::{Command, PlayerProfile},
+    sim::PlayerProfile,
     world::{
         World,
         diff::{
@@ -44,7 +44,7 @@ use atlas_rt::{
 use input::{Input, InputButton, InputKey};
 use launch::Launch;
 use player::PlayerController;
-use sim_host::{SimHost, Tally};
+use sim_host::{Handover, SimHost, Tally};
 use startup::{Startup, supply_world};
 use timers::ScheduleController;
 
@@ -118,16 +118,18 @@ impl App {
                 Arc::clone(&world),
                 profile,
                 policy,
-                snapshots,
-                tracked.clone(),
-                granular_cells,
-                emitter,
-                &materials,
+                Handover::new(
+                    snapshots,
+                    tracked.clone(),
+                    materials,
+                    granular_cells,
+                    emitter,
+                ),
             )?)
         };
 
         let mut schedule_controller = ScheduleController::new();
-        schedule_controller.add_schedule_frames("delta", 1);
+        schedule_controller.add_schedule_frames("delta");
         schedule_controller.add_schedule_duration("log", Duration::from_secs(1));
 
         Ok(Self {
@@ -323,7 +325,7 @@ impl App {
         };
 
         if let Some(sim) = self.sim.as_ref() {
-            sim.command(Command::Cell(edit));
+            sim.command(edit);
 
             return;
         }

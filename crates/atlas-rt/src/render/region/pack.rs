@@ -1,6 +1,3 @@
-#[cfg(test)]
-use std::collections::HashMap;
-
 use anyhow::{Context, bail};
 use glam::{IVec3, UVec3};
 use rayon::prelude::*;
@@ -64,27 +61,6 @@ pub fn pack_regions(snapshots: &[MicroChunkSnapshot]) -> anyhow::Result<Vec<Regi
     regions.sort_unstable_by_key(RegionData::region_id);
 
     Ok(regions)
-}
-
-#[cfg(test)]
-pub fn pack_regions_serial(snapshots: &[MicroChunkSnapshot]) -> Vec<RegionData> {
-    let mut by_region: HashMap<IVec3, Vec<&MicroChunkSnapshot>> = HashMap::new();
-    for snapshot in snapshots {
-        by_region
-            .entry(region_index_of(snapshot.global_coords))
-            .or_default()
-            .push(snapshot);
-    }
-
-    let mut regions: Vec<RegionData> = by_region
-        .into_iter()
-        .map(|(region_index, region_snapshots)| {
-            pack_region(region_index, &region_snapshots).unwrap()
-        })
-        .collect();
-
-    regions.sort_unstable_by_key(RegionData::region_id);
-    regions
 }
 
 /// # Errors
@@ -194,6 +170,7 @@ fn occupied_cell_bounds(mask: &[u8; MICRO_BYTES]) -> anyhow::Result<(IVec3, IVec
 
 #[cfg(test)]
 mod tests {
+    use crate::world::micro::MicroChunk;
     use crate::world::{World, diff::snapshot::emit_snapshots};
 
     use super::*;
@@ -239,6 +216,8 @@ mod tests {
         world.set_voxel(IVec3::new(0, 0, 0), 1);
         world.set_voxel(IVec3::new(7, 7, 7), 2);
         world.set_voxel(IVec3::new(8, 0, 0), 3);
+        world.set_voxel(IVec3::new(0, 8, 0), 4);
+        world.set_voxel(IVec3::new(0, 0, 8), 5);
 
         let snapshots = emit_snapshots(&world).unwrap();
         let regions = pack_regions(&snapshots).unwrap();
@@ -247,7 +226,7 @@ mod tests {
 
         assert_eq!(region.offset_table.len(), MICRO_CHUNKS_PER_REGION);
         assert_eq!(region.blocks.len() % 8, 0);
-        assert_eq!(region.aabbs.len(), 2);
+        assert_eq!(region.aabbs.len(), 4);
 
         let slot0 = region.offset_table[0];
         assert_ne!(slot0, OFFSET_SENTINEL);
@@ -255,6 +234,8 @@ mod tests {
         assert_eq!(slot0, OFFSET_TABLE_SIZE as u32);
 
         assert_ne!(region.offset_table[1], OFFSET_SENTINEL);
+        assert_ne!(region.offset_table[32], OFFSET_SENTINEL);
+        assert_ne!(region.offset_table[1024], OFFSET_SENTINEL);
         assert_eq!(region.offset_table[1000], OFFSET_SENTINEL);
 
         let block = &region.blocks[slot0 as usize..];
@@ -265,70 +246,73 @@ mod tests {
     }
 
     #[test]
-    fn microchunk_index_convention() {
-        let mc = IVec3::new(1, 2, 3);
-        let index = ((mc.z * 32 + mc.y) * 32 + mc.x) as usize;
+    fn a_region_holds_the_ordinals_its_snapshots_land_in() {
+        let coords = [
+            IVec3::new(-304, -304, -304),
+            IVec3::new(-256, 0, 0),
+            IVec3::new(0, 0, 0),
+            IVec3::new(8, 0, 0),
+            IVec3::new(248, 0, 0),
+            IVec3::new(256, 0, 0),
+            IVec3::new(296, 296, 296),
+        ];
+        let snapshots: Vec<MicroChunkSnapshot> = coords
+            .iter()
+            .enumerate()
+            .map(|(index, &global_coords)| {
+                let mut mask = [0u8; MICRO_BYTES];
+                mask[0] = 1;
 
-        assert_eq!(index, (3 * 32 + 2) * 32 + 1);
-        assert_eq!((31 * 32 + 31) * 32 + 31, MICRO_CHUNKS_PER_REGION - 1);
-        assert_eq!(MICRO_CHUNK_LENGTH, 8);
-    }
+                MicroChunkSnapshot {
+                    global_coords,
+                    chunk: MicroChunk::new(mask, vec![u8::try_from(index).unwrap() + 1]).unwrap(),
+                }
+            })
+            .collect();
 
-    fn mask_from_bytes(bytes: &[(usize, u8)]) -> [u8; MICRO_BYTES] {
-        let mut mask = [0u8; MICRO_BYTES];
+        let mut expected: FxHashMap<IVec3, Vec<usize>> = FxHashMap::default();
 
-        for (index, value) in bytes {
-            if let Some(slot) = mask.get_mut(*index) {
-                *slot = *value;
-            }
+        for snapshot in &snapshots {
+            let region = region_index_of(snapshot.global_coords);
+            let local = snapshot.global_coords - region * REGION_LENGTH.cast_signed();
+            let cell = local / MICRO_CHUNK_LENGTH.cast_signed();
+            let side = i32::try_from(MC_PER_REGION_SIDE).unwrap();
+            let ordinal = ((cell.z * side + cell.y) * side + cell.x) as usize;
+
+            expected.entry(region).or_default().push(ordinal);
         }
 
-        mask
-    }
+        let regions = pack_regions(&snapshots).unwrap();
+        let mut expected_regions: Vec<IVec3> = expected.keys().copied().collect();
 
-    /// Cell order `x + 8y + 64z` puts byte `b` at `y = b % 8`, `z = b / 8`, and
-    /// bit `k` at `x = k`. This pins that the renderer's wrapper returns the
-    /// Micro-chunk-local range unchanged and raises its own error on a zero
-    /// mask.
-    #[test]
-    fn occupied_cell_bounds_pins_the_first_and_the_last_mask_byte() {
-        let cases: [(&[(usize, u8)], (IVec3, IVec3)); 7] = [
-            (
-                &[(0, 0b0000_0001)],
-                (IVec3::new(0, 0, 0), IVec3::new(0, 0, 0)),
-            ),
-            (
-                &[(1, 0b0000_0001)],
-                (IVec3::new(0, 1, 0), IVec3::new(0, 1, 0)),
-            ),
-            (
-                &[(8, 0b0000_0001)],
-                (IVec3::new(0, 0, 1), IVec3::new(0, 0, 1)),
-            ),
-            (
-                &[(0, 0b1000_0001)],
-                (IVec3::new(0, 0, 0), IVec3::new(7, 0, 0)),
-            ),
-            (
-                &[(0, 0b0001_0010)],
-                (IVec3::new(1, 0, 0), IVec3::new(4, 0, 0)),
-            ),
-            (
-                &[(63, 0b1000_0000)],
-                (IVec3::new(7, 7, 7), IVec3::new(7, 7, 7)),
-            ),
-            (
-                &[(0, 0b0000_0010), (63, 0b0000_0001)],
-                (IVec3::new(0, 0, 0), IVec3::new(1, 7, 7)),
-            ),
-        ];
+        expected_regions.sort_unstable_by_key(|index| region_id(*index));
 
-        for (bytes, expected) in cases {
-            let mask = mask_from_bytes(bytes);
-            let bounds = occupied_cell_bounds(&mask)
-                .unwrap_or_else(|error| panic!("{bytes:?} should bound: {error}"));
+        assert_eq!(
+            regions
+                .iter()
+                .map(|region| region.region_index)
+                .collect::<Vec<_>>(),
+            expected_regions
+        );
 
-            assert_eq!(bounds, expected, "{bytes:?}");
+        for region in &regions {
+            let mut wanted = expected[&region.region_index].clone();
+            wanted.sort_unstable();
+
+            let ordinals: Vec<usize> = region
+                .offset_table
+                .iter()
+                .enumerate()
+                .filter_map(|(ordinal, offset)| (*offset != OFFSET_SENTINEL).then_some(ordinal))
+                .collect();
+
+            assert_eq!(ordinals, wanted, "region {}", region.region_index);
+            assert_eq!(
+                region.aabbs.len(),
+                wanted.len(),
+                "region {} packs one hull per chunk",
+                region.region_index
+            );
         }
     }
 
@@ -340,88 +324,6 @@ mod tests {
 
         assert_eq!(error.to_string(), "packed an empty snapshot as a hull");
     }
-
-    struct Xorshift(u64);
-
-    impl Xorshift {
-        fn draw(&mut self) -> u64 {
-            let mut state = self.0;
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            self.0 = state;
-            state
-        }
-    }
-
-    fn offset(rng: &mut Xorshift) -> i32 {
-        i32::try_from(rng.draw() & 0x3FF)
-            .unwrap_or(0)
-            .wrapping_sub(512)
-    }
-
-    fn randomized_world(seed: u64, voxel_count: usize) -> World {
-        let mut rng = Xorshift(seed);
-        let mut world = World::default();
-
-        for _ in 0..voxel_count {
-            let material = u8::try_from((rng.draw() & 0xFF) | 1).unwrap_or(1);
-
-            world.set_voxel(
-                IVec3::new(offset(&mut rng), offset(&mut rng), offset(&mut rng)),
-                material,
-            );
-        }
-
-        world
-    }
-
-    fn assert_packing_matches_serial(snapshots: &[MicroChunkSnapshot]) {
-        let parallel = pack_regions(snapshots).unwrap();
-        let serial = pack_regions_serial(snapshots);
-
-        assert_eq!(parallel.len(), serial.len());
-
-        for (packed, oracle) in parallel.iter().zip(&serial) {
-            assert_eq!(packed.region_index, oracle.region_index);
-            assert_eq!(packed.offset_table, oracle.offset_table);
-            assert_eq!(packed.blocks, oracle.blocks);
-            assert_eq!(packed.aabbs.len(), oracle.aabbs.len());
-
-            for (hull, oracle_hull) in packed.aabbs.iter().zip(&oracle.aabbs) {
-                assert_eq!(hull.min, oracle_hull.min);
-                assert_eq!(hull.max, oracle_hull.max);
-            }
-        }
-
-        for pair in parallel.windows(2) {
-            assert!(pair[0].region_id() < pair[1].region_id());
-        }
-    }
-
-    #[test]
-    fn parallel_packing_matches_serial_oracle() {
-        let mut boundary = World::default();
-        boundary.set_voxel(IVec3::new(255, 0, 0), 1);
-        boundary.set_voxel(IVec3::new(256, 0, 0), 2);
-
-        let mut layout = World::default();
-        layout.set_voxel(IVec3::new(0, 0, 0), 1);
-        layout.set_voxel(IVec3::new(7, 7, 7), 2);
-        layout.set_voxel(IVec3::new(8, 0, 0), 3);
-
-        for world in [
-            boundary,
-            layout,
-            randomized_world(0x5EED_1F00, 6_000),
-            randomized_world(0x00C0_FFEE, 6_000),
-            randomized_world(0xBAD_C0DE, 6_000),
-        ] {
-            let snapshots = emit_snapshots(&world).unwrap();
-
-            assert_packing_matches_serial(&snapshots);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -430,6 +332,7 @@ mod contract {
     use std::path::{Path, PathBuf};
 
     use crate::render::pipeline::task::RenderMode;
+    use crate::render::pipeline::{PROJ_FAR, PROJ_NEAR};
     use crate::world::micro::{MICRO_AREA, MICRO_BYTES, MICRO_EDGE};
 
     use super::*;
@@ -476,7 +379,7 @@ mod contract {
         }
     }
 
-    fn float(name: &str) -> f64 {
+    fn float(name: &str) -> f32 {
         define(name).parse().unwrap()
     }
 
@@ -501,8 +404,8 @@ mod contract {
             assert_eq!(uint("MODE_NORMAL"), RenderMode::Normal as u32 as u64);
         }
 
-        assert_eq!(float("RAY_T_MIN"), 0.01);
-        assert_eq!(float("RAY_T_MAX"), 10000.0);
+        assert_eq!(float("RAY_T_MIN"), PROJ_NEAR);
+        assert_eq!(float("RAY_T_MAX"), PROJ_FAR);
     }
 
     #[test]

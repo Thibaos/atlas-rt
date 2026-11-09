@@ -11,7 +11,6 @@ use vulkano_taskgraph::{
 };
 
 use vulkano::memory::DeviceMemory;
-use vulkano::{Handle, VulkanObject};
 
 use crate::render::{
     capture::FrameCapture,
@@ -601,13 +600,6 @@ impl EmbeddedPipeline {
 
     /// # Errors
     ///
-    /// Returns an error if delivery image fetch failed
-    pub fn slot_image(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<Arc<Image>> {
-        self.delivery.image(&gpu.resources, slot)
-    }
-
-    /// # Errors
-    ///
     /// Returns an error if store upload failed
     pub fn slot_memory(
         &self,
@@ -617,15 +609,6 @@ impl EmbeddedPipeline {
         let physical = self.delivery.physical_id(slot)?;
 
         delivery_memory(&gpu.resources, physical)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if store image fetch failed
-    pub fn slot_image_handle(&self, gpu: &RenderContext, slot: usize) -> anyhow::Result<u64> {
-        let image = self.slot_image(gpu, slot)?;
-
-        Ok(image.handle().as_raw())
     }
 
     /// Reads the last frame written to `slot` back as the host shows it.

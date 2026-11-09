@@ -4,7 +4,7 @@ use std::{
 };
 
 pub enum Condition {
-    Frames { remaining: usize, total: usize },
+    EveryFrame,
     Every(Duration),
 }
 
@@ -25,35 +25,20 @@ impl ScheduleController {
             .insert(name, (instant, Condition::Every(duration)));
     }
 
-    pub fn add_schedule_frames(&mut self, name: &'static str, frames: usize) {
+    pub fn add_schedule_frames(&mut self, name: &'static str) {
         let instant = Instant::now();
-        self.schedules.insert(
-            name,
-            (
-                instant,
-                Condition::Frames {
-                    remaining: frames,
-                    total: frames,
-                },
-            ),
-        );
+        self.schedules
+            .insert(name, (instant, Condition::EveryFrame));
     }
 
     pub fn check(&mut self, key: &str) -> Option<Duration> {
         if let Some((last_update_instant, condition)) = self.schedules.get_mut(key) {
             match condition {
-                Condition::Frames { remaining, total } => {
-                    if *remaining <= 1 {
-                        let duration = last_update_instant.elapsed();
-                        *last_update_instant = Instant::now();
-                        *remaining = *total;
+                Condition::EveryFrame => {
+                    let duration = last_update_instant.elapsed();
+                    *last_update_instant = Instant::now();
 
-                        Some(duration)
-                    } else {
-                        *remaining = remaining.saturating_sub(1);
-
-                        None
-                    }
+                    Some(duration)
                 }
                 Condition::Every(duration) => {
                     if (*last_update_instant).elapsed() > *duration {

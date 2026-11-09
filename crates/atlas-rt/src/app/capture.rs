@@ -30,7 +30,7 @@ use atlas_rt::{
 use crate::app::{
     PlayerController,
     launch::{CaptureRequest, Launch},
-    sim_host::SimHost,
+    sim_host::{Handover, SimHost},
     startup::supply_world,
 };
 
@@ -79,22 +79,20 @@ pub fn run(launch: &Launch, request: &CaptureRequest) -> anyhow::Result<()> {
             Arc::clone(&startup.world),
             profile,
             startup.policy,
-            startup.snapshots,
-            startup.tracked,
-            startup.granular_cells,
-            startup.emitter,
-            &materials,
+            Handover::new(
+                startup.snapshots,
+                startup.tracked,
+                materials,
+                startup.granular_cells,
+                startup.emitter,
+            ),
         )?;
 
         sim.start();
 
         let mut forward = |batch| pipeline.input().submit_batch(batch);
 
-        sim.drive(
-            Duration::from_millis(1),
-            InputSample::default(),
-            &mut forward,
-        )?;
+        sim.drive(Duration::ZERO, InputSample::default(), &mut forward)?;
         sim.advance(request.ticks, &mut forward)?;
 
         let tally = sim.take_tally();
@@ -120,9 +118,10 @@ pub fn run(launch: &Launch, request: &CaptureRequest) -> anyhow::Result<()> {
     );
 
     let delta_time = profile.tick_period().as_secs_f32();
+    let mut slot = 0usize;
 
     for _ in 0..FRAMES_AFTER_SETTLE {
-        pipeline.run_frame(
+        let published = pipeline.run_frame(
             &gpu,
             &FrameInput {
                 view,
@@ -134,9 +133,13 @@ pub fn run(launch: &Launch, request: &CaptureRequest) -> anyhow::Result<()> {
             },
             &WrapTimes::default(),
         )?;
+
+        if let Some(published) = published {
+            slot = published.slot;
+        }
     }
 
-    let capture: FrameCapture = pipeline.capture(&gpu, 0, RenderMode::Voxel)?;
+    let capture: FrameCapture = pipeline.capture(&gpu, slot, RenderMode::Voxel)?;
 
     capture::save_png(path, &capture)?;
 

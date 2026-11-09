@@ -4,7 +4,7 @@
 //! A solid sphere of radius [`RADIUS`], centred on the Lattice centre in x and z
 //! with its y at [`CENTRE_HEIGHT`]: about 1.1 million grains in about 2,700
 //! Micro-chunks. Under it, the Lattice's bottom layer is a floor of one Bedrock
-//! cell at [`FLOOR_HEIGHT`] under each of the 4,096 by 4,096 columns, in 262,144
+//! cell at [`floor::HEIGHT`] under each of the 4,096 by 4,096 columns, in 262,144
 //! Micro-chunks. Every cell of both is inside the Lattice, so the fill writes no
 //! clipped cell and refuses no grain.
 //!
@@ -19,26 +19,23 @@
 use glam::IVec3;
 
 use super::{
-    World,
+    World, floor,
     generation::GeneratedWorld,
-    grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH, chunks_across, grid_origin},
+    grid::{MICRO_CHUNK_LENGTH, chunks_across, grid_origin},
     load::progress::{Progress, Stage},
-    micro::{self, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, MicroChunkRef},
+    micro::{self, MICRO_BYTES, MICRO_CELLS, MicroChunkRef},
     vocabulary::{Material, Vocabulary},
 };
 
 /// The ball's radius, in cells.
-pub const RADIUS: i32 = 64;
-
-/// The floor's level, in cells: the Lattice's bottom layer.
-pub const FLOOR_HEIGHT: i32 = -LATTICE_HALF_EXTENT.cast_signed();
+const RADIUS: i32 = 64;
 
 /// The ball's lowest layer, in cells above the floor's surface.
-pub const FLOOR_CLEARANCE: i32 = 128;
+const FLOOR_CLEARANCE: i32 = 128;
 
 /// The ball's centre level, in cells: one layer for the floor, then
 /// [`FLOOR_CLEARANCE`], then the ball's own [`RADIUS`].
-pub const CENTRE_HEIGHT: i32 = FLOOR_HEIGHT + 1 + FLOOR_CLEARANCE + RADIUS;
+const CENTRE_HEIGHT: i32 = floor::SURFACE + FLOOR_CLEARANCE + RADIUS;
 
 /// Builds the floor and the ball, filling Micro-chunk by Micro-chunk and
 /// reporting the Generate stage as it goes.
@@ -74,11 +71,17 @@ const fn centre() -> IVec3 {
 /// stage reports the floor before the ball.
 fn fill(world: &mut World, progress: &Progress, granular_cells: &mut Vec<IVec3>) {
     let edge = MICRO_CHUNK_LENGTH.cast_signed();
-    let lower = chunk_origin(centre().saturating_sub(IVec3::splat(RADIUS)));
-    let upper = chunk_origin(centre().saturating_add(IVec3::splat(RADIUS)))
-        .saturating_add(IVec3::splat(edge));
-    let total = floor_chunks().saturating_add(fillable_chunks(lower, upper));
-    let mut filled = write_floor(world, progress, total);
+    let lower = grid_origin(
+        centre().saturating_sub(IVec3::splat(RADIUS)),
+        MICRO_CHUNK_LENGTH,
+    );
+    let upper = grid_origin(
+        centre().saturating_add(IVec3::splat(RADIUS)),
+        MICRO_CHUNK_LENGTH,
+    )
+    .saturating_add(IVec3::splat(edge));
+    let total = floor::chunks().saturating_add(fillable_chunks(lower, upper));
+    let mut filled = floor::write(world, progress, total);
     let mut origin = lower;
 
     while origin.z < upper.z {
@@ -101,60 +104,6 @@ fn fill(world: &mut World, progress: &Progress, granular_cells: &mut Vec<IVec3>)
     }
 }
 
-/// Writes the floor: one Bedrock cell at [`FLOOR_HEIGHT`] under every column of
-/// the Lattice. Returns how many Micro-chunks it wrote, so the caller can carry
-/// the count into the ball's progress.
-fn write_floor(world: &mut World, progress: &Progress, total: usize) -> usize {
-    let edge = MICRO_CHUNK_LENGTH.cast_signed();
-    let half = LATTICE_HALF_EXTENT.cast_signed();
-    let mut written = 0usize;
-    let mut z = half.saturating_neg();
-
-    while z < half {
-        let mut x = half.saturating_neg();
-
-        while x < half {
-            write_floor_micro_chunk(world, IVec3::new(x, FLOOR_HEIGHT, z));
-
-            written = written.saturating_add(1);
-            progress.count_generated(total, written);
-
-            x = x.saturating_add(edge);
-        }
-
-        z = z.saturating_add(edge);
-    }
-
-    written
-}
-
-/// Writes one floor Micro-chunk: its whole bottom layer is Bedrock, one cell
-/// under each of the chunk's 8 by 8 columns, which is the floor because
-/// [`FLOOR_HEIGHT`] is a Micro-chunk boundary. Cell order `x + 8y + 64z` puts
-/// that layer in the low byte of every eighth mask byte.
-fn write_floor_micro_chunk(world: &mut World, origin: IVec3) {
-    let mut mask = [0u8; MICRO_BYTES];
-
-    for z in 0..MICRO_EDGE {
-        if let Some(layer) = mask.get_mut(z.saturating_mul(MICRO_EDGE)) {
-            *layer = u8::MAX;
-        }
-    }
-
-    let materials = [Material::Bedrock.index(); MICRO_AREA];
-
-    if let Err(error) = world.write_entry(origin, MicroChunkRef::new(&mask, &materials)) {
-        panic!("the sand ball floor wrote an invalid entry at {origin}: {error}");
-    }
-}
-
-/// How many Micro-chunks the floor spans: one per Lattice column.
-fn floor_chunks() -> usize {
-    let across = chunks_across(LATTICE_EXTENT.cast_signed());
-
-    across.saturating_mul(across)
-}
-
 /// How many Micro-chunks the ball's fill walks: one per chunk of its bounding
 /// box. The ball misses the corners of the box, so the count is an upper bound
 /// and the reported progress is never below the truth.
@@ -162,11 +111,6 @@ fn fillable_chunks(lower: IVec3, upper: IVec3) -> usize {
     chunks_across(upper.x.saturating_sub(lower.x))
         .saturating_mul(chunks_across(upper.z.saturating_sub(lower.z)))
         .saturating_mul(chunks_across(upper.y.saturating_sub(lower.y)))
-}
-
-/// The Micro-chunk origin at or below `position`.
-fn chunk_origin(position: IVec3) -> IVec3 {
-    grid_origin(position, MICRO_CHUNK_LENGTH)
 }
 
 /// Fills the column of Micro-chunks at `origin`'s x and z, from `floor` up to

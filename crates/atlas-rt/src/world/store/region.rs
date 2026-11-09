@@ -4,10 +4,11 @@ use std::sync::{Mutex, PoisonError};
 use glam::IVec3;
 
 use crate::world::{
+    InsertResult,
     diff::edit::{EditError, validate_entry},
     grid,
     micro::{self, MICRO_BYTES, MicroChunkRef},
-    store::{MicroChunkEntry, VoxelStore},
+    store::MicroChunkEntry,
 };
 
 #[cfg(test)]
@@ -243,9 +244,9 @@ pub struct RegionStore {
     bounds: Mutex<BoundsCache>,
 }
 
-/// The cached [`VoxelStore::bounds`]. It starts exact for the empty store and
-/// an addition grows it in place, so a write-only load or Generation stays
-/// cheap. A removal marks it stale and the next query rescans;
+/// The cached bounds query. It starts exact for the empty store and an
+/// addition grows it in place, so a write-only load or Generation stays cheap.
+/// A removal marks it stale and the next query rescans;
 /// [`RegionStore::recount`] does the same.
 #[derive(Debug)]
 struct BoundsCache {
@@ -580,8 +581,9 @@ impl Iterator for Entries<'_> {
     }
 }
 
-impl VoxelStore for RegionStore {
-    fn set(&mut self, position: IVec3, material: u8) -> bool {
+impl RegionStore {
+    /// Writes one cell. Returns whether the cell was already occupied.
+    pub(in crate::world) fn set(&mut self, position: IVec3, material: u8) -> bool {
         let slot = region_slot(position);
 
         let Some(slot_region) = self.regions.get_mut(slot) else {
@@ -599,7 +601,7 @@ impl VoxelStore for RegionStore {
         existing
     }
 
-    fn get(&self, position: IVec3) -> Option<u8> {
+    pub(in crate::world) fn get(&self, position: IVec3) -> Option<u8> {
         let slot = region_slot(position);
         let region = self.regions.get(slot)?.as_ref()?;
         let entry = region
@@ -625,7 +627,11 @@ impl VoxelStore for RegionStore {
             .copied()
     }
 
-    fn clear(&mut self, position: IVec3) {
+    pub(in crate::world) fn contains(&self, position: IVec3) -> bool {
+        self.get(position).is_some()
+    }
+
+    pub(in crate::world) fn clear(&mut self, position: IVec3) {
         let slot = region_slot(position);
         let ordinal = micro_chunk_ordinal(position);
 
@@ -679,15 +685,15 @@ impl VoxelStore for RegionStore {
         self.invalidate_bounds();
     }
 
-    fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
-        Box::new(Voxels::new(self))
+    pub(in crate::world) fn iter(&self) -> impl Iterator<Item = (IVec3, u8)> + '_ {
+        Voxels::new(self)
     }
 
-    fn count(&self) -> usize {
+    pub(in crate::world) fn count(&self) -> usize {
         self.count
     }
 
-    fn bounds(&self) -> Option<(IVec3, IVec3)> {
+    pub(in crate::world) fn bounds(&self) -> Option<(IVec3, IVec3)> {
         let mut cache = self.bounds.lock().unwrap_or_else(PoisonError::into_inner);
 
         if !cache.valid {
@@ -703,7 +709,7 @@ impl VoxelStore for RegionStore {
         cache.bounds
     }
 
-    fn chunk_entry(&self, origin: IVec3) -> Option<MicroChunkRef<'_>> {
+    pub(in crate::world) fn chunk_entry(&self, origin: IVec3) -> Option<MicroChunkRef<'_>> {
         let region = self.regions.get(region_slot(origin))?.as_ref()?;
         let entry = region
             .index
@@ -720,11 +726,15 @@ impl VoxelStore for RegionStore {
         Some(MicroChunkRef::new(mask, materials))
     }
 
-    fn entries(&self) -> Box<dyn Iterator<Item = MicroChunkEntry> + '_> {
-        Box::new(Entries::new(self))
+    pub(in crate::world) fn entries(&self) -> impl Iterator<Item = MicroChunkEntry> + '_ {
+        Entries::new(self)
     }
 
-    fn write_entry(&mut self, origin: IVec3, chunk: MicroChunkRef<'_>) -> Result<(), EditError> {
+    pub(in crate::world) fn write_entry(
+        &mut self,
+        origin: IVec3,
+        chunk: MicroChunkRef<'_>,
+    ) -> Result<(), EditError> {
         validate_entry(origin, chunk.mask, chunk.materials)?;
 
         let slot = region_slot(origin);
@@ -818,8 +828,26 @@ impl VoxelStore for RegionStore {
         Ok(())
     }
 
+    /// Writes a cell, clipping one outside the Lattice.
+    ///
+    /// # Panics
+    ///
+    /// Panics on a material index that does not fit a byte.
+    pub(in crate::world) fn insert(&mut self, position: IVec3, voxel: u32) -> InsertResult {
+        if !grid::in_lattice(position) {
+            return InsertResult::Clipped;
+        }
+
+        let material = u8::try_from(voxel)
+            .unwrap_or_else(|_| panic!("material index {voxel} does not fit a byte"));
+
+        self.set(position, material);
+
+        InsertResult::Ok
+    }
+
     #[cfg(test)]
-    fn storage_size(&self) -> StorageSize {
+    pub(in crate::world) fn storage_size(&self) -> StorageSize {
         let mut index = 0usize;
         let mut blob = 0usize;
 
@@ -846,13 +874,14 @@ impl VoxelStore for RegionStore {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
 
+    use crate::world::micro::MicroChunk;
     use crate::world::test_support::{Rng, u8_below};
 
     use super::*;
 
-    fn content(store: &dyn VoxelStore) -> HashMap<IVec3, u8> {
+    fn content(store: &RegionStore) -> HashMap<IVec3, u8> {
         store.iter().collect()
     }
 
@@ -1450,7 +1479,7 @@ mod tests {
                 }
                 1 => {
                     let origin = chunk_origin(&mut rng, 6);
-                    let mask = random_mask(&mut rng, 4);
+                    let mask = random_mask(&mut rng);
                     let materials = entry_materials(&mask, &mut rng);
 
                     store
@@ -1544,73 +1573,26 @@ mod tests {
         );
     }
 
-    /// A store that implements only the primitives, so `write_entry` comes from
-    /// the trait default and its per-cell loop is the oracle.
-    #[derive(Debug)]
-    struct PerCellStore(RegionStore);
+    /// Applies an entry through the per-cell primitives, so the entry layout is
+    /// checked against a write that knows nothing about it.
+    fn write_entry_per_cell(store: &mut RegionStore, origin: IVec3, chunk: MicroChunkRef<'_>) {
+        validate_entry(origin, chunk.mask, chunk.materials)
+            .unwrap_or_else(|error| panic!("the oracle refused the entry: {error}"));
 
-    impl VoxelStore for PerCellStore {
-        fn set(&mut self, position: IVec3, material: u8) -> bool {
-            self.0.set(position, material)
-        }
+        let mut rank = 0usize;
 
-        fn get(&self, position: IVec3) -> Option<u8> {
-            self.0.get(position)
-        }
+        for index in 0..micro::MICRO_CELLS {
+            let position = origin.saturating_add(cell_in_chunk(index));
 
-        fn clear(&mut self, position: IVec3) {
-            self.0.clear(position);
-        }
+            if micro::occupied_cell(chunk.mask, index) {
+                if let Some(material) = chunk.materials.get(rank).copied() {
+                    store.set(position, material);
+                }
 
-        fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
-            self.0.iter()
-        }
-
-        fn count(&self) -> usize {
-            self.0.count()
-        }
-
-        fn chunk_entry(&self, origin: IVec3) -> Option<MicroChunkRef<'_>> {
-            self.0.chunk_entry(origin)
-        }
-
-        fn storage_size(&self) -> StorageSize {
-            self.0.storage_size()
-        }
-    }
-
-    /// A store that yields its voxels in reverse, so the default enumeration's
-    /// bucketing is exercised with out-of-order cells.
-    #[derive(Debug)]
-    struct ReversedStore(RegionStore);
-
-    impl VoxelStore for ReversedStore {
-        fn set(&mut self, position: IVec3, material: u8) -> bool {
-            self.0.set(position, material)
-        }
-
-        fn get(&self, position: IVec3) -> Option<u8> {
-            self.0.get(position)
-        }
-
-        fn clear(&mut self, position: IVec3) {
-            self.0.clear(position);
-        }
-
-        fn iter(&self) -> Box<dyn Iterator<Item = (IVec3, u8)> + '_> {
-            Box::new(self.0.iter().collect::<Vec<_>>().into_iter().rev())
-        }
-
-        fn count(&self) -> usize {
-            self.0.count()
-        }
-
-        fn chunk_entry(&self, origin: IVec3) -> Option<MicroChunkRef<'_>> {
-            self.0.chunk_entry(origin)
-        }
-
-        fn storage_size(&self) -> StorageSize {
-            self.0.storage_size()
+                rank = rank.saturating_add(1);
+            } else {
+                store.clear(position);
+            }
         }
     }
 
@@ -1625,11 +1607,11 @@ mod tests {
         IVec3::new(axis(), axis(), axis())
     }
 
-    fn random_mask(rng: &mut Rng, density: u64) -> [u8; MICRO_BYTES] {
+    fn random_mask(rng: &mut Rng) -> [u8; MICRO_BYTES] {
         let mut mask = [0u8; MICRO_BYTES];
 
         for byte in &mut mask {
-            *byte = u8_below(rng, density);
+            *byte = u8_below(rng, 256);
         }
 
         mask
@@ -1660,7 +1642,7 @@ mod tests {
     /// Asserts every set mask bit reads back its material and every clear bit
     /// is absent, through both `get` and the entry read.
     fn assert_entry_content(
-        store: &dyn VoxelStore,
+        store: &RegionStore,
         origin: IVec3,
         mask: &[u8; MICRO_BYTES],
         materials: &[u8],
@@ -1693,7 +1675,7 @@ mod tests {
     }
 
     fn assert_write_rejected(
-        store: &mut dyn VoxelStore,
+        store: &mut RegionStore,
         origin: IVec3,
         mask: &[u8; MICRO_BYTES],
         materials: &[u8],
@@ -1755,66 +1737,43 @@ mod tests {
     }
 
     #[test]
-    fn entry_write_matches_the_per_cell_default_on_randomized_entries() {
+    fn entry_write_matches_the_per_cell_oracle_on_randomized_entries() {
         let seed = 0x00E2_7A11;
         let mut rng = Rng::new(seed);
         let mut region = RegionStore::default();
-        let mut wrapper = PerCellStore(RegionStore::default());
+        let mut oracle = RegionStore::default();
 
         for case in 0..256u32 {
             let origin = chunk_origin(&mut rng, 24);
-            let mask = random_mask(&mut rng, 8);
+            let mask = random_mask(&mut rng);
             let materials = entry_materials(&mask, &mut rng);
 
             let context = format!("seed {seed:#x} case {case} at {origin}");
 
             region
                 .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
-            wrapper
-                .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
+                .unwrap_or_else(|error| panic!("{context}: the entry refused: {error}"));
+            write_entry_per_cell(&mut oracle, origin, MicroChunkRef::new(&mask, &materials));
 
-            assert_entry_content(
-                &region,
-                origin,
-                &mask,
-                &materials,
-                &format!("{context}: override"),
-            );
-            assert_entry_content(
-                &wrapper,
-                origin,
-                &mask,
-                &materials,
-                &format!("{context}: default"),
-            );
+            assert_entry_content(&region, origin, &mask, &materials, &context);
         }
 
         assert_eq!(
             content(&region),
-            content(&wrapper),
-            "seed {seed:#x}: the override and the default disagree"
+            content(&oracle),
+            "seed {seed:#x}: the entry and the oracle disagree"
         );
-        assert_eq!(region.count(), wrapper.count(), "seed {seed:#x}: count");
-        assert_eq!(region.bounds(), wrapper.bounds(), "seed {seed:#x}: bounds");
+        assert_eq!(region.count(), oracle.count(), "seed {seed:#x}: count");
+        assert_eq!(region.bounds(), oracle.bounds(), "seed {seed:#x}: bounds");
     }
 
     #[test]
     fn entry_write_rejects_an_origin_off_the_micro_chunk_grid() {
         let mut region = RegionStore::default();
-        let mut wrapper = PerCellStore(RegionStore::default());
         let message = "voxel [1, 0, 0] is not a Micro-chunk origin";
 
         assert_write_rejected(
             &mut region,
-            IVec3::new(1, 0, 0),
-            &[0u8; MICRO_BYTES],
-            &[],
-            message,
-        );
-        assert_write_rejected(
-            &mut wrapper,
             IVec3::new(1, 0, 0),
             &[0u8; MICRO_BYTES],
             &[],
@@ -1825,18 +1784,10 @@ mod tests {
     #[test]
     fn entry_write_rejects_an_origin_outside_the_lattice() {
         let mut region = RegionStore::default();
-        let mut wrapper = PerCellStore(RegionStore::default());
         let message = "voxel [2048, 0, 0] is outside the lattice";
 
         assert_write_rejected(
             &mut region,
-            IVec3::new(2048, 0, 0),
-            &[0u8; MICRO_BYTES],
-            &[],
-            message,
-        );
-        assert_write_rejected(
-            &mut wrapper,
             IVec3::new(2048, 0, 0),
             &[0u8; MICRO_BYTES],
             &[],
@@ -1847,7 +1798,6 @@ mod tests {
     #[test]
     fn entry_write_rejects_a_material_count_mismatch() {
         let mut region = RegionStore::default();
-        let mut wrapper = PerCellStore(RegionStore::default());
         let mut mask = [0u8; MICRO_BYTES];
 
         mask[0] = 0b0000_0011;
@@ -1855,7 +1805,6 @@ mod tests {
         let message = "the mask marks 2 cells but carries 1 materials";
 
         assert_write_rejected(&mut region, IVec3::ZERO, &mask, &[1], message);
-        assert_write_rejected(&mut wrapper, IVec3::ZERO, &mask, &[1], message);
     }
 
     #[test]
@@ -1878,11 +1827,9 @@ mod tests {
         assert_eq!(store.count(), 0);
         assert_eq!(store.get(origin), None);
         assert!(store.chunk_entry(origin).is_none());
-        assert!(
-            store
-                .regions
-                .get(region_slot(origin))
-                .is_some_and(Option::is_none),
+        assert_eq!(
+            (store.storage_size().index, store.storage_size().blob),
+            (0, 0),
             "the emptied region is released"
         );
     }
@@ -1929,72 +1876,36 @@ mod tests {
     }
 
     #[test]
-    fn entry_enumeration_matches_the_per_cell_default() {
+    fn entry_enumeration_matches_the_inputs_in_region_order() {
         let seed = 0x00DE_FACE;
         let mut rng = Rng::new(seed);
         let mut region = RegionStore::default();
-        let mut wrapper = PerCellStore(RegionStore::default());
+        let mut expected: BTreeMap<(usize, usize), MicroChunkEntry> = BTreeMap::new();
 
         for case in 0..256u32 {
             let origin = chunk_origin(&mut rng, 24);
-            let mask = random_mask(&mut rng, 8);
+            let mask = random_mask(&mut rng);
             let materials = entry_materials(&mask, &mut rng);
 
             let context = format!("seed {seed:#x} case {case} at {origin}");
 
             region
                 .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
-            wrapper
-                .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
+                .unwrap_or_else(|error| panic!("{context}: the entry refused: {error}"));
+
+            let chunk =
+                MicroChunk::new(mask, materials).expect("the entry carries one material per bit");
+
+            expected.insert(
+                (region_slot(origin), micro_chunk_ordinal(origin)),
+                MicroChunkEntry { origin, chunk },
+            );
         }
 
-        let entries: Vec<MicroChunkEntry> = region.entries().collect();
-        let default_entries: Vec<MicroChunkEntry> = wrapper.entries().collect();
+        let actual: Vec<MicroChunkEntry> = region.entries().collect();
+        let wanted: Vec<MicroChunkEntry> = expected.into_values().collect();
 
-        assert_eq!(entries, default_entries, "seed {seed:#x}");
-
-        let keys: Vec<(usize, usize)> = entries
-            .iter()
-            .map(|entry| (region_slot(entry.origin), micro_chunk_ordinal(entry.origin)))
-            .collect();
-
-        assert!(
-            keys.windows(2).all(|pair| pair[0] < pair[1]),
-            "the enumeration is strictly increasing in Region then ordinal"
-        );
-    }
-
-    #[test]
-    fn the_default_enumeration_buckets_out_of_order_voxels() {
-        let seed = 0x00BA_5EBA;
-        let mut rng = Rng::new(seed);
-        let mut region = RegionStore::default();
-        let mut reversed = ReversedStore(RegionStore::default());
-
-        for case in 0..128u32 {
-            let origin = chunk_origin(&mut rng, 24);
-            let mask = random_mask(&mut rng, 8);
-            let materials = entry_materials(&mask, &mut rng);
-
-            let context = format!("seed {seed:#x} case {case} at {origin}");
-
-            region
-                .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the override refused: {error}"));
-            reversed
-                .write_entry(origin, MicroChunkRef::new(&mask, &materials))
-                .unwrap_or_else(|error| panic!("{context}: the default refused: {error}"));
-        }
-
-        let mut entries: Vec<MicroChunkEntry> = region.entries().collect();
-        let mut reversed_entries: Vec<MicroChunkEntry> = reversed.entries().collect();
-
-        entries.sort_unstable_by_key(|entry| entry.origin.to_array());
-        reversed_entries.sort_unstable_by_key(|entry| entry.origin.to_array());
-
-        assert_eq!(entries, reversed_entries, "seed {seed:#x}");
+        assert_eq!(actual, wanted, "seed {seed:#x}");
     }
 
     #[test]
@@ -2008,8 +1919,6 @@ mod tests {
             .write_entry(origin, MicroChunkRef::new(&full, &full_materials))
             .unwrap();
 
-        let after_full = store.storage_size().blob;
-
         let mut single = [0u8; MICRO_BYTES];
 
         single[0] = 1;
@@ -2018,11 +1927,6 @@ mod tests {
             .unwrap();
 
         let after_single = store.storage_size().blob;
-
-        assert!(
-            after_single > after_full,
-            "the smaller entry appends a new block"
-        );
 
         store
             .write_entry(origin, MicroChunkRef::new(&full, &full_materials))

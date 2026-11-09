@@ -232,17 +232,15 @@ impl FramePipeline {
         self.input.take_applied_generation()
     }
 
-    fn recreate_if_needed(&mut self, gpu: &RenderContext) -> anyhow::Result<bool> {
+    fn recreate_if_needed(&mut self, gpu: &RenderContext, extent: [u32; 2]) -> anyhow::Result<()> {
         if !self.recreate_swapchain {
-            return Ok(false);
+            return Ok(());
         }
-
-        let window = self.window.clone();
 
         self.swapchain_id = gpu
             .resources
             .recreate_swapchain(self.swapchain_id, |create_info| SwapchainCreateInfo {
-                image_extent: window.inner_size().into(),
+                image_extent: extent,
                 ..create_info.clone()
             })?;
 
@@ -261,7 +259,7 @@ impl FramePipeline {
 
         self.recreate_swapchain = false;
 
-        Ok(true)
+        Ok(())
     }
 
     /// # Errors
@@ -270,11 +268,11 @@ impl FramePipeline {
     pub fn run_frame(&mut self, gpu: &RenderContext, input: &FrameInput) -> anyhow::Result<()> {
         self.recreate_swapchain |= input.resized;
 
-        let extent = self.window.inner_size();
-        let plan = frame_plan(self.recreate_swapchain, extent.width, extent.height);
+        let extent = input.extent;
+        let plan = frame_plan(self.recreate_swapchain, extent[0], extent[1]);
 
         if plan.recreate {
-            self.recreate_if_needed(gpu)?;
+            self.recreate_if_needed(gpu, extent)?;
         }
 
         if !plan.execute {
@@ -287,7 +285,7 @@ impl FramePipeline {
 
         self.region.mode = input.render_mode;
 
-        let aspect = extent.width as f32 / extent.height as f32;
+        let aspect = extent[0] as f32 / extent[1] as f32;
         let proj = perspective(input.fov, aspect, PROJ_NEAR, PROJ_FAR);
         self.region.camera = production_raygen::Camera {
             proj_inverse: proj.inverse().to_cols_array_2d(),

@@ -123,7 +123,6 @@ impl IControl for AtlasRtView {
                         ));
 
                         let job = WorldUpdateJob::new();
-                        job.arrive();
 
                         self.pipeline = Some(shared_pipeline.clone());
                         self.worker_publish_in = Some(published_rx);
@@ -305,23 +304,40 @@ impl AtlasRtView {
     /// has no world or job and reports failure.
     #[func]
     pub fn job_status(&self) -> i32 {
-        self.job
-            .as_ref()
-            .map_or(Status::Failed, WorldUpdateJob::status)
-            .code()
-            .into()
+        self.status().code().into()
     }
 
     /// The status spelled out, so a host reads the state by name rather than by
     /// code.
     #[func]
     pub fn job_status_name(&self) -> GString {
-        GString::from(
-            self.job
-                .as_ref()
-                .map_or(Status::Failed, WorldUpdateJob::status)
-                .name(),
-        )
+        GString::from(self.status().name())
+    }
+
+    #[func]
+    pub fn job_is_idle(&self) -> bool {
+        !self.job_is_loading()
+    }
+
+    #[func]
+    pub fn job_is_loading(&self) -> bool {
+        self.status() == Status::Loading
+    }
+
+    #[func]
+    pub fn job_is_ready(&self) -> bool {
+        self.status() == Status::Ready
+    }
+
+    #[func]
+    pub fn job_is_failed(&self) -> bool {
+        self.status() == Status::Failed
+    }
+
+    fn status(&self) -> Status {
+        self.job
+            .as_ref()
+            .map_or(Status::Failed, WorldUpdateJob::status)
     }
 
     /// Why the last job failed, for display. Empty while the last job did not

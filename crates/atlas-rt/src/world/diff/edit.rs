@@ -825,8 +825,6 @@ mod tests {
 
         let _budget = set_cell_budget(1);
 
-        // the overwrite nets to nothing and the set-then-clear of the fresh
-        // cell nets to nothing, so the batch lands at the limit
         let batch = edit_world(
             &mut world,
             &[set(0, 0, 0, 9), set(2, 0, 0, 3), clear(2, 0, 0)],

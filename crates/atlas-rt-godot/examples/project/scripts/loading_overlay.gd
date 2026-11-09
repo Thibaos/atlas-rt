@@ -28,7 +28,6 @@ func _process(_delta: float) -> void:
 		return
 
 	var view: AtlasRtView = Main.view
-	var status := view.job_status_name()
 	var reason := view.job_error()
 
 	_bar.value = view.job_progress() * 100.0
@@ -38,7 +37,7 @@ func _process(_delta: float) -> void:
 	if !_active:
 		return
 
-	if status == "loading":
+	if view.job_is_loading():
 		visible = true
 		return
 

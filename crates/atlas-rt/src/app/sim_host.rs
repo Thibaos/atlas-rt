@@ -16,11 +16,12 @@ use tracing::{error, warn};
 
 use atlas_rt::host::ViewInterpolation;
 use atlas_rt::sim::{
-    self, Activation, Command, DrainPolicy, Handle, InputSample, ParityPolicy, PlayerProfile,
-    PlayerState, Push, UpdateReport,
+    self, Activation, DrainPolicy, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState,
+    Push, UpdateReport,
 };
 use atlas_rt::world::World;
 use atlas_rt::world::diff::batch::TrackedCoords;
+use atlas_rt::world::diff::edit::VoxelEdit;
 use atlas_rt::world::diff::snapshot::MicroChunkSnapshot;
 use atlas_rt::world::material::PhysicalMaterialTable;
 use atlas_rt::world::rain::Emitter;
@@ -60,12 +61,31 @@ impl Tally {
 }
 
 /// What the host holds until the renderer exists to receive it.
-struct Handover {
+pub struct Handover {
     snapshots: Vec<MicroChunkSnapshot>,
     tracked: TrackedCoords,
     materials: PhysicalMaterialTable,
     granular_cells: Option<Vec<IVec3>>,
     emitter: Option<Emitter>,
+}
+
+impl Handover {
+    #[must_use]
+    pub const fn new(
+        snapshots: Vec<MicroChunkSnapshot>,
+        tracked: TrackedCoords,
+        materials: PhysicalMaterialTable,
+        granular_cells: Option<Vec<IVec3>>,
+        emitter: Option<Emitter>,
+    ) -> Self {
+        Self {
+            snapshots,
+            tracked,
+            materials,
+            granular_cells,
+            emitter,
+        }
+    }
 }
 
 /// Nothing on this side waits for the renderer.
@@ -92,11 +112,7 @@ impl SimHost {
         world: Arc<RwLock<World>>,
         profile: PlayerProfile,
         policy: DrainPolicy,
-        snapshots: Vec<MicroChunkSnapshot>,
-        tracked: TrackedCoords,
-        granular_cells: Option<Vec<IVec3>>,
-        emitter: Option<Emitter>,
-        materials: &PhysicalMaterialTable,
+        handover: Handover,
     ) -> Result<Self> {
         let period = profile.tick_period();
         let handle = sim::spawn(world, profile, ParityPolicy::default(), policy)?;
@@ -104,13 +120,7 @@ impl SimHost {
         Ok(Self {
             handle,
             period,
-            handover: Some(Handover {
-                snapshots,
-                tracked,
-                materials: *materials,
-                granular_cells,
-                emitter,
-            }),
+            handover: Some(handover),
             view: ViewInterpolation::new(period),
             ready: false,
             waited: false,
@@ -163,8 +173,8 @@ impl SimHost {
 
     /// Queues a Voxel edit for the next commit, sent between frames and never
     /// inside one.
-    pub fn command(&self, command: Command) {
-        self.handle.command(command);
+    pub fn command(&self, edit: VoxelEdit) {
+        self.handle.command(edit);
     }
 
     /// One frame's worth of the boundary: send elapsed and input, then take
@@ -391,11 +401,13 @@ mod tests {
             Arc::clone(&world),
             PlayerProfile::default(),
             DrainPolicy::default(),
-            snapshots,
-            tracked,
-            None,
-            None,
-            &PhysicalMaterialTable::default(),
+            Handover::new(
+                snapshots,
+                tracked,
+                PhysicalMaterialTable::default(),
+                None,
+                None,
+            ),
         )
         .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
 
@@ -622,10 +634,10 @@ mod tests {
         let (mut host, world) = ready_host();
         let position = IVec3::new(0, 400, 500);
 
-        host.command(Command::Cell(VoxelEdit {
+        host.command(VoxelEdit {
             position,
             change: VoxelChange::Set(1),
-        }));
+        });
 
         host.frame(period(), InputSample::default());
 
@@ -660,10 +672,10 @@ mod tests {
             "nothing is queued before a tick reports"
         );
 
-        host.command(Command::Cell(VoxelEdit {
+        host.command(VoxelEdit {
             position: IVec3::new(0, 400, 500),
             change: VoxelChange::Set(1),
-        }));
+        });
 
         host.frame(period(), InputSample::default());
 
@@ -710,10 +722,10 @@ mod tests {
         );
 
         for x in 0..2 {
-            host.command(Command::Cell(VoxelEdit {
+            host.command(VoxelEdit {
                 position: IVec3::new(x, 400, 500),
                 change: VoxelChange::Set(1),
-            }));
+            });
 
             // The command's wakes land at commit, after that tick's drain, so
             // the four cells it queues are evaluated by the following tick.

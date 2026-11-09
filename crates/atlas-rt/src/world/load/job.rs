@@ -1,4 +1,5 @@
 use std::{
+    fmt,
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{
         Arc, Mutex, MutexGuard,
@@ -106,7 +107,6 @@ enum JobState {
     Loading { loaded: Option<Box<SuppliedWorld>> },
     Clearing,
     Submitted,
-    Done,
 }
 
 /// The requested view state after applying the batch: either a world resident,
@@ -133,7 +133,14 @@ struct Job {
 #[derive(Debug)]
 pub enum Refusal {
     Busy,
-    Failed(String),
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Busy => f.write_str("a job is already in flight"),
+        }
+    }
 }
 
 /// The load and clear jobs, one at a time, with the world they leave behind.
@@ -188,7 +195,7 @@ impl WorldUpdateJob {
     /// Completes a clear when no world remains. No batch is submitted, and the
     /// job becomes empty and stops holding on this call.
     pub fn no_world(&mut self) {
-        lock(&self.job).state = JobState::Done;
+        lock(&self.job).state = JobState::Idle;
         self.status.store(STATUS_EMPTY, Ordering::Release);
     }
 
@@ -386,7 +393,7 @@ impl WorldUpdateJob {
 
     /// Whether background work has finished but the job still awaits a frame
     /// that includes its batch. The job remains in flight until that frame is
-    /// admitted, when it becomes `Done` and its status settles.
+    /// admitted, when its status settles.
     #[must_use]
     pub fn holding(&self) -> bool {
         matches!(
@@ -403,7 +410,7 @@ impl WorldUpdateJob {
         let status = {
             let mut job = lock(&self.job);
 
-            job.state = JobState::Done;
+            job.state = JobState::Idle;
 
             match job.outcome {
                 Outcome::World => STATUS_READY,
@@ -672,7 +679,6 @@ mod tests {
     #[test]
     fn an_accepted_load_reports_loading_before_it_finishes() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         assert!(job.load(Box::new(source(one_voxel_world())), 0).is_ok());
         assert_eq!(job.status(), Status::Loading);
@@ -681,7 +687,6 @@ mod tests {
     #[test]
     fn a_second_request_while_one_is_in_flight_is_refused() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
@@ -700,7 +705,6 @@ mod tests {
     #[test]
     fn a_load_while_a_clear_is_in_flight_is_refused() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.clear(0).unwrap();
 
@@ -713,7 +717,6 @@ mod tests {
     #[test]
     fn a_finished_load_hands_its_work_over_once() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 4).unwrap();
         job.settle();
@@ -748,7 +751,6 @@ mod tests {
     #[test]
     fn a_finished_load_hands_over_the_world_that_emitted_its_snapshots() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
         job.settle();
@@ -772,7 +774,6 @@ mod tests {
     #[test]
     fn a_finished_load_hands_over_the_palette_that_colours_its_snapshots() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         let mut rgba = [0u8; 1024];
         let (entries, _) = rgba.as_chunks_mut::<4>();
@@ -809,7 +810,6 @@ mod tests {
     #[test]
     fn a_finished_load_hands_over_the_effective_palette() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.load(Box::new(source(matl_paletted_world())), 0)
             .unwrap_or_else(|error| panic!("{error:?}"));
@@ -831,7 +831,6 @@ mod tests {
     #[test]
     fn a_duplicate_matl_world_fails_before_it_becomes_ready() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         let bytes = std::fs::read("assets/test/matl-alpha-duplicate.vox")
             .unwrap_or_else(|error| panic!("could not read duplicate fixture: {error}"));
 
@@ -879,7 +878,6 @@ mod tests {
     #[test]
     fn a_malformed_world_fails_without_killing_the_thread() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.load(Box::new(source(vec![0xde, 0xad, 0xbe, 0xef])), 0)
             .unwrap();
@@ -901,7 +899,6 @@ mod tests {
     #[test]
     fn a_load_past_the_budget_fails_and_the_next_job_runs() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         let budget = crate::world::budget::set_cell_budget(0);
 
@@ -930,7 +927,6 @@ mod tests {
     #[test]
     fn a_clear_reaches_the_empty_state_on_the_frame_that_carries_it() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.clear(0).unwrap();
 
@@ -961,7 +957,6 @@ mod tests {
     #[test]
     fn only_the_first_admissible_frame_reports_a_completion() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.load(Box::new(source(one_voxel_world())), 7).unwrap();
         job.settle();
         job.poll();
@@ -974,7 +969,6 @@ mod tests {
     #[test]
     fn a_load_whose_batch_was_submitted_is_still_in_flight() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
         job.settle();
 
@@ -1001,7 +995,6 @@ mod tests {
     #[test]
     fn a_job_reports_how_far_its_load_has_got() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
 
         assert!(
@@ -1033,7 +1026,6 @@ mod tests {
     #[test]
     fn a_settled_load_whose_work_is_untaken_is_still_in_flight() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.load(Box::new(source(one_voxel_world())), 0).unwrap();
         job.settle();
 
@@ -1049,7 +1041,6 @@ mod tests {
     #[test]
     fn a_clear_reaches_full_progress_when_it_is_carried() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.clear(0).unwrap();
 
         assert_eq!(poll_until(&mut job), Finished::Cleared);
@@ -1064,7 +1055,6 @@ mod tests {
     #[test]
     fn a_failed_load_still_reaches_full_progress() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.load(Box::new(source(vec![0xde, 0xad])), 0).unwrap();
 
         assert_eq!(poll_until(&mut job), Finished::Failed);
@@ -1084,7 +1074,6 @@ mod tests {
     #[test]
     fn an_accepted_generation_reports_loading_before_it_finishes() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         assert!(job.generate(small(), 0).is_ok());
         assert_eq!(job.status(), Status::Loading);
@@ -1093,7 +1082,6 @@ mod tests {
     #[test]
     fn a_generation_delivers_a_world_snapshots_palette_and_materials() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.generate(small(), 0).unwrap();
 
@@ -1129,7 +1117,6 @@ mod tests {
     #[test]
     fn two_generations_from_one_seed_are_equal() {
         let run = |job: &mut WorldUpdateJob| -> SuppliedWorld {
-            job.arrive();
             job.generate(small(), 0).unwrap();
 
             assert_eq!(poll_until(job), Finished::Loaded);
@@ -1155,7 +1142,6 @@ mod tests {
     #[test]
     fn a_generations_bounds_follow_its_extent() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.generate(GenerationParams::new(0x5EED, IVec3::splat(16)), 0)
             .unwrap();
@@ -1185,7 +1171,6 @@ mod tests {
     #[test]
     fn a_request_while_a_generation_is_in_flight_is_refused() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.generate(small(), 0).unwrap();
 
@@ -1201,7 +1186,6 @@ mod tests {
     #[test]
     fn a_load_follows_a_generation_and_a_generation_follows_a_load() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.generate(small(), 0).unwrap();
         assert_eq!(poll_until(&mut job), Finished::Loaded);
@@ -1243,7 +1227,6 @@ mod tests {
     #[test]
     fn a_generation_past_the_cell_budget_still_succeeds() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         // The budget is per-thread and visible only to a job that reads it on
         // the caller thread; the generation path reads none. The strong guard is
@@ -1264,7 +1247,6 @@ mod tests {
     #[test]
     fn a_failed_generation_reports_a_reason() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
 
         job.generate(GenerationParams::new(0x5EED, IVec3::new(0, -1, 0)), 0)
             .unwrap();
@@ -1282,7 +1264,6 @@ mod tests {
     #[test]
     fn a_job_reports_how_far_its_generation_has_got() {
         let mut job = WorldUpdateJob::new();
-        job.arrive();
         job.generate(small(), 0).unwrap();
 
         assert!(

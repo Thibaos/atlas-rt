@@ -31,11 +31,6 @@ pub struct DeliveryRing {
     extent: [u32; 2],
 }
 
-#[must_use]
-pub const fn bind_slot(frame: usize) -> usize {
-    frame % SLOT_COUNT
-}
-
 const fn slot_extent(extent: [u32; 2]) -> [u32; 3] {
     [extent[0], extent[1], 1]
 }
@@ -224,45 +219,10 @@ impl DeliveryRing {
     /// # Errors
     ///
     /// Returns an error if slot at index does not exist
-    pub fn image(&self, resources: &Resources, slot: usize) -> anyhow::Result<Arc<Image>> {
-        let id = self
-            .physical
-            .get(slot)
-            .context("delivery slot out of range")?;
-
-        Ok(resources.image(*id).image().clone())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if slot at index does not exist
     pub fn physical_id(&self, slot: usize) -> anyhow::Result<Id<Image>> {
         self.physical
             .get(slot)
             .copied()
             .context("delivery slot out of range")
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{SLOT_COUNT, bind_slot};
-
-    #[test]
-    fn consecutive_frames_write_distinct_slots() {
-        for frame in 0..9 {
-            assert_ne!(bind_slot(frame), bind_slot(frame + 1));
-        }
-    }
-
-    #[test]
-    fn a_slot_is_untouched_for_two_frames_after_write() {
-        for frame in 0..300 {
-            let slot = bind_slot(frame);
-
-            assert_ne!(slot, bind_slot(frame + 1));
-            assert_ne!(slot, bind_slot(frame + 2));
-            assert_eq!(slot, bind_slot(frame + SLOT_COUNT));
-        }
     }
 }

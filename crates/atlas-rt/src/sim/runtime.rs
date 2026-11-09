@@ -14,7 +14,7 @@ use tracing::error;
 use crate::world::World;
 use crate::world::diff::{
     batch::{TrackedCoords, plan_load},
-    edit::{MicroChunkEdit, VoxelChange, VoxelEdit, edit_world},
+    edit::{VoxelChange, VoxelEdit, edit_world},
     snapshot::MicroChunkSnapshot,
 };
 use crate::world::grid::in_lattice;
@@ -41,7 +41,7 @@ enum Message {
         sample: InputSample,
     },
     Paused(bool),
-    Command(Command),
+    Command(VoxelEdit),
     Activation(Box<Activation>),
     Shutdown,
 }
@@ -60,15 +60,6 @@ pub struct Activation {
     pub materials: PhysicalMaterialTable,
     pub granular_cells: Option<Vec<IVec3>>,
     pub emitter: Option<Emitter>,
-}
-
-/// A host edit resolved at the next commit, against the `World` then active.
-/// Commands commit in arrival order, each diffed against the World the
-/// earlier ones left.
-#[derive(Debug)]
-pub enum Command {
-    Cell(VoxelEdit),
-    MicroChunk(MicroChunkEdit),
 }
 
 /// What the sim hands back: an activation batch, the readiness reply, or one
@@ -189,9 +180,11 @@ impl Handle {
         self.send(Message::Paused(paused));
     }
 
-    /// Queues an edit command for the next commit.
-    pub fn command(&self, command: Command) {
-        self.send(Message::Command(command));
+    /// Queues an edit for the next commit, against the `World` then active.
+    /// Commands commit in arrival order, each diffed against the World the
+    /// earlier ones left.
+    pub fn command(&self, edit: VoxelEdit) {
+        self.send(Message::Command(edit));
     }
 
     /// Hands over a loaded World. The host uploads the activation batch's
@@ -266,7 +259,7 @@ struct Runtime {
     materials: PhysicalMaterialTable,
     queue: UpdateQueue,
     tracked: TrackedCoords,
-    commands: Vec<Command>,
+    commands: Vec<VoxelEdit>,
     rule_edits: Vec<VoxelEdit>,
     rule_overlay: Overlay,
     emitter: Option<Emitter>,
@@ -430,17 +423,7 @@ impl Runtime {
                 return;
             }
 
-            let mut report = UpdateReport {
-                batch: None,
-                discarded: if index == 0 { discarded } else { 0 },
-                processed: 0,
-                queued: self.queue.len(),
-                emission: Emission::default(),
-                tick_time: Duration::ZERO,
-                commit_time: Duration::ZERO,
-            };
-
-            self.tick(&mut report);
+            let report = self.tick(if index == 0 { discarded } else { 0 });
 
             let push = Push::Tick(TickEnd {
                 player: self.player,
@@ -458,22 +441,25 @@ impl Runtime {
     /// One tick: the player moves and the voxel rules drain the queue under
     /// the read lock, then the pending edits and the emitter's grains commit
     /// under the write lock.
-    fn tick(&mut self, report: &mut UpdateReport) {
+    fn tick(&mut self, discarded: u64) -> UpdateReport {
         let (evaluated, processed) = self.evaluate();
         let (committed, batch, emission) = self.commit();
 
-        report.tick_time = evaluated;
-        report.commit_time = committed;
-        report.processed = processed;
-        report.queued = self.queue.len();
-        report.batch = batch;
-        report.emission = emission;
-
         self.tick_count = self.tick_count.saturating_add(1);
+
+        UpdateReport {
+            batch,
+            discarded,
+            processed,
+            queued: self.queue.len(),
+            emission,
+            tick_time: evaluated,
+            commit_time: committed,
+        }
     }
 
-    fn on_command(&mut self, command: Command) {
-        self.commands.push(command);
+    fn on_command(&mut self, edit: VoxelEdit) {
+        self.commands.push(edit);
     }
 
     fn on_activation(&mut self, activation: Activation) {
@@ -699,28 +685,12 @@ impl Runtime {
     /// the diff asks for, folding the snapshots into `merged`. A command
     /// that fails validation, or that changes nothing, leaves the World,
     /// the tracked set, and the queue alone.
-    fn apply_command(&mut self, guard: &mut World, command: Command, merged: &mut SnapshotFold) {
-        let edits = match command {
-            Command::Cell(edit) => {
-                if !edit.disagrees_with(guard) {
-                    return;
-                }
-
-                vec![edit]
-            }
-            Command::MicroChunk(chunk) => match chunk.diff(guard) {
-                Ok(edits) => edits,
-                Err(error) => {
-                    error!("atlas_rt: dropped an invalid command: {error}");
-
-                    return;
-                }
-            },
-        };
-
-        if edits.is_empty() {
+    fn apply_command(&mut self, guard: &mut World, edit: VoxelEdit, merged: &mut SnapshotFold) {
+        if !edit.disagrees_with(guard) {
             return;
         }
+
+        let edits = [edit];
 
         match edit_world(guard, &edits, &self.tracked) {
             Ok(batch) => {

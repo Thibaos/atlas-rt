@@ -102,14 +102,7 @@ impl AtlasRtView {
 
     /// Reports a refused direct call or stale button press without changing state.
     pub(super) fn report_refusal(entry: &str, refusal: Refusal) {
-        match refusal {
-            Refusal::Busy => {
-                godot_error!("atlas_rt: {entry} refused: a job is already in flight");
-            }
-            Refusal::Failed(reason) => {
-                godot_error!("atlas_rt: {entry} refused: {reason}");
-            }
-        }
+        godot_error!("atlas_rt: {entry} refused: {refusal}");
     }
 
     /// Takes a finished job's work on the main thread: plans the ordered batch,

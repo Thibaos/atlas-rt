@@ -59,7 +59,7 @@ use atlas_rt::{
     },
 };
 
-use super::SimHost;
+use super::{Handover, SimHost};
 
 const TICK_BUDGET: Duration = Duration::from_millis(4);
 
@@ -379,11 +379,7 @@ fn sweep(source: &Source, occupancy: &'static str, active: usize) -> SweepPoint 
         Arc::new(RwLock::new(world)),
         PlayerProfile::default(),
         DrainPolicy::default(),
-        snapshots,
-        tracked,
-        None,
-        None,
-        &table,
+        Handover::new(snapshots, tracked, table, None, None),
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
 
@@ -748,11 +744,13 @@ fn surface_point(extent: i32) -> SurfacePoint {
         Arc::new(RwLock::new(generated.world)),
         PlayerProfile::default(),
         DrainPolicy::default(),
-        snapshots,
-        tracked,
-        Some(generated.granular_cells),
-        None,
-        &generated.materials,
+        Handover::new(
+            snapshots,
+            tracked,
+            generated.materials,
+            Some(generated.granular_cells),
+            None,
+        ),
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
 
@@ -1007,11 +1005,13 @@ fn sand_ball_tick_timings() {
         Arc::new(RwLock::new(generated.world)),
         PlayerProfile::default(),
         DrainPolicy::Runs,
-        snapshots,
-        tracked,
-        Some(generated.granular_cells),
-        None,
-        &generated.materials,
+        Handover::new(
+            snapshots,
+            tracked,
+            generated.materials,
+            Some(generated.granular_cells),
+            None,
+        ),
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
 
@@ -1083,11 +1083,7 @@ fn raining_tick_timings() {
         Arc::new(RwLock::new(generated.world)),
         PlayerProfile::default(),
         DrainPolicy::PerCell,
-        snapshots,
-        tracked,
-        None,
-        Some(emitter),
-        &generated.materials,
+        Handover::new(snapshots, tracked, generated.materials, None, Some(emitter)),
     )
     .unwrap_or_else(|error| panic!("the host must spawn: {error}"));
 

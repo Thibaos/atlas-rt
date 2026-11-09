@@ -10,8 +10,6 @@ const STARTUP_WORLD := "castle"
 const COMPOSITE_SHADER := preload("res://atlas_composite.gdshader")
 const OVERLAY := preload("res://scripts/loading_overlay.gd")
 
-const IDLE := ["empty", "ready", "failed"]
-
 var view: AtlasRtView
 var overlay: OVERLAY
 var ui: Control
@@ -92,7 +90,7 @@ func clear_world() -> bool:
 	return true
 
 func is_idle() -> bool:
-	return view.job_status_name() in IDLE
+	return view.job_is_idle()
 
 func set_pause(active: bool) -> void:
 	var t := get_tree()

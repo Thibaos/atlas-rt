@@ -136,7 +136,7 @@ func _process(_delta: float) -> void:
 
 	var status: String = view.job_status_name()
 
-	if status == "failed":
+	if view.job_is_failed():
 		push_error("atlas capture: the World failed: %s" % view.job_error())
 		_quit(1)
 		return
@@ -150,7 +150,7 @@ func _process(_delta: float) -> void:
 
 	# Ready is the status a load reaches only once a frame carrying it has been
 	# admitted, so the frame this capture saves is the World that was asked for.
-	if status != "ready":
+	if !view.job_is_ready():
 		settled = 0
 		return
 

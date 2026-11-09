@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use atlas_rt::render::region::pack::{RegionData, pack_regions};
 use atlas_rt::render::region::queue::RendererInput;
-use atlas_rt::sim::{Command, Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState};
+use atlas_rt::sim::{Handle, InputSample, ParityPolicy, PlayerProfile, PlayerState};
 use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit};
 use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use atlas_rt::world::micro::MicroChunk;
@@ -781,7 +781,7 @@ fn walkthrough_sand_through_the_player_then_pile_climb() {
         "every seeded grain rests in the pile"
     );
 
-    handle.command(Command::Cell(set(11, 20, 2, GRAIN)));
+    handle.command(set(11, 20, 2, GRAIN));
 
     let mut lifted_at = None;
     let mut lifted = None;
@@ -917,7 +917,7 @@ fn walkthrough_a_dig_wakes_the_edited_cell_and_the_three_above() {
         "the sand rests on the platform"
     );
 
-    handle.command(Command::Cell(clear(4, 3, 4)));
+    handle.command(clear(4, 3, 4));
 
     let tick = run_tick(&handle);
 

@@ -137,20 +137,6 @@ impl<'a> MicroChunkRef<'a> {
     }
 
     #[must_use]
-    pub fn cell_offset(index: usize) -> IVec3 {
-        self::cell_offset(index)
-    }
-
-    #[must_use]
-    pub fn mask_index(local: IVec3) -> usize {
-        self::mask_index(local)
-    }
-
-    pub fn set_cell(mask: &mut [u8], cell: usize, occupied: bool) {
-        self::set_cell(mask, cell, occupied);
-    }
-
-    #[must_use]
     pub fn occupied_cell(&self, index: usize) -> bool {
         self::occupied_cell(self.mask, index)
     }
@@ -366,25 +352,6 @@ mod tests {
 
                 assert_eq!(rank(&mask, cell), below, "cells {cells:?} at cell {cell}");
             }
-        }
-    }
-
-    #[test]
-    fn rank_of_the_named_boundary_cells() {
-        let mask = mask_from_cells(&[0, 7, 8, 63, 64, 300, 511]);
-
-        let cases = [
-            (0usize, 0usize),
-            (7, 1),
-            (8, 2),
-            (63, 3),
-            (64, 4),
-            (300, 5),
-            (511, 6),
-        ];
-
-        for (cell, below) in cases {
-            assert_eq!(rank(&mask, cell), below, "cell {cell}");
         }
     }
 

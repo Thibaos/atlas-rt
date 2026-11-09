@@ -4,7 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use atlas_rt::render::region::queue::RendererInput;
-use atlas_rt::sim::{Command, Handle, InputSample, PlayerProfile, PlayerState};
+use atlas_rt::sim::{Handle, InputSample, PlayerProfile, PlayerState};
 use atlas_rt::world::diff::edit::VoxelEdit;
 use atlas_rt::world::diff::snapshot::{MicroChunkSnapshot, emit_snapshots};
 use glam::{IVec3, Vec2, Vec3};
@@ -225,7 +225,7 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
     feed(&handle, part(9, 10));
     assert_silent(&handle);
 
-    handle.command(Command::Cell(set(5, 5, 5, 3)));
+    handle.command(set(5, 5, 5, 3));
     feed(&handle, part(2, 10));
 
     let tick = expect_tick(recv_push(&handle));
@@ -246,7 +246,7 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
 
     // the load request is sent only once the current World has run down to
     // less than a tick, so a tick here would prove the reset did not happen
-    handle.command(Command::Cell(set(7, 7, 7, 5)));
+    handle.command(set(7, 7, 7, 5));
     handle.activate(activation_of(&[set(1, 1, 1, 2)]));
 
     assert!(wait_ready(&handle).grounded);
@@ -277,7 +277,7 @@ fn a_load_in_flight_keeps_ticking_keeping_commands_and_its_activation_resets_tim
 fn a_multi_tick_update_pushes_each_tick_as_it_finishes() {
     let (_world, handle) = spawn_sim();
 
-    handle.command(Command::Cell(set(1, 1, 1, 4)));
+    handle.command(set(1, 1, 1, 4));
     handle.activate(activation_of(&[set(0, 0, 0, 1)]));
     wait_ready(&handle);
 
@@ -439,7 +439,7 @@ fn commit_waits_for_the_write_lock_while_the_host_reads() {
 
     let held_lock = world.read().unwrap();
 
-    handle.command(Command::Cell(set(2, 2, 2, 5)));
+    handle.command(set(2, 2, 2, 5));
     feed(&handle, period());
 
     thread::sleep(Duration::from_millis(300));
@@ -505,7 +505,7 @@ fn a_queued_frame_backlog_does_not_delay_the_join() {
         feed(&handle, period());
     }
 
-    handle.command(Command::Cell(set(5, 5, 5, 3)));
+    handle.command(set(5, 5, 5, 3));
     feed(&handle, period());
 
     drop(handle);
@@ -838,7 +838,7 @@ fn a_command_between_frames_ends_the_coalesced_run() {
 
     handle.activate(activation_of(&[set(0, 0, 0, 1)]));
     feed(&handle, period());
-    handle.command(Command::Cell(set(5, 5, 5, 3)));
+    handle.command(set(5, 5, 5, 3));
     feed(&handle, period());
 
     drop(locked);

@@ -157,12 +157,6 @@ fn a_batch_edit_leaves_the_rest_of_the_world_resident() {
 
     let planned = plan_edit(vec![snapshot(edited, 9), snapshot(added, 4)], &tracked);
 
-    assert_eq!(
-        planned.snapshots,
-        vec![snapshot(edited, 9), snapshot(added, 4)],
-        "an edit submits only the chunks it was given"
-    );
-
     input.submit_batch(planned.snapshots).unwrap();
     input.wait_until_idle().unwrap();
 

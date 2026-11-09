@@ -1,5 +1,6 @@
 pub mod budget;
 pub mod diff;
+mod floor;
 pub mod generation;
 pub mod grid;
 pub mod load;
@@ -21,7 +22,7 @@ use std::fmt::Display;
 use dot_vox::DotVoxData;
 use glam::IVec3;
 
-use store::{RegionStore, VoxelStore};
+use store::RegionStore;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum InsertResult {
@@ -31,7 +32,7 @@ pub enum InsertResult {
 
 #[derive(Debug)]
 pub struct World {
-    store: Box<dyn VoxelStore>,
+    store: RegionStore,
 }
 
 impl Default for World {
@@ -42,13 +43,19 @@ impl Default for World {
 
 impl World {
     pub(crate) fn empty() -> Self {
-        Self::from_store(Box::new(RegionStore::default()))
+        Self {
+            store: RegionStore::default(),
+        }
     }
 
-    pub(crate) fn from_store(store: Box<dyn VoxelStore>) -> Self {
+    pub(crate) fn from_store(store: RegionStore) -> Self {
         Self { store }
     }
 
+    /// Inserts a voxel, clipping one outside the Lattice and reporting
+    /// [`InsertResult::Clipped`]. Cell reads and writes assert the position is
+    /// in the Lattice, and [`World::raycast`] reports `None` once a ray leaves
+    /// it.
     pub(crate) fn insert(&mut self, position: IVec3, voxel: u32) -> InsertResult {
         self.store.insert(position, voxel)
     }
@@ -106,9 +113,7 @@ impl World {
 
     /// The World's live Micro-chunk entries in Region then Micro-chunk ordinal
     /// order.
-    pub(in crate::world) fn entries(
-        &self,
-    ) -> Box<dyn Iterator<Item = store::MicroChunkEntry> + '_> {
+    pub(in crate::world) fn entries(&self) -> impl Iterator<Item = store::MicroChunkEntry> + '_ {
         self.store.entries()
     }
 

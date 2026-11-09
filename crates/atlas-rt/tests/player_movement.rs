@@ -3,7 +3,7 @@ mod common;
 use std::time::{Duration, Instant};
 
 use atlas_rt::render::camera::mirror_right;
-use atlas_rt::sim::{Command, Handle, InputSample, PlayerState};
+use atlas_rt::sim::{Handle, InputSample, PlayerState};
 use atlas_rt::world::diff::edit::{VoxelChange, VoxelEdit};
 use glam::{IVec3, Quat, Vec2, Vec3};
 
@@ -195,7 +195,7 @@ fn falling_player() -> Handle {
     handle.activate(activation_of(&floor_and_pillar()));
     let mut last = wait_ready(&handle);
 
-    handle.command(Command::Cell(clear(2, 3, 2)));
+    handle.command(clear(2, 3, 2));
 
     for _ in 0..2 {
         feed(&handle, period());
@@ -303,7 +303,7 @@ fn gravity_falls_the_player_onto_the_floor_with_the_feet_exactly_on_it() {
 
     handle.activate(activation_of(&floor_and_pillar()));
     wait_ready(&handle);
-    handle.command(Command::Cell(clear(2, 3, 2)));
+    handle.command(clear(2, 3, 2));
 
     for tick_number in 1..=6 {
         feed(&handle, period());
@@ -636,7 +636,7 @@ fn depenetration_pushes_up_first_and_retries_every_tick() {
 
     handle.activate(activation_of(&open_floor()));
     wait_ready(&handle);
-    handle.command(Command::Cell(set(4, 1, 2, 1)));
+    handle.command(set(4, 1, 2, 1));
 
     feed(&handle, period());
 
@@ -668,7 +668,7 @@ fn a_jump_pressed_against_a_buried_player_still_launches() {
 
     handle.activate(activation_of(&open_floor()));
     wait_ready(&handle);
-    handle.command(Command::Cell(set(4, 1, 2, 1)));
+    handle.command(set(4, 1, 2, 1));
 
     feed(&handle, period());
     expect_tick(recv_push(&handle));

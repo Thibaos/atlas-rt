@@ -7,7 +7,7 @@
 //! are both multiples of [`HOLE_STRIDE`]. That leaves 3,209 holes in 202,652
 //! plate cells over about 3,200 Micro-chunks, and the disc is 513 cells across.
 //! Under it, the Lattice's bottom layer is a floor of one Bedrock cell at
-//! [`FLOOR_HEIGHT`] under each of the 4,096 by 4,096 columns, in 262,144
+//! [`floor::HEIGHT`] under each of the 4,096 by 4,096 columns, in 262,144
 //! Micro-chunks.
 //!
 //! A grain leaves its hole at -1024 and lands on the floor's surface at -2047,
@@ -18,34 +18,31 @@
 use glam::IVec3;
 
 use super::{
-    World,
+    World, floor,
     generation::GeneratedWorld,
-    grid::{LATTICE_EXTENT, LATTICE_HALF_EXTENT, MICRO_CHUNK_LENGTH, chunks_across, grid_origin},
+    grid::{MICRO_CHUNK_LENGTH, chunks_across, grid_origin},
     load::progress::{Progress, Stage},
-    micro::{self, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MICRO_EDGE, MicroChunkRef},
+    micro::{self, MICRO_AREA, MICRO_BYTES, MICRO_CELLS, MicroChunkRef},
     vocabulary::{Material, Vocabulary},
 };
 
 /// The plate's radius, in cells.
-pub const RADIUS: i32 = 256;
-
-/// The floor's level, in cells: the Lattice's bottom layer.
-pub const FLOOR_HEIGHT: i32 = -LATTICE_HALF_EXTENT.cast_signed();
+const RADIUS: i32 = 256;
 
 /// The plate's level, in cells above the floor's own level.
-pub const PLATE_CLEARANCE: i32 = 1024;
+const PLATE_CLEARANCE: i32 = 1024;
 
 /// The plate's level, in cells: a Micro-chunk boundary.
-pub const PLATE_HEIGHT: i32 = FLOOR_HEIGHT + PLATE_CLEARANCE;
+const PLATE_HEIGHT: i32 = floor::HEIGHT + PLATE_CLEARANCE;
 
 /// The spacing of the plate's holes in x and z, in cells.
-pub const HOLE_STRIDE: i32 = 8;
+const HOLE_STRIDE: i32 = 8;
 
 /// The ticks between two emissions the same hole may serve.
-pub const EMIT_INTERVAL: u64 = 2;
+const EMIT_INTERVAL: u64 = 2;
 
 /// The grains the schedule plants per tick.
-pub const GRAINS_PER_TICK: usize = 128;
+const GRAINS_PER_TICK: usize = 128;
 
 /// The holes a rain World plants grains into, with the schedule's own counts.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,57 +84,10 @@ pub fn build(progress: &Progress) -> (GeneratedWorld, Emitter) {
 /// Fills the floor, then the plate. Progress is counted over both passes, so
 /// the Generate stage reports the floor before the plate.
 fn fill(world: &mut World, progress: &Progress, holes: &mut Vec<IVec3>) {
-    let total = floor_chunks().saturating_add(plate_chunks());
-    let mut filled = write_floor(world, progress, total);
+    let total = floor::chunks().saturating_add(plate_chunks());
+    let mut filled = floor::write(world, progress, total);
 
     write_plate(world, progress, total, &mut filled, holes);
-}
-
-/// Writes the floor: one Bedrock cell at [`FLOOR_HEIGHT`] under every column of
-/// the Lattice. Returns how many Micro-chunks it wrote, so the caller can carry
-/// the count into the plate's progress.
-fn write_floor(world: &mut World, progress: &Progress, total: usize) -> usize {
-    let edge = MICRO_CHUNK_LENGTH.cast_signed();
-    let half = LATTICE_HALF_EXTENT.cast_signed();
-    let mut written = 0usize;
-    let mut z = half.saturating_neg();
-
-    while z < half {
-        let mut x = half.saturating_neg();
-
-        while x < half {
-            write_floor_micro_chunk(world, IVec3::new(x, FLOOR_HEIGHT, z));
-
-            written = written.saturating_add(1);
-            progress.count_generated(total, written);
-
-            x = x.saturating_add(edge);
-        }
-
-        z = z.saturating_add(edge);
-    }
-
-    written
-}
-
-/// Writes one floor Micro-chunk: its whole bottom layer is Bedrock, one cell
-/// under each of the chunk's 8 by 8 columns, which is the floor because
-/// [`FLOOR_HEIGHT`] is a Micro-chunk boundary. Cell order `x + 8y + 64z` puts
-/// that layer in the low byte of every eighth mask byte.
-fn write_floor_micro_chunk(world: &mut World, origin: IVec3) {
-    let mut mask = [0u8; MICRO_BYTES];
-
-    for z in 0..MICRO_EDGE {
-        if let Some(layer) = mask.get_mut(z.saturating_mul(MICRO_EDGE)) {
-            *layer = u8::MAX;
-        }
-    }
-
-    let materials = [Material::Bedrock.index(); MICRO_AREA];
-
-    if let Err(error) = world.write_entry(origin, MicroChunkRef::new(&mask, &materials)) {
-        panic!("the rain floor wrote an invalid entry at {origin}: {error}");
-    }
 }
 
 /// Writes the plate over the chunks its disc spans, recording every hole it
@@ -210,27 +160,18 @@ fn write_plate_micro_chunk(world: &mut World, origin: IVec3, holes: &mut Vec<IVe
 /// The Micro-chunk origins the plate's disc spans, and one past the last.
 fn plate_bounds() -> (IVec3, IVec3) {
     let edge = MICRO_CHUNK_LENGTH.cast_signed();
-    let lower = chunk_origin(IVec3::new(
-        RADIUS.saturating_neg(),
-        PLATE_HEIGHT,
-        RADIUS.saturating_neg(),
-    ));
-    let upper =
-        chunk_origin(IVec3::new(RADIUS, PLATE_HEIGHT, RADIUS)).saturating_add(IVec3::splat(edge));
+    let lower = grid_origin(
+        IVec3::new(
+            RADIUS.saturating_neg(),
+            PLATE_HEIGHT,
+            RADIUS.saturating_neg(),
+        ),
+        MICRO_CHUNK_LENGTH,
+    );
+    let upper = grid_origin(IVec3::new(RADIUS, PLATE_HEIGHT, RADIUS), MICRO_CHUNK_LENGTH)
+        .saturating_add(IVec3::splat(edge));
 
     (lower, upper)
-}
-
-/// The Micro-chunk origin at or below `position`.
-fn chunk_origin(position: IVec3) -> IVec3 {
-    grid_origin(position, MICRO_CHUNK_LENGTH)
-}
-
-/// How many Micro-chunks the floor spans: one per Lattice column.
-fn floor_chunks() -> usize {
-    let across = chunks_across(LATTICE_EXTENT.cast_signed());
-
-    across.saturating_mul(across)
 }
 
 /// How many Micro-chunks the plate's disc spans.

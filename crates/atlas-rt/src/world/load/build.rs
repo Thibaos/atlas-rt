@@ -140,7 +140,7 @@ impl<'scene> Plan<'scene> {
                     return (World::empty(), clipped);
                 }
 
-                let world = World::from_store(Box::new(build_region(&batches)));
+                let world = World::from_store(build_region(&batches));
 
                 (world, clipped)
             }
